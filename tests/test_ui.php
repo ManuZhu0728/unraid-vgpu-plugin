@@ -41,6 +41,12 @@ if (($argv[1] ?? '') === '--render-fixture') {
     foreach ($_SERVER as $key => $value) if ($value === null) unset($_SERVER[$key]);
     $_POST = $ui_fixture['post'] ?? [];
     $_FILES = $ui_fixture['files'] ?? [];
+    if (($ui_fixture['gateway_strip_csrf'] ?? false) === true) {
+        if (!is_string($_POST['csrf_token'] ?? null) || !hash_equals($var['csrf_token'], $_POST['csrf_token'])) {
+            throw new RuntimeException('The gateway fixture requires a valid native token');
+        }
+        unset($_POST['csrf_token']);
+    }
     ob_start();
     eval('?>' . $page);
     $html = ob_get_clean();
@@ -77,7 +83,7 @@ $status = [
     'override_content' => '', 'pending_restart' => false,
 ];
 $base = ['status' => $status];
-$config = ['csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'config-save'];
+$config = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'config-save'];
 foreach ($defaults['source'] as $key => $value) $config['source_' . $key] = $value;
 $config += [
     'runtime_enabled' => '0', 'runtime_unlock' => '1',
@@ -95,6 +101,16 @@ ui_check(!str_contains($rendered['html'], '不等于完整 GPU 验收') && !str_
 ui_check(str_contains($rendered['html'], 'uvm-upload-package') && str_contains($rendered['html'], 'source-upload-chunk'), 'Local package upload must be exposed');
 ui_check(str_contains($rendered['html'], 'window.location.replace(') && !str_contains($rendered['html'], 'window.location.reload('), 'Upload completion must navigate with GET rather than replaying an earlier POST');
 ui_check(str_contains($rendered['html'], 'name="upgrade_enabled"') && str_contains($rendered['html'], '<h2>系统升级</h2>'), 'OS following must have one setting and a preparation status panel');
+ui_check(str_contains($rendered['html'], 'name="csrf_token"') && str_contains($rendered['html'], 'name="uvm_csrf_token"'), 'Forms must include native gateway and plugin CSRF fields');
+
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $config, 'gateway_strip_csrf' => true]);
+ui_check(ui_actions($rendered) === ['config-save', 'status'], 'A gateway-validated native token may be consumed before the plugin page receives POST');
+$withoutMirror = $config;
+unset($withoutMirror['uvm_csrf_token']);
+foreach ([$withoutMirror, array_replace($config, ['uvm_csrf_token' => 'wrong']), array_replace($config, ['uvm_csrf_token' => ['bad']])] as $badPost) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $badPost, 'gateway_strip_csrf' => true]);
+    ui_check(ui_actions($rendered) === ['status'], 'Missing, invalid and non-scalar plugin CSRF fields must fail after native gateway validation');
+}
 
 $attack = '<img src=x onerror="alert(1)"></script><script>alert(2)</script>';
 $xss = $base;
@@ -158,7 +174,7 @@ foreach (['source-test', 'source-versions', 'source-download'] as $action) {
 }
 $rendered = ui_render($base + [
     'server' => ['REQUEST_METHOD' => 'POST'],
-    'post' => ['csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-download'],
+    'post' => ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-download'],
     'errors' => ['source-download' => 'Download failed glpat-UIFIXTURETOKEN <script>not-safe</script>'],
 ]);
 ui_check(str_contains($rendered['html'], 'Download failed [redacted] &lt;script&gt;'), 'Backend errors must escape markup and redact recognized token formats');
@@ -188,38 +204,42 @@ $simple['upgrade_enabled'] = '1';
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $simple]);
 ui_check($rendered['calls'][0]['payload']['upgrade'] === ['enabled' => true], 'Upgrade following must be an explicit saved boolean');
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
-    'csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'upgrade-check', 'target_kernel' => '1.2.3-Unraid',
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'upgrade-check', 'target_kernel' => '1.2.3-Unraid',
 ], 'responses' => ['upgrade-check' => ['ok' => true, 'status' => 'ready']]]);
 ui_check(ui_actions($rendered) === ['upgrade-check', 'status'], 'Checking preparation must not run boot, installation or save an unrelated form');
 ui_check($rendered['calls'][0]['payload'] === ['force' => true], 'The WebGUI must retry immediately but derive the upgrade target from OS metadata, not a posted kernel');
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
-    'csrf_token' => 'wrong', 'uvm_action' => 'upgrade-check',
+    'csrf_token' => 'wrong', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'upgrade-check',
 ]]);
 ui_check(ui_actions($rendered) === ['status'], 'Upgrade checks must require native CSRF validation');
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
-    'csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-download', 'download_driver' => '580.159.03',
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-download', 'download_driver' => '580.159.03',
 ]]);
 ui_check($rendered['calls'][0]['payload'] === ['driver' => '580.159.03'], 'Download version selection must be an explicit per-request override');
 
-$upload = ['csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-upload-begin',
+$upload = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-upload-begin',
     'filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz', 'total' => '200'];
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $upload,
     'responses' => ['source-upload-begin' => ['upload_id' => str_repeat('a', 32), 'offset' => 0, 'max_chunk_size' => 1048576]]]);
 ui_check(ui_actions($rendered) === ['source-upload-begin'], 'Upload AJAX must avoid repeatedly rendering status and profiles');
 ui_check(str_contains($rendered['html'], 'id="uvm-upload-result"') && str_contains($rendered['html'], '"ok":true'), 'Upload result must be readable inside the Unraid HTML wrapper');
 ui_check($rendered['calls'][0]['payload']['total'] === 200, 'Upload total must be validated then passed as integer');
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $upload, 'gateway_strip_csrf' => true]);
+ui_check(ui_actions($rendered) === ['source-upload-begin'] && str_contains($rendered['html'], '"ok":true'), 'Uploads must also survive the native gateway consuming csrf_token');
 $upload['csrf_token'] = 'bad';
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $upload]);
 ui_check(ui_actions($rendered) === [] && str_contains($rendered['html'], '"ok":false'), 'Upload CSRF failure must not invoke any backend action');
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
-    'csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-upload-chunk', 'upload_id' => str_repeat('a', 32), 'offset' => '0',
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-upload-chunk', 'upload_id' => str_repeat('a', 32), 'offset' => '0',
 ], 'files' => ['chunk' => ['error' => UPLOAD_ERR_OK, 'tmp_name' => '/tmp/phpNotAnHTTPUpload']]]);
 ui_check(ui_actions($rendered) === [] && str_contains($rendered['html'], '"ok":false'), 'A forged filesystem path must fail is_uploaded_file before reaching the backend');
 
 // Keep the security boundary visible in regression tests, without exercising it
 // against /usr/bin/php or any Unraid service on the development machine.
 ui_check(str_contains($page, "proc_open(['/usr/bin/php', \$entrypoint, \$action]"), 'Page must use argv proc_open for the single CLI boundary');
-ui_check(str_contains($page, 'hash_equals($expected, uvm_post(\'csrf_token\'))'), 'Page must explicitly validate native CSRF token');
+ui_check(str_contains($page, 'hash_equals($expected, uvm_post(\'uvm_csrf_token\'))'), 'Page must explicitly validate its CSRF mirror against the native expected value');
+ui_check(str_contains($page, 'hash_equals($expected, uvm_post(\'csrf_token\'))'), 'A retained native CSRF field must still be validated');
+ui_check(substr_count($page, "data.append('uvm_csrf_token', csrf)") === 2, 'Both AJAX uploads and cancellation beacons must send the mirror token');
 $forbidden = ['shell_exec', 'system', 'exec', 'passthru', 'file_put_contents', 'unlink', 'mkdir', 'rmdir'];
 foreach ($forbidden as $function) ui_check(preg_match('/\b' . preg_quote($function, '/') . '\s*\(/i', $page) !== 1, 'Page must not directly execute commands or write files: ' . $function);
 $start = strpos($page, 'function uvm_cli(');

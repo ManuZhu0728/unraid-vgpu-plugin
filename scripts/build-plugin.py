@@ -44,6 +44,7 @@ Automatic GitHub/GitLab source detection and kernel-matched driver downloads.
 Local TXZ import with chunked uploads and optional MD5 verification.
 Simplified settings and status page.
 Unraid upgrade preparation and verified boot-time driver installation.
+Fix form and upload validation after Unraid consumes the native CSRF field.
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -122,7 +123,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.02.5")
+    parser.add_argument("--version", default="2026.11.02.6")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

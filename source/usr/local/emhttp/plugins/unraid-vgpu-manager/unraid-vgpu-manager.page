@@ -161,8 +161,11 @@ function uvm_origin_authority(string $url): string
 
 function uvm_check_post(string $expected): void
 {
-    if ($expected === '' || !hash_equals($expected, uvm_post('csrf_token'))) {
-        throw new RuntimeException('Unraid CSRF validation failed. Reload this page and sign in again if necessary.');
+    // emhttp may consume csrf_token after its gateway check. Keep a separate
+    // plugin field so this check works both before and after that processing.
+    if ($expected === '' || !hash_equals($expected, uvm_post('uvm_csrf_token')) ||
+        (array_key_exists('csrf_token', $_POST) && !hash_equals($expected, uvm_post('csrf_token')))) {
+        throw new RuntimeException('页面校验失败，请重新打开插件设置页后再试。');
     }
     $fetchSite = strtolower((string)($_SERVER['HTTP_SEC_FETCH_SITE'] ?? ''));
     if (in_array($fetchSite, ['cross-site', 'same-site'], true)) throw new RuntimeException('Cross-origin requests are not allowed.');
@@ -180,6 +183,7 @@ function uvm_form_hidden(string $action, string $csrf, array $fields = []): void
 {
     echo '<input type="hidden" name="uvm_action" value="' . uvm_h($action) . '">';
     echo '<input type="hidden" name="csrf_token" value="' . uvm_h($csrf) . '">';
+    echo '<input type="hidden" name="uvm_csrf_token" value="' . uvm_h($csrf) . '">';
     foreach ($fields as $name => $value) echo '<input type="hidden" name="' . uvm_h($name) . '" value="' . uvm_h($value) . '">';
 }
 
@@ -621,6 +625,7 @@ $uvm_new_uuid = substr($uvm_uuid_hex, 0, 8) . '-' . substr($uvm_uuid_hex, 8, 4) 
     const data = new FormData();
     data.append('uvm_action', 'source-upload-cancel');
     data.append('csrf_token', csrf);
+    data.append('uvm_csrf_token', csrf);
     data.append('upload_id', activeUploadId);
     navigator.sendBeacon(window.location.href.split('#')[0], data);
   });
@@ -633,6 +638,7 @@ $uvm_new_uuid = substr($uvm_uuid_hex, 0, 8) . '-' . substr($uvm_uuid_hex, 8, 4) 
     const data = new FormData();
     data.append('uvm_action', action);
     data.append('csrf_token', csrf);
+    data.append('uvm_csrf_token', csrf);
     Object.entries(fields).forEach(function (entry) { data.append(entry[0], String(entry[1])); });
     if (chunk) data.append('chunk', chunk, 'chunk.bin');
     const controller = new AbortController();

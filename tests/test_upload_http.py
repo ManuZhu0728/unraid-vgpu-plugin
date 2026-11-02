@@ -34,9 +34,10 @@ function uvm_cli(string $action, array $payload = []): array {
     if ($action === 'status') return ['settings' => \Vgpu\Store::defaults(), 'devices' => [], 'runtime' => []];
     if ($action === 'source-upload-chunk') {
         return ['action' => $action, 'offset' => $payload['offset'] + filesize($payload['path']),
-            'http_uploaded' => is_uploaded_file($payload['path'])];
+            'http_uploaded' => is_uploaded_file($payload['path']), 'native_csrf_present' => array_key_exists('csrf_token', $_POST)];
     }
-    return ['action' => $action, 'payload' => $payload, 'upload_id' => str_repeat('a', 32), 'offset' => 0, 'max_chunk_size' => 1048576];
+    return ['action' => $action, 'payload' => $payload, 'upload_id' => str_repeat('a', 32), 'offset' => 0, 'max_chunk_size' => 1048576,
+        'native_csrf_present' => array_key_exists('csrf_token', $_POST)];
 }
 function uvm_profile_scan(): array { return []; }
 function uvm_read(string $path, int $limit = 65536): string { return ''; }
@@ -46,6 +47,14 @@ foreach (['uvm_cli', 'uvm_profile_scan', 'uvm_read'] as $function) {
 }
 $var = ['csrf_token' => 'http-upload-fixture-csrf'];
 echo '<!doctype html><main data-unraid-wrapper="fixture">';
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+    // Model Unraid's native gateway: validate its field, then consume it before PHP.
+    if (!is_string($_POST['csrf_token'] ?? null) || !hash_equals($var['csrf_token'], $_POST['csrf_token'])) {
+        echo '<script type="application/json" id="uvm-upload-result">{"ok":false,"error":"Native gateway CSRF rejected"}</script></main>';
+        exit;
+    }
+    unset($_POST['csrf_token']);
+}
 eval('?>' . $page);
 echo '</main>';
 '''
@@ -77,7 +86,7 @@ echo '</main>';
         cls.process.wait(timeout=5)
         cls.temporary.cleanup()
 
-    def post(self, fields, chunk=None):
+    def post(self, fields, chunk=None, origin=None):
         boundary = "upload-fixture-multipart-boundary"
         body = bytearray()
         for key, value in fields.items():
@@ -89,7 +98,7 @@ echo '</main>';
         body.extend(f"--{boundary}--\r\n".encode())
         request = urllib.request.Request(self.url, data=bytes(body), headers={
             "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Origin": self.origin,
+            "Origin": self.origin if origin is None else origin,
             "Sec-Fetch-Site": "same-origin",
         })
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -100,14 +109,16 @@ echo '</main>';
         return json.loads(match.group(1))
 
     def test_begin_finish_and_cancel_survive_an_html_page_wrapper(self):
-        begun = self.post({"uvm_action": "source-upload-begin", "csrf_token": "http-upload-fixture-csrf",
+        begun = self.post({"uvm_action": "source-upload-begin", "csrf_token": "http-upload-fixture-csrf", "uvm_csrf_token": "http-upload-fixture-csrf",
             "filename": "nvidia-595.58.03-6.18.58-Unraid-1.txz", "total": "123"})
         self.assertTrue(begun["ok"])
         self.assertEqual(begun["data"]["payload"]["total"], 123)
+        self.assertFalse(begun["data"]["native_csrf_present"])
         for action in ("source-upload-finish", "source-upload-cancel"):
-            result = self.post({"uvm_action": action, "csrf_token": "http-upload-fixture-csrf", "upload_id": "a" * 32})
+            result = self.post({"uvm_action": action, "csrf_token": "http-upload-fixture-csrf", "uvm_csrf_token": "http-upload-fixture-csrf", "upload_id": "a" * 32})
             self.assertTrue(result["ok"])
             self.assertEqual(result["data"]["action"], action)
+            self.assertFalse(result["data"]["native_csrf_present"])
 
     def test_browser_chunk_size_respects_php_upload_limits(self):
         with urllib.request.urlopen(self.url, timeout=10) as response:
@@ -116,18 +127,35 @@ echo '</main>';
 
     def test_real_multipart_file_passes_php_uploaded_file_boundary(self):
         chunk = b"real multipart fixture\x00" * 16384
-        result = self.post({"uvm_action": "source-upload-chunk", "csrf_token": "http-upload-fixture-csrf",
+        result = self.post({"uvm_action": "source-upload-chunk", "csrf_token": "http-upload-fixture-csrf", "uvm_csrf_token": "http-upload-fixture-csrf",
             "upload_id": "a" * 32, "offset": "7"}, chunk)
         self.assertTrue(result["ok"])
         self.assertTrue(result["data"]["http_uploaded"])
+        self.assertFalse(result["data"]["native_csrf_present"])
         self.assertEqual(result["data"]["offset"], 7 + len(chunk))
 
     def test_forged_path_and_bad_csrf_are_rejected_before_backend(self):
         for change in ({"path": "/tmp/phpForged"}, {"csrf_token": "wrong"}):
-            result = self.post({"uvm_action": "source-upload-chunk", "csrf_token": "http-upload-fixture-csrf",
+            result = self.post({"uvm_action": "source-upload-chunk", "csrf_token": "http-upload-fixture-csrf", "uvm_csrf_token": "http-upload-fixture-csrf",
                 "upload_id": "a" * 32, "offset": "0", **change})
             self.assertFalse(result["ok"])
             self.assertNotIn("data", result)
+
+    def test_plugin_mirror_is_required_after_native_gateway_validation(self):
+        native = {"uvm_action": "source-upload-begin", "csrf_token": "http-upload-fixture-csrf",
+            "filename": "nvidia-595.58.03-6.18.58-Unraid-1.txz", "total": "123"}
+        for extra in ({}, {"uvm_csrf_token": "wrong"}, {"uvm_csrf_token[]": "bad"}):
+            with self.subTest(extra=extra):
+                result = self.post({**native, **extra})
+                self.assertFalse(result["ok"])
+                self.assertNotIn("data", result)
+
+    def test_cross_origin_still_fails_after_gateway_consumes_native_token(self):
+        result = self.post({"uvm_action": "source-upload-begin", "csrf_token": "http-upload-fixture-csrf",
+            "uvm_csrf_token": "http-upload-fixture-csrf", "filename": "nvidia-595.58.03-6.18.58-Unraid-1.txz", "total": "123"},
+            origin="https://attacker.example.test")
+        self.assertFalse(result["ok"])
+        self.assertNotIn("data", result)
 
 
 if __name__ == "__main__":

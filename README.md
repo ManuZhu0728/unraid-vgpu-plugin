@@ -68,7 +68,7 @@ nvidia-595.58.03-6.18.58-Unraid-1.txz
 
 ```bash
 bash tests/run-tests.sh
-python3 scripts/build-plugin.py --version 2026.11.02.5
+python3 scripts/build-plugin.py --version 2026.11.02.6
 ```
 
 更多内容：[开发文档](docs/DEVELOPMENT.md) · [下载源格式](docs/DRIVER-SOURCES.md) ·

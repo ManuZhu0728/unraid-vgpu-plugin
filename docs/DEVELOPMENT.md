@@ -28,19 +28,19 @@ bash tests/run-tests.sh
 ## 离线预览包
 
 ```bash
-python3 scripts/build-plugin.py --version 2026.11.02.5
+python3 scripts/build-plugin.py --version 2026.11.02.6
 ```
 
-产物在 `dist/2026.11.02.5/`：插件 TXZ、MD5、自包含离线 `offline/unraid-vgpu-manager.plg`。
+产物在 `dist/2026.11.02.6/`：插件 TXZ、MD5、自包含离线 `offline/unraid-vgpu-manager.plg`。
 离线定义内嵌同一 TXZ；在线定义从公开 Release 下载插件包。
 
 生成常规 URL 安装器，地址仅用于插件自身：
 
 ```bash
 python3 scripts/build-plugin.py \
-  --version 2026.11.02.5 \
+  --version 2026.11.02.6 \
   --output dist/public-preview \
-  --public-base https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.02.5-alpha.3 \
+  --public-base https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.02.6-alpha.4 \
   --update-url https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg
 ```
 
@@ -80,6 +80,9 @@ status/plan 只读，其余加锁。
 上传请求通过本页 POST 和原生 CSRF 校验。PHP 确认分块来自 HTTP 上传后传给 CLI，
 CLI 校验临时路径和所有者，再写入独立上传会话。每块最多 1 MiB，总量最多 2 GiB。
 页面从 Unraid 外层 HTML 中提取带标识的 JSON 结果；导入完成以 GET 导航更新页面。
+
+表单和上传同时发送原生 `csrf_token` 与插件字段 `uvm_csrf_token`。Unraid 网关可在校验后
+移除原生字段，页面仍核对插件字段；若原生字段仍在，两者都必须匹配。HTTP 测试模拟网关消费字段。
 
 ## 生产部署前
 
