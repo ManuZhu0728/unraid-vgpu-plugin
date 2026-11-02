@@ -3,7 +3,9 @@ name: Test and publish plugin
 on:
   push:
     branches: [main]
-    paths: ['.github/release.json']
+    paths:
+      - '.github/release.json'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:

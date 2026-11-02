@@ -28,7 +28,7 @@
 
 目标为 `ManuZhu0728/unraid-vgpu-plugin`。公开 Alpha 使用固定 raw/main PLG 更新入口，
 附件为在线 PLG、插件 TXZ 和 MD5，不包含 NVIDIA 驱动或凭据。
-main 的发布清单变化触发测试；只有测试通过才发布，并匿名核对远端附件字节。
+main 的发布清单或工作流变化触发测试；只有测试通过才发布，并匿名核对远端附件字节。
 实际发布状态见仓库 Releases/Actions；代码推送到附件上传完成前可能短暂返回 404。
 
 ## 构建记录

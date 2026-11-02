@@ -52,7 +52,7 @@ python3 scripts/build-plugin.py \
 
 1. 更新 `.github/release.json` 的版本、tag 和 prerelease，并准备同名 `docs/releases/TAG.md`。
 2. 按上述方法构建，把生成的在线 PLG 同步到根目录 `unraid-vgpu-manager.plg`；不得放离线版。
-3. 本地测试、审核并提交；推送 main 的 release.json 变化触发 GitHub Actions。
+3. 本地测试、审核并提交；推送 main 的 release.json 或发布工作流变化触发 GitHub Actions。
 4. 测试成功后使用仓库级 `GITHUB_TOKEN` 发布三个附件：在线 PLG、插件 TXZ、MD5。
    不读取用户 token、不发布 NVIDIA 驱动、不上传本地预览目录。
 
