@@ -1,8 +1,14 @@
 # 本地验证记录（2026-11-02）
 
-## Alpha 3 本地改动
+## Alpha 3
 
-分支：`codex/plugin-download-ux`。版本：`2026.11.02.5`，尚未发布。
+开发分支：`codex/plugin-download-ux`，已合并到 `main`。版本：`2026.11.02.5`。
+
+- [Alpha 3](https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/tag/v2026.11.02.5-alpha.3)
+  已公开发布，tag 绑定 `68dc0b1c54333e19101b9136bbff5f852874e124`。
+- [自动工作流](https://github.com/ManuZhu0728/unraid-vgpu-plugin/actions/runs/41445250659)
+  的 test、release 均成功；附件为 PLG、插件 TXZ、MD5。
+- 保持原 raw/main 更新入口，旧 Alpha 1 可以检查新版。
 
 - 新增“跟随 Unraid 更新驱动”：缓存当前内核、预下载目标内核、通知准备结果。
 - 开机安装器核对缓存、内核和驱动分支，安装成功后恢复宿主 GPU 或 vGPU。
