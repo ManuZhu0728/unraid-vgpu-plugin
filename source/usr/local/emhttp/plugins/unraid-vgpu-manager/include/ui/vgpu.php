@@ -2,7 +2,87 @@
 $uvm_runtime_snapshot = is_array($uvm_runtime['runtime'] ?? null) ? $uvm_runtime['runtime'] : [];
 $uvm_mdevs_known = ($uvm_runtime_snapshot['checks']['mdevs_known'] ?? false) === true;
 $uvm_active_mdevs = is_array($uvm_runtime_snapshot['active_mdevs'] ?? null) ? $uvm_runtime_snapshot['active_mdevs'] : [];
+$uvm_inventory = is_array($uvm_status['device_inventory'] ?? null) ? $uvm_status['device_inventory'] : [];
+$uvm_inventory_rows = is_array($uvm_inventory['devices'] ?? null) ? $uvm_inventory['devices'] : [];
+$uvm_inventory_checks = is_array($uvm_inventory['checks'] ?? null) ? $uvm_inventory['checks'] : ['active_known' => $uvm_mdevs_known, 'defined_known' => false];
+$uvm_inventory_messages = is_array($uvm_inventory['messages'] ?? null) ? $uvm_inventory['messages'] : [];
+// Older backend responses still expose saved configurations; keep their controls usable.
+if (!$uvm_inventory) {
+    foreach ($uvm_devices as $device) {
+        if (!is_array($device)) continue;
+        $actual = $uvm_active_mdevs[$device['uuid'] ?? ''] ?? null;
+        $uvm_inventory_rows[] = $device + [
+            'active' => is_array($actual) ? true : ($uvm_mdevs_known ? false : null),
+            'defined' => null, 'managed' => true, 'configuration' => $device,
+            'active_type' => is_array($actual) ? ($actual['type'] ?? '') : '',
+            'defined_type' => '', 'configured_type' => $device['type'] ?? '',
+        ];
+    }
+}
 ?>
+<section class="uvm-panel">
+  <h2>已有 vGPU 设备</h2>
+  <?php if (!$uvm_inventory_rows): ?>
+  <p class="uvm-muted"><?=!empty($uvm_inventory_checks['active_known']) && !empty($uvm_inventory_checks['defined_known']) ? '未发现 vGPU 设备。' : '设备列表暂不完整。'?></p>
+  <?php else: ?>
+  <div class="uvm-scroll"><table id="uvm-inventory-table"><thead><tr><th>UUID / VM XML</th><th>type</th><th>配置名称 / 显存</th><th>物理 GPU / PCI</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody>
+  <?php foreach ($uvm_inventory_rows as $device):
+    if (!is_array($device)) continue;
+    $uuid = (string)($device['uuid'] ?? '');
+    $pci = (string)($device['pci'] ?? '');
+    $validUuid = preg_match('/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iD', $uuid) === 1;
+    $configuration = is_array($device['configuration'] ?? null) ? $device['configuration'] : null;
+    $managed = !empty($device['managed']) && $configuration !== null;
+    $active = is_bool($device['active'] ?? null) ? $device['active'] : null;
+    $defined = is_bool($device['defined'] ?? null) ? $device['defined'] : null;
+    $statusLabel = $active === true ? '已创建' : ($active === false ? ($defined === true ? '已定义，未创建' : '未创建') : '状态未知');
+    $typeVersions = array_values(array_unique(array_filter([
+        $device['active_type'] ?? '', $device['defined_type'] ?? '', $device['configured_type'] ?? '',
+    ], static fn($value) => is_string($value) && $value !== '')));
+    $identityDiffers = count($typeVersions) > 1 || ($active === true && ($device['active_type'] ?? '') === '' && $typeVersions) || ($configuration !== null && ($device['profile'] ?? '') !== '' && ($configuration['profile'] ?? '') !== ($device['profile'] ?? ''));
+    $activeTypeLabel = $active === true ? (($device['active_type'] ?? '') ?: '未知') : ($active === false ? '未创建' : '未知');
+    $definedTypeLabel = $defined === true ? (($device['defined_type'] ?? '') ?: '未知') : ($defined === false ? '无' : '未知');
+    $xml = "<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci' display='off' ramfb='off'>\n  <source>\n    <address uuid='" . $uuid . "'/>\n  </source>\n</hostdev>";
+  ?>
+    <tr data-uuid="<?=uvm_h($uuid)?>" data-pci="<?=uvm_h($pci)?>" data-device-source="<?=$managed ? 'plugin' : 'system'?>">
+      <td><code><?=uvm_h($uuid)?></code><?php if ($validUuid): ?><details><summary>VM XML</summary><pre class="uvm-vm-xml"><?=uvm_h($xml)?></pre><button type="button" class="uvm-copy-xml">复制 XML</button></details><?php endif; ?></td>
+      <td><code><?=uvm_h(($device['type'] ?? '') ?: '未知')?></code><?php if ($identityDiffers): ?><details><summary>配置差异</summary><p>当前设备：<code><?=uvm_h($activeTypeLabel)?></code><br>系统定义：<code><?=uvm_h($definedTypeLabel)?></code><br>插件保存：<code><?=uvm_h(($device['configured_type'] ?? '') ?: '无')?></code><?php if ($configuration !== null): ?><br>插件配置：<?=uvm_h($configuration['profile'] ?? '')?><?php endif; ?></p></details><?php endif; ?></td>
+      <td><?=uvm_h(($device['profile'] ?? '') ?: '未知')?><?php if (($device['framebuffer'] ?? '') !== ''): ?><br><span class="uvm-muted"><?=uvm_h($device['framebuffer'])?></span><?php endif; ?></td>
+      <td><code><?=uvm_h($pci)?></code><?php if (($device['iommu_group'] ?? null) !== null): ?><br><span class="uvm-muted">IOMMU <?=uvm_h($device['iommu_group'])?></span><?php endif; ?></td>
+      <td><?=$statusLabel?><?php if ($defined === true): ?><br><span class="uvm-muted">系统定义 · <?=($device['definition_start'] ?? '') === 'auto' ? '自动启动' : (($device['definition_start'] ?? '') === 'manual' ? '手动启动' : '启动方式未知')?></span><?php elseif ($defined === null): ?><br><span class="uvm-muted">系统定义未知</span><?php endif; ?></td>
+      <td><?=$managed ? '插件配置' : '系统设备'?></td>
+      <td><?php if ($managed): ?><div class="uvm-actions" style="margin-top:0">
+        <button type="button" class="uvm-edit-device" data-device="<?=uvm_h(uvm_json($configuration))?>" <?=!$uvm_controls ? 'disabled' : ''?>>编辑</button>
+        <?php foreach (['device-start' => '启动', 'device-stop' => '停止', 'device-remove' => '移除'] as $action => $label): ?>
+        <form method="post" class="uvm-submit-form" <?=in_array($action, ['device-stop', 'device-remove'], true) ? 'data-confirm="请确认使用此设备的虚拟机已关闭。继续？"' : ''?>><?php uvm_form_hidden($action, $uvm_csrf, ['uuid' => $uuid]); ?><button type="submit" <?=!$uvm_controls || !$validUuid || $active === null || ($action === 'device-start' && ($active === true || empty($uvm_runtime_settings['enabled']))) || ($action === 'device-stop' && $active !== true) ? 'disabled' : ''?>><?=uvm_h($label)?></button></form>
+        <?php endforeach; ?>
+      </div><?php else: ?><span class="uvm-muted">—</span><?php endif; ?></td>
+    </tr>
+  <?php endforeach; ?>
+  </tbody></table></div>
+  <?php endif; ?>
+  <?php foreach ($uvm_inventory_messages as $inventoryMessage): if (is_string($inventoryMessage) && $inventoryMessage !== ''): ?><p class="uvm-muted"><?=uvm_h($inventoryMessage)?></p><?php endif; endforeach; ?>
+
+  <details class="uvm-advanced" id="uvm-device-editor" <?=$uvm_action === 'device-save' ? 'open' : ''?>>
+    <summary id="uvm-device-editor-title">添加设备</summary>
+    <form method="post" class="uvm-submit-form" id="uvm-device-form">
+      <?php uvm_form_hidden('device-save', $uvm_csrf); ?>
+      <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
+      <div class="uvm-grid" style="margin-top:14px">
+        <label class="uvm-field"><span>mdev UUID</span><input name="uuid" id="uvm-device-uuid" type="text" maxlength="36" required pattern="[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" value="<?=uvm_h($uvm_new_uuid)?>"><small>使用虚拟机 XML 中的 UUID，或生成新的 UUID。</small></label>
+        <label class="uvm-field"><span>物理 GPU</span><select name="pci" id="uvm-device-pci" required><option value="">选择 GPU</option><?php foreach ($uvm_gpus as $pci => $gpu): ?><option value="<?=uvm_h($pci)?>"><?=uvm_h($pci . ' · NVIDIA ' . $gpu['device'])?></option><?php endforeach; ?></select></label>
+        <label class="uvm-field"><span>配置名称</span><input name="profile" id="uvm-device-profile" type="text" maxlength="128" required readonly placeholder="在下表选择配置"></label>
+        <label class="uvm-field"><span>mdev 类型</span><input name="type" id="uvm-device-type" type="text" maxlength="32" readonly placeholder="nvidia-…"><small>按当前驱动自动匹配。</small></label>
+      </div>
+      <div class="uvm-scroll"><table><thead><tr><th>选择</th><th>配置名称</th><th>类型</th><th>显存</th><th>显示头</th><th>最大分辨率</th><th>FRL</th><th>可用 / 上限</th></tr></thead><tbody id="uvm-profile-body"><tr><td colspan="8">选择 GPU 后显示可用配置。</td></tr></tbody></table></div>
+      <p class="uvm-muted">可用数量由驱动报告，实际分配受物理显存限制。</p>
+      <?php if (!$uvm_gpus): ?><div class="uvm-note">未发现 NVIDIA 显卡，请检查驱动。</div><?php endif; ?>
+      <div class="uvm-actions"><button type="submit">保存设备</button><button type="button" id="uvm-new-device">生成 UUID</button></div>
+      </fieldset>
+    </form>
+  </details>
+</section>
+
 <section class="uvm-panel">
   <h2>开机管理</h2>
   <form method="post" class="uvm-submit-form" id="uvm-runtime-form" autocomplete="off">
@@ -24,49 +104,6 @@ $uvm_active_mdevs = is_array($uvm_runtime_snapshot['active_mdevs'] ?? null) ? $u
   </form>
 </section>
 
-<section class="uvm-panel">
-  <h2>vGPU 设备</h2>
-  <?php if (!$uvm_devices): ?><p class="uvm-muted">尚未添加设备。</p><?php else: ?>
-  <div class="uvm-scroll"><table><thead><tr><th>UUID / VM XML</th><th>GPU / 配置</th><th>状态</th><th>操作</th></tr></thead><tbody>
-  <?php foreach ($uvm_devices as $device):
-    if (!is_array($device)) continue;
-    $uuid = (string)($device['uuid'] ?? '');
-    $validUuid = preg_match('/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/D', $uuid) === 1;
-    $active = $validUuid && ($uvm_mdevs_known ? isset($uvm_active_mdevs[$uuid]) : is_dir('/sys/bus/mdev/devices/' . $uuid));
-    $xml = "<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci' display='off' ramfb='off'>\n  <source>\n    <address uuid='" . $uuid . "'/>\n  </source>\n</hostdev>";
-  ?>
-    <tr><td><code><?=uvm_h($uuid)?></code><?php if ($validUuid): ?><details><summary>VM XML</summary><pre class="uvm-vm-xml"><?=uvm_h($xml)?></pre><button type="button" class="uvm-copy-xml">复制 XML</button></details><?php endif; ?></td>
-      <td><code><?=uvm_h($device['pci'] ?? '')?></code><br><?=uvm_h($device['profile'] ?? '')?><br><code><?=uvm_h($device['type'] ?? '')?></code></td>
-      <td><?=$active ? '已创建' : '未创建'?></td>
-      <td><div class="uvm-actions" style="margin-top:0">
-        <button type="button" class="uvm-edit-device" data-device="<?=uvm_h(uvm_json($device))?>" <?=!$uvm_controls ? 'disabled' : ''?>>编辑</button>
-        <?php foreach (['device-start' => '启动', 'device-stop' => '停止', 'device-remove' => '移除'] as $action => $label): ?>
-        <form method="post" class="uvm-submit-form" <?=in_array($action, ['device-stop', 'device-remove'], true) ? 'data-confirm="请确认使用此设备的虚拟机已关闭。继续？"' : ''?>><?php uvm_form_hidden($action, $uvm_csrf, ['uuid' => $uuid]); ?><button type="submit" <?=!$uvm_controls || !$validUuid || ($action === 'device-start' && ($active || empty($uvm_runtime_settings['enabled']))) || ($action === 'device-stop' && !$active) ? 'disabled' : ''?>><?=uvm_h($label)?></button></form>
-        <?php endforeach; ?>
-      </div></td>
-    </tr>
-  <?php endforeach; ?>
-  </tbody></table></div><?php endif; ?>
-
-  <details class="uvm-advanced" id="uvm-device-editor" <?=$uvm_action === 'device-save' ? 'open' : ''?>>
-    <summary id="uvm-device-editor-title">添加设备</summary>
-    <form method="post" class="uvm-submit-form" id="uvm-device-form">
-      <?php uvm_form_hidden('device-save', $uvm_csrf); ?>
-      <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
-      <div class="uvm-grid" style="margin-top:14px">
-        <label class="uvm-field"><span>mdev UUID</span><input name="uuid" id="uvm-device-uuid" type="text" maxlength="36" required pattern="[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" value="<?=uvm_h($uvm_new_uuid)?>"><small>使用虚拟机 XML 中的 UUID，或生成新的 UUID。</small></label>
-        <label class="uvm-field"><span>物理 GPU</span><select name="pci" id="uvm-device-pci" required><option value="">选择 GPU</option><?php foreach ($uvm_gpus as $pci => $gpu): ?><option value="<?=uvm_h($pci)?>"><?=uvm_h($pci . ' · NVIDIA ' . $gpu['device'])?></option><?php endforeach; ?></select></label>
-        <label class="uvm-field"><span>配置名称</span><input name="profile" id="uvm-device-profile" type="text" maxlength="128" required readonly placeholder="在下表选择配置"></label>
-        <label class="uvm-field"><span>mdev 类型</span><input name="type" id="uvm-device-type" type="text" maxlength="32" readonly placeholder="nvidia-…"><small>按当前驱动自动匹配。</small></label>
-      </div>
-      <div class="uvm-scroll"><table><thead><tr><th>选择</th><th>配置名称</th><th>类型</th><th>显存</th><th>显示头</th><th>最大分辨率</th><th>FRL</th><th>可用 / 上限</th></tr></thead><tbody id="uvm-profile-body"><tr><td colspan="8">选择 GPU 后显示可用配置。</td></tr></tbody></table></div>
-      <p class="uvm-muted">可用数量由驱动报告，实际分配受物理显存限制。</p>
-      <?php if (!$uvm_gpus): ?><div class="uvm-note">未发现 NVIDIA 显卡，请检查驱动。</div><?php endif; ?>
-      <div class="uvm-actions"><button type="submit">保存设备</button><button type="button" id="uvm-new-device">生成 UUID</button></div>
-      </fieldset>
-    </form>
-  </details>
-</section>
 
 <script>
 (function () {

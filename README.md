@@ -53,6 +53,10 @@ nvidia-595.58.03-6.18.58-Unraid-1.txz
 
 ## vGPU 管理
 
+打开“vGPU 管理”，顶部“已有 vGPU 设备”会汇总宿主机活动设备、mdevctl 已定义设备和插件保存的配置。
+表格直接显示 UUID、type、配置名称、显存、PCI、状态与来源；旧脚本创建的设备也能查看。
+未启动的系统定义同样保留在列表中。只有本插件保存的设备提供编辑、启动、停止和移除操作。
+
 在“vGPU 管理”中展开“添加设备”，选择显卡和配置，并将设备 UUID 写入虚拟机 XML。
 UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置与 vGPU 启动设置分别保存。
 使用原插件或 User Scripts 的用户，先完成启动入口迁移，再开启“开机管理 vGPU”。
@@ -83,7 +87,7 @@ UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置�
 
 ```bash
 bash tests/run-tests.sh
-python3 scripts/build-plugin.py --version 2026.11.03.1
+python3 scripts/build-plugin.py --version 2026.11.03.2
 ```
 
 更多内容：[开发文档](docs/DEVELOPMENT.md) · [下载源格式](docs/DRIVER-SOURCES.md) ·

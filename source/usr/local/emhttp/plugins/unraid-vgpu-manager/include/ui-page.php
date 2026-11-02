@@ -4,6 +4,11 @@ if (!in_array($uvm_tab ?? '', ['driver', 'vgpu', 'status'], true)) return;
 require_once __DIR__ . '/ui/common.php';
 if (!isset($uvm_request_initialized)) require __DIR__ . '/ui/state.php';
 if ($uvm_upload_request) return;
+$uvm_summary_inventory = is_array($uvm_status['device_inventory'] ?? null) ? $uvm_status['device_inventory'] : null;
+$uvm_summary_active_known = $uvm_summary_inventory !== null ? ($uvm_summary_inventory['checks']['active_known'] ?? false) === true : !empty($uvm_snapshot['checks']['mdevs_known']);
+$uvm_summary_active_count = $uvm_summary_inventory !== null
+    ? count(array_filter($uvm_summary_inventory['devices'] ?? [], static fn($device) => is_array($device) && ($device['active'] ?? null) === true))
+    : count($uvm_snapshot['active_mdevs'] ?? []);
 if ($uvm_tab === 'status' && !isset($uvm_logs)) {
     $category = $_GET['log_category'] ?? 'plugin';
     if (!is_string($category) || !in_array($category, ['plugin', 'vgpu', 'kernel'], true)) $category = 'plugin';
@@ -62,7 +67,7 @@ $uvm_ui_assets_rendered = true;
     <span>GPU：<?=uvm_h(implode('、', $uvm_gpu_labels) ?: '未检测到')?></span>
     <span>驱动：<code><?=uvm_h(($uvm_snapshot['loaded_driver'] ?? '') ?: (uvm_read('/sys/module/nvidia/version') ?: '未加载'))?></code></span>
     <span>内核：<code><?=uvm_h(($uvm_snapshot['kernel'] ?? '') ?: php_uname('r'))?></code></span>
-    <span>vGPU：<?=!empty($uvm_snapshot['checks']['mdevs_known']) ? count($uvm_snapshot['active_mdevs'] ?? []) . ' 个已创建' : '状态未知'?></span>
+    <span>vGPU：<?=$uvm_summary_active_known ? $uvm_summary_active_count . ' 个已创建' : '状态未知'?></span>
   </div>
   <?php if ($uvm_error !== '' && ($uvm_action === '' || $uvm_request_tab === $uvm_tab)): ?><div class="uvm-note uvm-error" role="alert"><?=uvm_h($uvm_error)?></div><?php endif; ?>
   <?php if ($uvm_message !== '' && $uvm_request_tab === $uvm_tab): ?><div class="uvm-note uvm-success" role="status"><?=uvm_h($uvm_message)?></div><?php endif; ?>

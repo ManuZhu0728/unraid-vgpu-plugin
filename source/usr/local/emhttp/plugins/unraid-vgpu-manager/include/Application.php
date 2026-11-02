@@ -36,6 +36,7 @@ final class Application
         $credentials = $this->store->credentials();
         $devices = $this->store->devices();
         $override = $this->store->paths->configDir . '/profile_override.toml';
+        $runtime = $this->runtime->status($settings, $devices);
         return [
             'settings' => $settings, 'devices' => $devices,
             'credential_configured' => ($credentials['token'] ?? '') !== '' && ($credentials['source_id'] ?? '') === Store::sourceIdentity($settings['source']),
@@ -43,7 +44,8 @@ final class Application
             'credential_username' => $credentials['username'] ?? '',
             'pending_restart' => $settings['pending_restart'],
             'override_content' => is_file($override) ? (string)file_get_contents($override) : '',
-            'runtime' => $this->runtime->status($settings, $devices),
+            'runtime' => $runtime,
+            'device_inventory' => (new Inventory($this->store->paths))->read($devices, $runtime['runtime'] ?? []),
             'upgrade' => (new Upgrade($this->store, $this->download, $this->runner))->status(),
             'driver_installation' => (new Installer($this->store, $this->download, $this->runtime, $this->runner))->state(),
             'warning' => 'Driver caches contain privileged installation scripts. Only use repositories you trust. Flash-drive backups may contain download credentials.',

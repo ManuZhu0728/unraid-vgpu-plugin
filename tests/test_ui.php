@@ -91,6 +91,34 @@ function ui_panel(array $rendered, string $tab): string
     return $rendered['panels'][$tab];
 }
 
+function ui_inventory_fixture(array $base, array $rows, array $checks = ['active_known' => true, 'defined_known' => true], array $messages = []): array
+{
+    $base['status']['device_inventory'] = ['devices' => $rows, 'checks' => $checks, 'messages' => $messages];
+    $base['status']['devices'] = array_values(array_filter(array_map(static fn($row) => $row['configuration'] ?? null, $rows), 'is_array'));
+    $base['status']['runtime']['runtime']['checks'] = ['processes_known' => true, 'mdevs_known' => $checks['active_known']];
+    $base['status']['runtime']['runtime']['active_mdevs'] = [];
+    foreach ($rows as $row) {
+        if (($row['active'] ?? false) === true) {
+            $base['status']['runtime']['runtime']['active_mdevs'][$row['uuid']] = ['pci' => $row['pci'], 'type' => $row['active_type'], 'group' => $row['iommu_group']];
+        }
+    }
+    return $base;
+}
+
+function ui_inventory_table(array $rendered): string
+{
+    $matched = preg_match('~<table\b(?=[^>]*\bid="uvm-inventory-table")[^>]*>.*?</table>~s', ui_panel($rendered, 'vgpu'), $table);
+    ui_check($matched === 1, 'Discovered devices must be rendered in the dedicated inventory table');
+    return $table[0];
+}
+
+function ui_inventory_row(string $table, string $uuid, string $pci): string
+{
+    $pattern = '~<tr\b(?=[^>]*\bdata-uuid="' . preg_quote($uuid, '~') . '")(?=[^>]*\bdata-pci="' . preg_quote($pci, '~') . '")[^>]*>.*?</tr>~s';
+    ui_check(preg_match($pattern, $table, $row) === 1, 'Inventory must retain each PCI + UUID identity: ' . $pci . ' / ' . $uuid);
+    return $row[0];
+}
+
 $defaults = Store::defaults();
 $status = [
     'settings' => $defaults, 'devices' => [], 'credential_configured' => false,
@@ -266,6 +294,94 @@ foreach (['', 'unknown'] as $section) {
 }
 
 $deviceInput = ['uuid' => 'ae9572f6-1259-4136-9aa4-497dda98d2db', 'pci' => '0000:01:00.0', 'profile' => 'NVIDIA RTXA5500-1Q', 'type' => 'nvidia-762'];
+$externalActive = $deviceInput + [
+    'framebuffer' => '1024M', 'active' => true, 'defined' => true, 'managed' => false, 'configuration' => null,
+    'active_type' => 'nvidia-762', 'defined_type' => 'nvidia-762', 'configured_type' => '',
+    'definition_start' => 'manual', 'iommu_group' => '27',
+];
+$inventory = ui_inventory_fixture($base, [$externalActive]);
+$rendered = ui_render($inventory);
+$table = ui_inventory_table($rendered);
+$row = ui_inventory_row($table, $deviceInput['uuid'], $deviceInput['pci']);
+ui_check(ui_actions($rendered) === ['status', 'logs'], 'Viewing external inventory must only read local status and logs, never save, import or start devices');
+ui_check($inventory['status']['devices'] === [], 'The external-device fixture must have no plugin-saved devices');
+foreach (['UUID', 'type', 'PCI'] as $label) ui_check(str_contains($table, $label), 'Inventory must label ' . $label . ' directly');
+foreach ([$deviceInput['uuid'], $deviceInput['pci'], 'nvidia-762', 'NVIDIA RTXA5500-1Q', '1024M', '已创建'] as $value) ui_check(str_contains($row, $value), 'External active inventory must show ' . $value);
+ui_check(str_contains($row, 'data-device-source="system"') && str_contains($row, '系统设备'), 'External devices must be identified as system devices rather than plugin-owned');
+ui_check(str_contains($row, '手动启动') && str_contains($row, 'IOMMU 27'), 'Device details must expose the retained definition mode and IOMMU group');
+ui_check(!str_contains($row, '<form') && !str_contains($row, 'uvm-edit-device'), 'External devices must not get edit/start/stop/remove mutation controls');
+ui_check(str_contains($row, '复制 XML'), 'An external valid UUID must still provide its VM XML for viewing/copying');
+$inventoryPanel = ui_panel($rendered, 'vgpu');
+ui_check(strpos($inventoryPanel, '已有 vGPU 设备') < strpos($inventoryPanel, '开机管理'), 'Existing devices must be visible before boot configuration');
+
+$mixedSnapshot = $inventory;
+$mixedSnapshot['status']['runtime']['runtime']['active_mdevs']['5cf14a12-a437-4c82-a13f-70e945782d7b'] = [
+    'pci' => '0000:00:02.0', 'type' => 'i915-GVTg_V4_4', 'group' => '28',
+];
+$rendered = ui_render($mixedSnapshot);
+foreach (['driver', 'vgpu', 'status'] as $tab) {
+    ui_check(preg_match('~<div\b[^>]*aria-label="GPU 概览"[^>]*>.*?</div>~s', ui_panel($rendered, $tab), $overview) === 1, 'Every native tab must retain its overview strip');
+    ui_check(str_contains($overview[0], 'vGPU：1 个已创建') && !str_contains($overview[0], 'vGPU：2 个已创建'), 'Overview must count the NVIDIA inventory rather than unrelated Intel mdevs in the raw snapshot');
+}
+$mixedSnapshot['status']['device_inventory']['checks']['active_known'] = false;
+$rendered = ui_render($mixedSnapshot);
+foreach (['driver', 'vgpu', 'status'] as $tab) {
+    ui_check(preg_match('~<div\b[^>]*aria-label="GPU 概览"[^>]*>.*?</div>~s', ui_panel($rendered, $tab), $overview) === 1 && str_contains($overview[0], 'vGPU：状态未知'), 'An unknown inventory read must keep every overview unknown despite a readable raw snapshot');
+    ui_check(!str_contains($overview[0], 'vGPU：0 个已创建'), 'Unknown inventory must not be presented as a known zero-device count');
+}
+
+$externalDefined = array_replace($externalActive, [
+    'uuid' => '868bfe06-47c1-40a3-82df-ffd518be72d3', 'type' => 'nvidia-763',
+    'profile' => 'NVIDIA RTXA5500-2Q', 'framebuffer' => '2048M', 'active' => false,
+    'active_type' => '', 'defined_type' => 'nvidia-763', 'definition_start' => 'auto', 'iommu_group' => null,
+]);
+$rendered = ui_render(ui_inventory_fixture($base, [$externalDefined]));
+$row = ui_inventory_row(ui_inventory_table($rendered), $externalDefined['uuid'], $externalDefined['pci']);
+ui_check(str_contains($row, '已定义，未创建') && str_contains($row, 'nvidia-763') && str_contains($row, 'NVIDIA RTXA5500-2Q'), 'Inactive persistent definitions must remain visible with their actual type and profile');
+ui_check(str_contains($row, '自动启动'), 'Persistent definition startup policy must be visible even while inactive');
+ui_check(!str_contains($row, '<form') && !str_contains($row, 'uvm-edit-device'), 'An inactive external definition must not become managed just by being displayed');
+
+$otherParent = array_replace($externalDefined, ['uuid' => $deviceInput['uuid'], 'pci' => '0000:02:00.0']);
+$rendered = ui_render(ui_inventory_fixture($base, [$externalActive, $otherParent]));
+$table = ui_inventory_table($rendered);
+ui_inventory_row($table, $deviceInput['uuid'], $deviceInput['pci']);
+ui_inventory_row($table, $deviceInput['uuid'], $otherParent['pci']);
+ui_check(substr_count($table, 'data-uuid="' . $deviceInput['uuid'] . '"') === 2, 'The same UUID under two parents must not be silently collapsed into one inventory row');
+
+$managedRow = array_replace($externalActive, [
+    'type' => 'nvidia-999', 'active_type' => 'nvidia-999', 'defined_type' => 'nvidia-999',
+    'managed' => true, 'configuration' => $deviceInput, 'configured_type' => $deviceInput['type'],
+]);
+$managedFixture = ui_inventory_fixture($base, [$managedRow]);
+$managedFixture['status']['settings']['runtime']['enabled'] = true;
+$rendered = ui_render($managedFixture);
+$row = ui_inventory_row(ui_inventory_table($rendered), $managedRow['uuid'], $managedRow['pci']);
+ui_check(str_contains($row, 'nvidia-999') && str_contains($row, 'nvidia-762'), 'Inventory must expose actual and configured identities when their types differ');
+ui_check(str_contains($row, 'data-device-source="plugin"') && str_contains($row, '插件配置'), 'Plugin-saved rows must retain their managed source label');
+ui_check(preg_match('/\bdata-device="([^"]+)"/', $row, $encodedDevice) === 1, 'Managed rows must retain an explicit edit payload');
+$editDevice = json_decode(html_entity_decode($encodedDevice[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'), true, 32, JSON_THROW_ON_ERROR);
+ui_check($editDevice === $deviceInput, 'Editing a managed row must use the original saved configuration, not overwrite it with observed host identity');
+foreach (['device-start', 'device-stop', 'device-remove'] as $action) ui_check(str_contains($row, 'value="' . $action . '"'), 'Managed rows must retain the existing ' . $action . ' action');
+ui_check(ui_actions($rendered) === ['status', 'logs'], 'Rendering a managed inventory discrepancy must not repair or rewrite it');
+
+$unknownRow = array_replace($externalActive, ['active' => null, 'defined' => null, 'active_type' => '', 'defined_type' => '']);
+$rendered = ui_render(ui_inventory_fixture($base, [$unknownRow], ['active_known' => false, 'defined_known' => false], ['设备定义读取失败。']));
+$row = ui_inventory_row(ui_inventory_table($rendered), $unknownRow['uuid'], $unknownRow['pci']);
+ui_check(str_contains($row, '状态未知') && str_contains($row, '系统定义未知'), 'Unknown reads must not be presented as stopped or undefined');
+ui_check(str_contains(ui_panel($rendered, 'vgpu'), '设备定义读取失败。'), 'Partial inventory failures must be shown without discarding known rows');
+$rendered = ui_render(ui_inventory_fixture($base, [], ['active_known' => false, 'defined_known' => false], ['设备列表读取失败。']));
+ui_check(str_contains(ui_panel($rendered, 'vgpu'), '设备列表暂不完整') && !str_contains(ui_panel($rendered, 'vgpu'), '未发现 vGPU 设备'), 'An unreadable empty inventory must not claim that the host has no vGPU devices');
+$rendered = ui_render(ui_inventory_fixture($base, []));
+ui_check(str_contains(ui_panel($rendered, 'vgpu'), '未发现 vGPU 设备'), 'An empty inventory may report no devices only after both sources were read successfully');
+
+$inventoryAttack = '<img src=x onerror="alert(7)"></script><script>alert(8)</script>';
+$unsafeConfiguration = array_replace($deviceInput, ['profile' => $inventoryAttack]);
+$unsafeRow = array_replace($managedRow, ['profile' => $inventoryAttack, 'framebuffer' => $inventoryAttack, 'definition_start' => $inventoryAttack, 'configured_type' => $inventoryAttack, 'configuration' => $unsafeConfiguration]);
+$rendered = ui_render(ui_inventory_fixture($base, [$unsafeRow], ['active_known' => true, 'defined_known' => true], [$inventoryAttack]));
+ui_check(!str_contains($rendered['html'], $inventoryAttack) && str_contains(ui_panel($rendered, 'vgpu'), '&lt;img'), 'Inventory metadata, messages and identity details must be escaped');
+preg_match_all('/\bid="([^"]+)"/', $rendered['html'], $inventoryIds);
+ui_check(count($inventoryIds[1]) === count(array_unique($inventoryIds[1])), 'Merged device inventory must not introduce duplicate IDs across the three native tab bodies');
+
 foreach (['device-save', 'device-start', 'device-stop', 'device-remove'] as $action) {
     $post = array_replace($config, $deviceInput, ['uvm_tab' => 'vgpu', 'uvm_action' => $action]);
     $rendered = ui_render($base + ['tab' => 'vgpu', 'server' => ['REQUEST_METHOD' => 'POST'], 'post' => $post]);

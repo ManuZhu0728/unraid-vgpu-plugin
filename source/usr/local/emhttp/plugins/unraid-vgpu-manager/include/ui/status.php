@@ -5,6 +5,10 @@ $uvm_mdev_known = !empty($uvm_state['checks']['mdevs_known']);
 $uvm_manager_pids = is_array($uvm_state['manager_pids'] ?? null) ? $uvm_state['manager_pids'] : [];
 $uvm_vgpud_pids = is_array($uvm_state['vgpud_pids'] ?? null) ? $uvm_state['vgpud_pids'] : [];
 $uvm_owners = is_array($uvm_state['legacy_owners'] ?? null) ? $uvm_state['legacy_owners'] : [];
+$uvm_status_inventory = is_array($uvm_status['device_inventory'] ?? null) ? $uvm_status['device_inventory'] : [];
+$uvm_status_inventory_rows = is_array($uvm_status_inventory['devices'] ?? null) ? $uvm_status_inventory['devices'] : [];
+$uvm_status_active_count = count(array_filter($uvm_status_inventory_rows, static fn($device) => is_array($device) && ($device['active'] ?? null) === true));
+$uvm_status_defined_count = count(array_filter($uvm_status_inventory_rows, static fn($device) => is_array($device) && ($device['defined'] ?? null) === true));
 $uvm_log_categories = ['plugin' => '插件升级助手', 'vgpu' => 'vGPU 管理器', 'kernel' => 'NVIDIA 内核'];
 $uvm_log_category = $uvm_logs['category'] ?? 'plugin';
 if (!is_string($uvm_log_category) || !isset($uvm_log_categories[$uvm_log_category])) $uvm_log_category = 'plugin';
@@ -20,7 +24,7 @@ $uvm_install_labels = ['installed' => '已完成', 'already_active' => '驱动�
       <tr><td>nvidia-vgpu-mgr</td><td><?=!$uvm_process_known ? '读取失败' : ($uvm_manager_pids ? '运行中 · PID ' . uvm_h(implode(', ', $uvm_manager_pids)) : '未运行')?></td></tr>
       <tr><td>nvidia-vgpud</td><td><?=!$uvm_process_known ? '读取失败' : ($uvm_vgpud_pids ? '运行中 · PID ' . uvm_h(implode(', ', $uvm_vgpud_pids)) : '当前无常驻进程')?></td></tr>
       <tr><td>vGPU 配置列表</td><td><?=!empty($uvm_state['profiles_present']) ? '可用' : '未发现'?></td></tr>
-      <tr><td>mdev 设备</td><td><?=$uvm_mdev_known ? count($uvm_state['active_mdevs'] ?? []) . ' 个活动设备' : '读取失败'?> · <?=count($uvm_devices)?> 个已保存配置</td></tr>
+      <tr><td>vGPU 设备</td><td><?php if ($uvm_status_inventory): ?><?=!empty($uvm_status_inventory['checks']['active_known']) ? $uvm_status_active_count . ' 个已创建' : '活动设备读取不完整'?> · <?=!empty($uvm_status_inventory['checks']['defined_known']) ? $uvm_status_defined_count . ' 个系统定义' : '系统定义读取不完整'?><?php else: ?><?=$uvm_mdev_known ? count($uvm_state['active_mdevs'] ?? []) . ' 个活动设备' : '读取失败'?><?php endif; ?> · <?=count($uvm_devices)?> 个插件配置<br><span class="uvm-muted">UUID、type 等详情见“vGPU 管理”。</span></td></tr>
       <tr><td>宿主机 CUDA 参数</td><td><code><?=uvm_h(($uvm_state['host_cuda_parameter'] ?? '') !== '' ? $uvm_state['host_cuda_parameter'] : '未知')?></code></td></tr>
     </tbody>
   </table></div>
@@ -36,6 +40,7 @@ $uvm_install_labels = ['installed' => '已完成', 'already_active' => '驱动�
   <ul><?php foreach ($uvm_owners as $owner): ?><li><code><?=uvm_h($owner)?></code></li><?php endforeach; ?></ul>
   <?php else: ?><p class="uvm-muted">未检测到重复的 vGPU 启动入口。</p><?php endif; ?>
   <details><summary>运行详情</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_runtime), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
+  <?php if ($uvm_status_inventory): ?><details><summary>设备清单详情</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_status_inventory), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details><?php endif; ?>
 </section>
 
 <script>

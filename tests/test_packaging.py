@@ -25,7 +25,7 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue(all(name.startswith('usr/local/emhttp/plugins/unraid-vgpu-manager/') for name in names))
                 self.assertFalse(any('novidio-vgpu-driver/' in name or 'credentials.json' in name for name in names))
                 self.assertTrue(all(member.uid == 0 and member.gid == 0 for member in archive.getmembers()))
-                for component in ['include/Upgrade.php', 'include/Installer.php', 'include/upgrade-watch.php', 'scripts/upgrade-helper', 'include/Logs.php', 'include/ui-page.php', 'include/ui/common.php', 'include/ui/state.php', 'include/ui/driver.php', 'include/ui/vgpu.php', 'include/ui/status.php']:
+                for component in ['include/Upgrade.php', 'include/Installer.php', 'include/upgrade-watch.php', 'scripts/upgrade-helper', 'include/Logs.php', 'include/Inventory.php', 'include/ui-page.php', 'include/ui/common.php', 'include/ui/state.php', 'include/ui/driver.php', 'include/ui/vgpu.php', 'include/ui/status.php']:
                     self.assertIn('usr/local/emhttp/plugins/unraid-vgpu-manager/' + component, names)
                 prefix = 'usr/local/emhttp/plugins/unraid-vgpu-manager/'
                 parent = archive.extractfile(prefix + 'unraid-vgpu-manager.page').read().decode()

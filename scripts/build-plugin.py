@@ -40,6 +40,7 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
+Show existing vGPU devices, persistent definitions and saved configurations together.
 Fix native tab PHP entrypoints being displayed as text.
 Automatic GitHub/GitLab source detection and kernel-matched driver downloads.
 Local TXZ import with chunked uploads and optional MD5 verification.
@@ -82,7 +83,7 @@ def build(version, output, public_base=None, update_url=None):
         "unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page",
         "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page",
         "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php",
-        "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php",
+        "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php",
         "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php",
         "include/Store.php", "include/Runtime.php", "include/Download.php",
         "include/Source.php", "include/Upload.php", "include/Upgrade.php",
@@ -133,7 +134,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.03.1")
+    parser.add_argument("--version", default="2026.11.03.2")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)
