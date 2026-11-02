@@ -175,4 +175,3 @@ $uvm_driver_mode = ($_GET['driver_mode'] ?? '') === 'local' ? 'local' : 'online'
 $uvm_snapshot = is_array($uvm_runtime['runtime'] ?? null) ? $uvm_runtime['runtime'] : [];
 $uvm_gpu_labels = [];
 foreach ($uvm_gpus as $pci => $gpu) $uvm_gpu_labels[] = ($gpu['name'] ?? '') ?: 'NVIDIA ' . ($gpu['device'] ?? $pci);
-

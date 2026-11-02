@@ -5,4 +5,3 @@ Tag="icon-desktop"
 <?php
 $uvm_tab = 'vgpu';
 require '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/ui-page.php';
-

@@ -5,4 +5,3 @@ Tag="icon-list-alt"
 <?php
 $uvm_tab = 'status';
 require '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/ui-page.php';
-

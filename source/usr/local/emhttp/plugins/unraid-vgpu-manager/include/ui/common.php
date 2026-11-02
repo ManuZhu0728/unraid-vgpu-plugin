@@ -216,5 +216,3 @@ function uvm_profile_scan(): array
     }
     return $gpus;
 }
-
-
