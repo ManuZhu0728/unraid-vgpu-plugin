@@ -26,9 +26,10 @@
 
 ## 公开发布状态
 
-目标为 `ManuZhu0728/unraid-vgpu-plugin`。Alpha 安装定义、附件和发布工作流已在本地
-准备；首次写入被当前 GitHub 连接以 HTTP 403 拒绝，尚未推送或创建 Release。
-需要补齐仓库代码和工作流写入权限后继续；固定安装链接在成功发布前不可用。
+目标为 `ManuZhu0728/unraid-vgpu-plugin`。公开 Alpha 使用固定 raw/main PLG 更新入口，
+附件为在线 PLG、插件 TXZ 和 MD5，不包含 NVIDIA 驱动或凭据。
+main 的发布清单变化触发测试；只有测试通过才发布，并匿名核对远端附件字节。
+实际发布状态见仓库 Releases/Actions；代码推送到附件上传完成前可能短暂返回 404。
 
 ## 构建记录
 
