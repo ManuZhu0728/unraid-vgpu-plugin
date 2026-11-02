@@ -40,9 +40,10 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-Public plugin UI with configurable GitHub/GitLab driver sources.
-Driver downloads only populate a verified cache. No hot driver installation.
-Runtime management defaults OFF. Migrate old startup owners before enabling it.
+Automatic GitHub/GitLab source detection and kernel-matched driver downloads.
+Local TXZ import with chunked uploads and optional MD5 verification.
+Simplified settings and status page.
+Unraid upgrade preparation and verified boot-time driver installation.
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -54,9 +55,13 @@ Runtime management defaults OFF. Migrate old startup owners before enabling it.
 if ! /usr/local/emhttp/plugins/{PLUGIN}/scripts/rc.vgpu boot </dev/null; then
   echo "{PLUGIN}: UI installed; runtime needs configuration or maintenance. Existing services were not taken over."
 fi
+/bin/bash /usr/local/emhttp/plugins/{PLUGIN}/scripts/upgrade-helper start
 ]]></INLINE></FILE>
 <FILE Run="/bin/bash" Method="remove"><INLINE><![CDATA[
 # Do not kill GPU clients, undefine mdevs or remove driver packages on uninstall.
+if [ -f /usr/local/emhttp/plugins/{PLUGIN}/scripts/upgrade-helper ]; then
+  /bin/bash /usr/local/emhttp/plugins/{PLUGIN}/scripts/upgrade-helper stop
+fi
 if pgrep -x nvidia-vgpu-mgr >/dev/null 2>&1; then
   echo "The NVIDIA manager remains running. Plan a maintenance reboot before using another runtime owner."
 fi
@@ -71,7 +76,7 @@ def build(version, output, public_base=None, update_url=None):
     if not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d+", version):
         raise ValueError("Plugin version must be YYYY.MM.DD.N")
     source = ROOT / "source" / PREFIX
-    required = ["unraid-vgpu-manager.page", "scripts/rc.vgpu", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/Download.php"]
+    required = ["unraid-vgpu-manager.page", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]
     for name in required:
         if not (source / name).is_file():
             raise ValueError(f"Missing component: {name}")
@@ -111,13 +116,13 @@ def build(version, output, public_base=None, update_url=None):
         (output / f"{PLUGIN}.plg").write_text(definition(version, filename, md5, public_base=public_base, update_url=update_url))
     print(f"Plugin package: {package}")
     print(f"Offline installer: {offline}")
-    print("Preview only: not published, not installed; runtime disabled by default.")
+    print("Plugin build complete.")
     return package, offline
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.02.3")
+    parser.add_argument("--version", default="2026.11.02.5")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

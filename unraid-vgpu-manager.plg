@@ -1,13 +1,14 @@
 <?xml version="1.0" standalone="yes"?>
-<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.02.3" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
+<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.02.5" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
 <CHANGES>
-Public plugin UI with configurable GitHub/GitLab driver sources.
-Driver downloads only populate a verified cache. No hot driver installation.
-Runtime management defaults OFF. Migrate old startup owners before enabling it.
+Automatic GitHub/GitLab source detection and kernel-matched driver downloads.
+Local TXZ import with chunked uploads and optional MD5 verification.
+Simplified settings and status page.
+Unraid upgrade preparation and verified boot-time driver installation.
 </CHANGES>
-<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.02.3-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
-<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.02.3-alpha.1/unraid-vgpu-manager-2026.11.02.3-noarch-1.txz</URL>
-<MD5>05a0e331681e41131228cfd92b40370d</MD5>
+<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.02.5-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
+<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.02.5-alpha.3/unraid-vgpu-manager-2026.11.02.5-noarch-1.txz</URL>
+<MD5>f848f0ce16bf44c7f937bd84892726eb</MD5>
 </FILE>
 <FILE Run="/bin/bash"><INLINE><![CDATA[
 # Installation must succeed without a repository, token or NVIDIA package.
@@ -15,9 +16,13 @@ Runtime management defaults OFF. Migrate old startup owners before enabling it.
 if ! /usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/rc.vgpu boot </dev/null; then
   echo "unraid-vgpu-manager: UI installed; runtime needs configuration or maintenance. Existing services were not taken over."
 fi
+/bin/bash /usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper start
 ]]></INLINE></FILE>
 <FILE Run="/bin/bash" Method="remove"><INLINE><![CDATA[
 # Do not kill GPU clients, undefine mdevs or remove driver packages on uninstall.
+if [ -f /usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper ]; then
+  /bin/bash /usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper stop
+fi
 if pgrep -x nvidia-vgpu-mgr >/dev/null 2>&1; then
   echo "The NVIDIA manager remains running. Plan a maintenance reboot before using another runtime owner."
 fi

@@ -25,6 +25,8 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue(all(name.startswith('usr/local/emhttp/plugins/unraid-vgpu-manager/') for name in names))
                 self.assertFalse(any('novidio-vgpu-driver/' in name or 'credentials.json' in name for name in names))
                 self.assertTrue(all(member.uid == 0 and member.gid == 0 for member in archive.getmembers()))
+                for component in ['include/Upgrade.php', 'include/Installer.php', 'include/upgrade-watch.php', 'scripts/upgrade-helper']:
+                    self.assertIn('usr/local/emhttp/plugins/unraid-vgpu-manager/' + component, names)
             xml = ET.parse(installer).getroot()
             entry = xml.find('FILE')
             self.assertEqual(entry.attrib['Type'], 'base64')
@@ -35,6 +37,10 @@ class PackagingTests(unittest.TestCase):
             self.assertNotIn('download.sh', script)
             self.assertNotIn('killall', script)
             self.assertNotIn('modprobe -r', script)
+            self.assertIn('scripts/upgrade-helper start', script)
+            self.assertIn('scripts/upgrade-helper stop', script)
+            self.assertLess(script.index('scripts/rc.vgpu boot'), script.index('scripts/upgrade-helper start'))
+            self.assertNotIn('/usr/bin/plugin_update_helper', script)
 
     def test_public_installer_requires_explicit_credential_free_public_urls(self):
         with tempfile.TemporaryDirectory(prefix='vgpu-package-test-') as temporary:

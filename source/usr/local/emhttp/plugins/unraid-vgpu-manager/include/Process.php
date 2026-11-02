@@ -8,7 +8,7 @@ final class Process
 {
     public function __invoke(array $argv, int $timeout = 15, ?string $stdin = null): array
     {
-        if (!$argv || $timeout < 1 || $timeout > 1800) {
+        if (!$argv || $timeout < 1 || $timeout > 3600) {
             throw new \InvalidArgumentException('Invalid command or timeout');
         }
         foreach ($argv as $argument) {

@@ -21,11 +21,15 @@ try {
     $effectiveUid = function_exists('posix_geteuid') ? posix_geteuid() : null;
     if ($effectiveUid === null && preg_match('/^Uid:\s+\d+\s+(\d+)/m', (string)file_get_contents('/proc/self/status'), $uid)) $effectiveUid = (int)$uid[1];
     if ($effectiveUid !== 0) throw new RuntimeException('Run the backend as root through the Unraid WebGUI or CLI');
-    $payloadActions = ['config-save', 'device-save', 'device-start', 'device-stop', 'device-remove'];
-    if (in_array($action, $payloadActions, true) && function_exists('stream_isatty') && stream_isatty(STDIN)) {
+    $payloadActions = ['config-save', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'device-save', 'device-start', 'device-stop', 'device-remove'];
+    $stdinIsTty = function_exists('stream_isatty') && stream_isatty(STDIN);
+    if (in_array($action, $payloadActions, true) && $stdinIsTty) {
         throw new InvalidArgumentException('This operation requires a JSON request on stdin');
     }
-    $raw = in_array($action, $payloadActions, true) ? stream_get_contents(STDIN, 131073) : '';
+    // A plain interactive source-download keeps its saved version. Web requests
+    // may supply an explicit driver over stdin without changing saved settings.
+    $readPayload = in_array($action, $payloadActions, true) || (in_array($action, ['source-download', 'upgrade-check'], true) && !$stdinIsTty);
+    $raw = $readPayload ? stream_get_contents(STDIN, 131073) : '';
     if (strlen($raw) > 131072) throw new InvalidArgumentException('Request is too large');
     $input = trim($raw) === '' ? [] : json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
     if (!is_array($input)) throw new InvalidArgumentException('Request must be a JSON object');

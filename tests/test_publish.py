@@ -82,7 +82,7 @@ class PublishTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         (self.root / "scripts/build-plugin.py").write_bytes((ROOT / "scripts/build-plugin.py").read_bytes())
         source = self.root / "source/usr/local/emhttp/plugins/unraid-vgpu-manager"
-        for name in ["unraid-vgpu-manager.page", "scripts/rc.vgpu", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/Download.php"]:
+        for name in ["unraid-vgpu-manager.page", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]:
             path = source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("passive packaging fixture\n")

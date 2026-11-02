@@ -12,6 +12,9 @@ else
     exit 1
 fi
 export PHP_BIN="$PHP"
+for script in "$ROOT/source/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/"*; do
+    bash -n "$script"
+done
 while IFS= read -r -d '' file; do
     "$PHP" -n -l "$file" >/dev/null
 done < <(find "$ROOT/source/usr/local/emhttp/plugins/unraid-vgpu-manager" -type f \( -name '*.php' -o -name '*.page' \) -print0)

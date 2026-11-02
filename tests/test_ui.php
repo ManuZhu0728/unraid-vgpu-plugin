@@ -40,6 +40,7 @@ if (($argv[1] ?? '') === '--render-fixture') {
     ], $ui_fixture['server'] ?? []);
     foreach ($_SERVER as $key => $value) if ($value === null) unset($_SERVER[$key]);
     $_POST = $ui_fixture['post'] ?? [];
+    $_FILES = $ui_fixture['files'] ?? [];
     ob_start();
     eval('?>' . $page);
     $html = ob_get_clean();
@@ -86,10 +87,14 @@ $config += [
 
 $rendered = ui_render($base);
 ui_check(ui_actions($rendered) === ['status'], 'GET must only call status; no automatic network, import or ensure');
-ui_check(str_contains($rendered['html'], 'unraid-vgpu-manager') && str_contains($rendered['html'], 'GitHub / GitLab'), 'UI must distinguish independent public plugin and optional source');
+ui_check(str_contains($rendered['html'], 'uvm-source-url') && str_contains($rendered['html'], 'GitHub / GitLab'), 'UI must offer a repository or release URL as the primary input');
 ui_check(str_contains($rendered['html'], 'name="credential_token"') && preg_match('/name="credential_token"[^>]*value=""/', $rendered['html']) === 1, 'Token must render as an empty password field');
-ui_check(str_contains($rendered['html'], 'deploy-token 不能枚举 Releases'), 'GitLab deploy-token limitation must be visible');
-ui_check(str_contains($rendered['html'], '不热安装') && str_contains($rendered['html'], '仅下载到缓存'), 'UI must not promise hot install');
+ui_check(str_contains($rendered['html'], '<summary>高级设置</summary>') && str_contains($rendered['html'], '下载到缓存'), 'Protocol options must be folded into advanced settings');
+ui_check(str_contains($rendered['html'], '跟随 Unraid 更新驱动') && str_contains($rendered['html'], '下次开机安装'), 'UI must expose opt-in OS-following preparation and boot installation');
+ui_check(!str_contains($rendered['html'], '不等于完整 GPU 验收') && !str_contains($rendered['html'], '不执行 ensure'), 'Status copy must not repeat implementation caveats');
+ui_check(str_contains($rendered['html'], 'uvm-upload-package') && str_contains($rendered['html'], 'source-upload-chunk'), 'Local package upload must be exposed');
+ui_check(str_contains($rendered['html'], 'window.location.replace(') && !str_contains($rendered['html'], 'window.location.reload('), 'Upload completion must navigate with GET rather than replaying an earlier POST');
+ui_check(str_contains($rendered['html'], 'name="upgrade_enabled"') && str_contains($rendered['html'], '<h2>系统升级</h2>'), 'OS following must have one setting and a preparation status panel');
 
 $attack = '<img src=x onerror="alert(1)"></script><script>alert(2)</script>';
 $xss = $base;
@@ -158,6 +163,58 @@ $rendered = ui_render($base + [
 ]);
 ui_check(str_contains($rendered['html'], 'Download failed [redacted] &lt;script&gt;'), 'Backend errors must escape markup and redact recognized token formats');
 ui_check(!str_contains($rendered['html'], 'glpat-UIFIXTURETOKEN') && !str_contains($rendered['html'], '驱动包下载操作已完成'), 'Failed download must not leak token or claim success');
+
+// The basic form needs a link and, for private repositories, one token input.
+$simple = array_replace($config, [
+    'source_url' => 'https://git.example.test/group/driver', 'source_simple' => '1',
+    'credential_change' => 'auto', 'credential_type' => 'auto',
+    'credential_token' => 'ui-auto-fixture-token', 'source_connect' => '1',
+]);
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $simple,
+    'responses' => ['source-versions' => ['versions' => [['driver' => '595.58.03', 'kernel' => '6.18.58-Unraid', 'filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz']]]]]);
+ui_check(ui_actions($rendered) === ['config-save', 'source-versions', 'status'], 'Find drivers must explicitly save the two-field form before lookup');
+ui_check($rendered['calls'][0]['payload']['source']['url'] === $simple['source_url'], 'Basic URL must reach the source resolver');
+ui_check($rendered['calls'][0]['payload']['credential']['type'] === 'auto', 'Basic token must use automatic authentication');
+ui_check(!str_contains($rendered['html'], 'ui-auto-fixture-token'), 'Auto token must not be echoed');
+$simple['credential_token'] = '';
+$simple['source_connect'] = '0';
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $simple]);
+ui_check(!isset($rendered['calls'][0]['payload']['credential']), 'Blank basic token must preserve saved credentials');
+$simple['source_url'] = '';
+$simple['source_repository'] = 'https://old.example.test/group/driver';
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $simple]);
+ui_check($rendered['calls'][0]['payload']['source']['repository'] === '', 'Clearing the basic URL must not restore a hidden stale repository');
+$simple['upgrade_enabled'] = '1';
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $simple]);
+ui_check($rendered['calls'][0]['payload']['upgrade'] === ['enabled' => true], 'Upgrade following must be an explicit saved boolean');
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'upgrade-check', 'target_kernel' => '1.2.3-Unraid',
+], 'responses' => ['upgrade-check' => ['ok' => true, 'status' => 'ready']]]);
+ui_check(ui_actions($rendered) === ['upgrade-check', 'status'], 'Checking preparation must not run boot, installation or save an unrelated form');
+ui_check($rendered['calls'][0]['payload'] === ['force' => true], 'The WebGUI must retry immediately but derive the upgrade target from OS metadata, not a posted kernel');
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
+    'csrf_token' => 'wrong', 'uvm_action' => 'upgrade-check',
+]]);
+ui_check(ui_actions($rendered) === ['status'], 'Upgrade checks must require native CSRF validation');
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-download', 'download_driver' => '580.159.03',
+]]);
+ui_check($rendered['calls'][0]['payload'] === ['driver' => '580.159.03'], 'Download version selection must be an explicit per-request override');
+
+$upload = ['csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-upload-begin',
+    'filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz', 'total' => '200'];
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $upload,
+    'responses' => ['source-upload-begin' => ['upload_id' => str_repeat('a', 32), 'offset' => 0, 'max_chunk_size' => 1048576]]]);
+ui_check(ui_actions($rendered) === ['source-upload-begin'], 'Upload AJAX must avoid repeatedly rendering status and profiles');
+ui_check(str_contains($rendered['html'], 'id="uvm-upload-result"') && str_contains($rendered['html'], '"ok":true'), 'Upload result must be readable inside the Unraid HTML wrapper');
+ui_check($rendered['calls'][0]['payload']['total'] === 200, 'Upload total must be validated then passed as integer');
+$upload['csrf_token'] = 'bad';
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $upload]);
+ui_check(ui_actions($rendered) === [] && str_contains($rendered['html'], '"ok":false'), 'Upload CSRF failure must not invoke any backend action');
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'source-upload-chunk', 'upload_id' => str_repeat('a', 32), 'offset' => '0',
+], 'files' => ['chunk' => ['error' => UPLOAD_ERR_OK, 'tmp_name' => '/tmp/phpNotAnHTTPUpload']]]);
+ui_check(ui_actions($rendered) === [] && str_contains($rendered['html'], '"ok":false'), 'A forged filesystem path must fail is_uploaded_file before reaching the backend');
 
 // Keep the security boundary visible in regression tests, without exercising it
 // against /usr/bin/php or any Unraid service on the development machine.

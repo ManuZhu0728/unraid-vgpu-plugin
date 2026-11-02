@@ -93,6 +93,22 @@ final class DownloadFixture
         return implode("\n", array_map(static fn(string $name): string => '-rw-r--r-- 0/0 1 2026-11-02 10:00:00 ' . $name, $files)) . "\n";
     }
 
+    public function automatic(bool $kernelRelease = true): string
+    {
+        $kernelUrl = str_replace('v6.18.58-595.58.03', '6.18.58-Unraid', $this->releaseUrl);
+        $release = json_decode($this->routes[$this->releaseUrl]['body'], true);
+        $release['tag_name'] = '6.18.58-Unraid';
+        $this->routes[$kernelUrl] = $kernelRelease
+            ? ['body' => json_encode($release), 'type' => 'application/json']
+            : ['status' => 404];
+        $this->source['url'] = $this->source['repository'];
+        $this->source['provider'] = 'auto';
+        $this->source['mode'] = 'auto';
+        $this->source['driver'] = '';
+        $this->credentials['type'] = 'auto';
+        return $kernelUrl;
+    }
+
     public function run(array $argv, int $timeout = 15, ?string $stdin = null): array
     {
         $this->calls[] = ['argv' => $argv, 'stdin' => $stdin, 'timeout' => $timeout];
@@ -112,6 +128,7 @@ final class DownloadFixture
                 download_check(isset($this->routes[$url]), 'Unexpected HTTP request');
                 $route = $this->routes[$url];
             }
+            if (is_callable($route)) $route = $route((string)$stdin);
             $target = $argv[array_search('--output', $argv, true) + 1];
             file_put_contents($target, $route['body'] ?? 'redirect');
             return ['code' => $route['code'] ?? 0, 'stdout' => ($route['status'] ?? 200) . "\n" .
@@ -317,6 +334,142 @@ try {
         $page2 = str_replace('&page=1', '&page=2', $f->listUrl);
         $f->routes[$page2] = ['body' => '[' . $f->routes[$f->releaseUrl]['body'] . ']', 'type' => 'application/json'];
         download_check(count($f->download->versions($f->source, $f->credentials, '6.18.58')['versions']) === 1, 'Page two not discovered');
+    });
+    $case('Repository links automatically use kernel releases on both platforms', function () use ($fixture): void {
+        foreach (['github', 'gitlab'] as $provider) {
+            $f = $fixture($provider); $kernelUrl = $f->automatic();
+            $versions = $f->download->versions($f->source, $f->credentials, '6.18.58')['versions'];
+            download_check(count($versions) === 1 && $versions[0]['tag'] === '6.18.58-Unraid', 'Kernel release was not used');
+            download_check(str_contains($f->calls[0]['stdin'], $kernelUrl), 'Automatic lookup should target the running kernel directly');
+            $f->download->fetch($f->source, $f->credentials, '6.18.58');
+            foreach ($f->calls as $call) if ($call['argv'][0] === 'curl') download_check(
+                str_contains($call['stdin'], $provider === 'github' ? 'Authorization: Bearer fixture-secret' : 'PRIVATE-TOKEN: fixture-secret'), 'Automatic token header mismatch');
+        }
+    });
+    $case('Missing kernel tag discovers the old versioned release layout', function () use ($fixture): void {
+        foreach (['github', 'gitlab'] as $provider) {
+            $f = $fixture($provider); $f->automatic(false);
+            $result = $f->download->fetch($f->source, $f->credentials, '6.18.58');
+            download_check($result['package']['driver'] === '595.58.03', 'Legacy published package was not resolved');
+        }
+    });
+    $case('Automatic lookup does not hide authentication errors with a legacy fallback', function () use ($fixture): void {
+        foreach ([401, 403] as $status) {
+            $f = $fixture(); $kernelUrl = $f->automatic(); $f->routes[$kernelUrl] = ['status' => $status];
+            download_fails(fn() => $f->download->versions($f->source, $f->credentials, '6.18.58'), 'HTTP ' . $status);
+            download_check(count($f->calls) === 1, 'Authentication failure triggered another source lookup');
+        }
+    });
+    $case('Repository plus deploy token resolves only the installed driver through Generic', function () use ($fixture): void {
+        $f = $fixture(); $kernelUrl = $f->automatic();
+        $f->routes[$kernelUrl] = ['status' => 401];
+        mkdir($f->root . '/sys/module/nvidia', 0700, true);
+        file_put_contents($f->root . '/sys/module/nvidia/version', '595.58.03');
+        $route = $f->routes[$f->md5Url];
+        $f->routes[$f->md5Url] = static fn(string $stdin): array => str_contains($stdin, 'DEPLOY-TOKEN:') ? $route : ['status' => 403];
+        $route = $f->routes[$f->packageUrl];
+        $f->routes[$f->packageUrl] = static fn(string $stdin): array => str_contains($stdin, 'DEPLOY-TOKEN:') ? $route : ['status' => 401];
+        $versions = $f->download->versions($f->source, $f->credentials, '6.18.58')['versions'];
+        download_check(count($versions) === 1 && $versions[0]['driver'] === '595.58.03' && $versions[0]['discovery'] === 'current-driver', 'Known installed driver must not be advertised as latest discovery');
+        $result = $f->download->fetch($f->source, $f->credentials, '6.18.58');
+        download_check($result['package']['discovery'] === 'current-driver', 'Download lost its limited discovery provenance');
+        foreach ($f->calls as $call) if ($call['argv'][0] === 'curl') download_check(!str_contains($call['stdin'], 'per_page=') && !str_contains($call['stdin'], '580.'), 'Deploy lookup enumerated versions or guessed another driver');
+    });
+    $case('Known Generic fallback retains a missing-package error and never guesses versions', function () use ($fixture): void {
+        $f = $fixture(); $kernelUrl = $f->automatic(); $f->source['driver'] = '595.58.03';
+        $f->routes[$kernelUrl] = ['status' => 403]; $f->routes[$f->md5Url] = ['status' => 404];
+        download_fails(fn() => $f->download->versions($f->source, $f->credentials, '6.18.58'), 'HTTP 404');
+        download_check(count($f->calls) === 2, 'A missing known Generic package caused another guess');
+    });
+    $case('Explicit deploy token avoids Releases API and requires a known driver or link', function () use ($fixture): void {
+        $f = $fixture(); $f->automatic(); $f->credentials['type'] = 'deploy-token';
+        download_fails(fn() => $f->download->versions($f->source, $f->credentials, '6.18.58'), 'known driver');
+        download_check($f->calls === [], 'Unknown driver caused unauthorized metadata probing');
+        $f->source['driver'] = '595.58.03';
+        $versions = $f->download->versions($f->source, $f->credentials, '6.18.58')['versions'];
+        download_check($versions[0]['discovery'] === 'current-driver', 'Explicit deploy Generic result lacks provenance');
+        foreach ($f->calls as $call) download_check(str_contains($call['stdin'], '/packages/generic/') && str_contains($call['stdin'], 'DEPLOY-TOKEN:'), 'Explicit deploy token was sent to ordinary Releases API');
+    });
+    $case('Automatic selection prefers the installed driver and otherwise newest matching version', function () use ($fixture): void {
+        foreach ([false, true] as $installed) {
+            $f = $fixture(); $kernelUrl = $f->automatic();
+            $data = json_decode($f->routes[$kernelUrl]['body'], true);
+            $older = json_decode(str_replace('595.58.03', '580.159.03', json_encode($data['assets']['links'])), true);
+            $data['assets']['links'] = array_merge($data['assets']['links'], $older);
+            $f->routes[$kernelUrl]['body'] = json_encode($data);
+            $oldName = str_replace('595.58.03', '580.159.03', $f->filename);
+            $oldUrl = str_replace('595.58.03', '580.159.03', $f->packageUrl);
+            $f->routes[$oldUrl] = ['body' => $f->package];
+            $f->routes[$oldUrl . '.md5'] = ['body' => md5($f->package) . '  ' . $oldName . "\n"];
+            if ($installed) {
+                mkdir($f->root . '/sys/module/nvidia', 0700, true);
+                file_put_contents($f->root . '/sys/module/nvidia/version', '580.159.03');
+                $f->moduleVersion = '580.159.03';
+            }
+            $result = $f->download->fetch($f->source, $f->credentials, '6.18.58');
+            download_check($result['package']['driver'] === ($installed ? '580.159.03' : '595.58.03'), 'Wrong automatic driver preference');
+        }
+    });
+    $case('Pasted release and GitHub download links resolve their exact assets', function () use ($fixture): void {
+        foreach (['github', 'gitlab'] as $provider) {
+            $f = $fixture($provider); $f->source['mode'] = 'auto'; $f->source['driver'] = '';
+            $f->source['url'] = $provider === 'github'
+                ? 'https://github.com/owner/repo/releases/tag/v6.18.58-595.58.03'
+                : 'https://git.example.test/owner/repo/-/releases/v6.18.58-595.58.03';
+            $f->download->fetch($f->source, $f->credentials, '6.18.58');
+            download_check(str_contains($f->calls[0]['stdin'], $f->releaseUrl), 'Pasted release should not enumerate or use a different tag');
+        }
+        $f = $fixture('github'); $f->source['mode'] = 'auto'; $f->source['driver'] = '';
+        $f->source['url'] = 'https://github.com/owner/repo/releases/download/v6.18.58-595.58.03/' . $f->filename;
+        $f->download->fetch($f->source, $f->credentials, '6.18.58');
+        foreach ($f->calls as $call) if ($call['argv'][0] === 'curl') download_check(!str_contains($call['stdin'], 'url = "https://github.com/'), 'Private GitHub assets must use the API, not a webpage redirect');
+    });
+    $case('Generic TXZ link accepts a deploy token with automatic header selection', function () use ($fixture): void {
+        $f = $fixture('gitlab', 'generic');
+        $f->source['url'] = $f->packageUrl; $f->source['mode'] = 'auto'; $f->source['provider'] = 'auto'; $f->source['driver'] = '';
+        $f->credentials['type'] = 'auto';
+        $route = $f->routes[$f->md5Url];
+        $f->routes[$f->md5Url] = static fn(string $stdin): array => str_contains($stdin, 'DEPLOY-TOKEN:') ? $route : ['status' => 401];
+        $route = $f->routes[$f->packageUrl];
+        $f->routes[$f->packageUrl] = static fn(string $stdin): array => str_contains($stdin, 'DEPLOY-TOKEN:') ? $route : ['status' => 403];
+        $f->download->fetch($f->source, $f->credentials, '6.18.58');
+        foreach ($f->calls as $call) if ($call['argv'][0] === 'curl') download_check(str_contains($call['stdin'], '/packages/generic/'), 'Direct link unexpectedly enumerated a repository');
+        download_check(count(array_filter($f->calls, static fn(array $call): bool => $call['argv'][0] === 'curl')) === 4, 'Automatic authentication did not retry the two explicit package reads once');
+    });
+    $case('Direct link auto-auth never retries 404 or forwards credentials across origins', function () use ($fixture): void {
+        $f = $fixture('gitlab', 'generic'); $f->source['url'] = $f->packageUrl; $f->source['mode'] = 'auto'; $f->credentials['type'] = 'auto';
+        $f->routes[$f->md5Url] = ['status' => 404];
+        download_fails(fn() => $f->download->fetch($f->source, $f->credentials, '6.18.58'), 'HTTP 404');
+        download_check(count($f->calls) === 1, '404 caused an authentication retry');
+        $f = $fixture('gitlab', 'generic'); $f->source['url'] = $f->packageUrl; $f->source['mode'] = 'auto'; $f->credentials['type'] = 'auto';
+        $f->routes[$f->md5Url] = ['status' => 302, 'redirect' => 'https://cdn.example.test/md5'];
+        $f->routes['https://cdn.example.test/md5'] = ['status' => 401];
+        download_fails(fn() => $f->download->fetch($f->source, $f->credentials, '6.18.58'), 'HTTP 401');
+        $call = $f->calls[array_key_last($f->calls)];
+        download_check(!str_contains($call['stdin'], 'fixture-secret'), 'Redirect authentication boundary changed');
+    });
+    $case('Bare MD5 attachments are accepted without weakening filename checks', function () use ($fixture): void {
+        $f = $fixture(); $f->routes[$f->md5Url]['body'] = md5($f->package) . "\n";
+        $result = $f->download->fetch($f->source, $f->credentials, '6.18.58');
+        download_check($result['package']['checksum_verified'] === true, 'Remote checksum was not marked verified');
+    });
+    $case('Local import computes MD5 and checks the archive without network or installation', function () use ($fixture): void {
+        $f = $fixture(); $path = $f->root . '/uploaded.txz'; file_put_contents($path, $f->package);
+        $result = $f->download->importLocal($path, $f->filename, null, '6.18.58-Unraid');
+        download_check($result['package']['source'] === 'local' && $result['package']['checksum_verified'] === false, 'Local calculated digest was incorrectly treated as external verification');
+        download_check(file_get_contents($result['package']['path']) === $f->package && is_file($path), 'Local import must copy the file, not consume the upload');
+        foreach ($f->calls as $call) download_check(in_array($call['argv'][0], ['tar', 'xz', 'modinfo'], true), 'Import executed a network or driver command');
+    });
+    $case('Local import accepts optional MD5 and rejects wrong kernel, checksum or archive', function () use ($fixture): void {
+        $f = $fixture(); $path = $f->root . '/uploaded.txz'; $md5 = $f->root . '/uploaded.md5'; file_put_contents($path, $f->package);
+        file_put_contents($md5, md5($f->package) . "\n");
+        download_check($f->download->importLocal($path, $f->filename, $md5, '6.18.58')['package']['checksum_verified'] === true, 'Optional MD5 not verified');
+        download_fails(fn() => $f->download->importLocal($path, $f->filename, null, '6.18.54'), 'different kernel');
+        file_put_contents($md5, str_repeat('0', 32));
+        download_fails(fn() => $f->download->importLocal($path, $f->filename, $md5, '6.18.58'), 'MD5 mismatch');
+        file_put_contents($path, 'broken XZ');
+        download_fails(fn() => $f->download->importLocal($path, $f->filename, null, '6.18.58'), 'preserved');
+        download_check(file_get_contents($f->paths->cacheDir . '/6.18.58/' . $f->filename) === $f->package, 'Existing local cache was overwritten');
     });
     $case('Real passive XZ/TAR parsing accepts GNU dot prefixes and hard links', function () use ($fixture): void {
         $f = $fixture(); $staging = $f->root . '/fixture-content'; mkdir($staging, 0700);

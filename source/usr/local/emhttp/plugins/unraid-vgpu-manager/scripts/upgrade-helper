@@ -1,0 +1,23 @@
+#!/bin/bash
+# Independent monitor; the system-wide plugin_update_helper remains untouched.
+set -eu
+BASE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+PHP=/usr/bin/php
+WATCH="$BASE/include/upgrade-watch.php"
+RUNTIME=/var/run/unraid-vgpu-manager
+LOG=/var/log/unraid-vgpu-manager-upgrade.log
+[ -f /etc/unraid-version ] || { echo 'This helper runs on Unraid.' >&2; exit 1; }
+case "${1:-start}" in
+  start)
+    "$PHP" -r 'require $argv[1]; $s=(new \Vgpu\Store(new \Vgpu\Paths()))->settings(); exit(($s["upgrade"]["enabled"] ?? false) === true ? 0 : 1);' "$BASE/include/bootstrap.php" || exit 0
+    [ ! -L "$RUNTIME" ] && [ ! -L "$LOG" ] || exit 1
+    mkdir -p "$RUNTIME"
+    chmod 700 "$RUNTIME"
+    "$PHP" "$WATCH" --reset-stop
+    nohup "$PHP" "$WATCH" </dev/null >>"$LOG" 2>&1 &
+    ;;
+  stop)
+    "$PHP" "$WATCH" --stop
+    ;;
+  *) echo 'Usage: upgrade-helper [start|stop]' >&2; exit 2 ;;
+esac

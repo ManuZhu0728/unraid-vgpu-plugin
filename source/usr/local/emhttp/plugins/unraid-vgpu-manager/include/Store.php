@@ -12,7 +12,7 @@ final class Store
         return [
             'schema_version' => 1,
             'source' => [
-                'provider' => 'gitlab', 'mode' => 'generic', 'repository' => '',
+                'provider' => 'auto', 'mode' => 'auto', 'repository' => '', 'url' => '',
                 'project_id' => '', 'driver' => '', 'tag_template' => 'v{kernel}-{driver}',
                 'package_name' => 'build', 'package_version_template' => 'v{kernel}-{driver}',
             ],
@@ -20,6 +20,7 @@ final class Store
                 'enabled' => false, 'unlock' => true,
                 'unlock_library' => '/usr/lib64/libvgpu_unlock_rs.so', 'xml_override' => false,
             ],
+            'upgrade' => ['enabled' => false, 'driver_branch' => '', 'enabled_boot_id' => ''],
             'selected_package' => null,
             'pending_restart' => false,
         ];
@@ -46,6 +47,7 @@ final class Store
 
     public static function sourceIdentity(array $source): string
     {
+        $source = self::validateSource($source);
         return hash('sha256', json_encode([
             'provider' => $source['provider'] ?? '',
             'repository' => $source['repository'] ?? '',
@@ -62,24 +64,19 @@ final class Store
             }
             $source[$key] = trim($value);
         }
-        if (!in_array($source['provider'], ['github', 'gitlab'], true) || !in_array($source['mode'], ['releases', 'generic'], true)) {
+        if (!in_array($source['provider'], ['auto', 'github', 'gitlab', 'direct'], true) || !in_array($source['mode'], ['auto', 'releases', 'generic'], true)) {
             throw new \InvalidArgumentException('Unsupported repository provider or download mode');
         }
-        if ($source['provider'] === 'github' && $source['mode'] !== 'releases') {
+        if ($source['provider'] === 'github' && $source['mode'] === 'generic') {
             throw new \InvalidArgumentException('GitHub only supports Releases in this version');
         }
-        if ($source['repository'] !== '') {
-            $url = parse_url($source['repository']);
-            if (!$url || ($url['scheme'] ?? '') !== 'https' || empty($url['host']) || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment'])) {
-                throw new \InvalidArgumentException('Use an HTTPS repository URL without credentials, query or fragment');
-            }
-            $path = trim($url['path'] ?? '', '/');
-            $path = preg_replace('/\.git$/', '', $path);
-            if (!preg_match('~^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$~D', $path) || str_contains($path, '..')) {
-                throw new \InvalidArgumentException('Invalid repository path');
-            }
-            $source['repository'] = 'https://' . strtolower($url['host']) . (isset($url['port']) ? ':' . $url['port'] : '') . '/' . $path;
+        if ($source['url'] !== '' || $source['repository'] !== '') {
+            $parsed = Source::parse($source['url'] !== '' ? $source['url'] : $source['repository'], $source['provider']);
+            $source['url'] = $parsed['url'];
+            $source['repository'] = $parsed['repository'];
+            $source['provider'] = $parsed['provider'];
         }
+        if ($source['provider'] === 'github' && $source['mode'] === 'generic') throw new \InvalidArgumentException('GitHub does not use Generic Packages');
         if ($source['driver'] !== '' && !preg_match('/^\d+\.\d+\.\d+$/D', $source['driver'])) {
             throw new \InvalidArgumentException('Driver version must be X.Y.Z');
         }
@@ -126,7 +123,7 @@ final class Store
         $token = (string)($credentials['token'] ?? '');
         $username = (string)($credentials['username'] ?? '');
         $sourceId = (string)($credentials['source_id'] ?? '');
-        if (!in_array($type, ['none', 'bearer', 'private-token', 'deploy-token'], true) || strlen($token) > 4096 || preg_match('/[\x00-\x20\x7f]/', $token) || strlen($username) > 256 || preg_match('/[\x00-\x1f\x7f]/', $username)) {
+        if (!in_array($type, ['none', 'auto', 'bearer', 'private-token', 'deploy-token'], true) || strlen($token) > 4096 || preg_match('/[\x00-\x20\x7f]/', $token) || strlen($username) > 256 || preg_match('/[\x00-\x1f\x7f]/', $username)) {
             throw new \InvalidArgumentException('Invalid credential');
         }
         if ($sourceId !== '' && !preg_match('/^[a-f0-9]{64}$/D', $sourceId)) throw new \InvalidArgumentException('Invalid credential source binding');

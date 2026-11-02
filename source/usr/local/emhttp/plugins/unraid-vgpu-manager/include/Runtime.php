@@ -29,6 +29,35 @@ final class Runtime
         return $this->result(true, 'status', 'Read-only runtime status', ['runtime' => $state]);
     }
 
+    /** Inspect the entire GPU stack before a cold package installation. */
+    public function installationPreflight(): array
+    {
+        $state = $this->snapshot();
+        if (is_file($this->paths->path('/boot/config/plugins/nvidia-driver.plg'))) {
+            $state['legacy_owners'][] = 'plugin:nvidia-driver.plg';
+        }
+        if ($state['legacy_owners']) return $this->result(false, 'migration_required', 'Another plugin or script manages this driver', ['runtime' => $state]);
+        if (!$state['checks']['processes_known'] || !$state['checks']['mdevs_known']) {
+            return $this->result(false, 'state_unknown', 'GPU usage could not be inspected', ['runtime' => $state]);
+        }
+        if ($state['loaded_driver'] !== '') return $this->result(false, 'driver_loaded', 'The NVIDIA driver is already loaded', ['runtime' => $state]);
+        if ($state['manager_pids'] || $state['vgpud_pids'] || $state['active_mdevs']) {
+            return $this->result(false, 'gpu_busy', 'A vGPU process or device is active', ['runtime' => $state]);
+        }
+        foreach (['nvidia', 'nvidia_uvm', 'nvidia_modeset', 'nvidia_drm', 'nvidia_vgpu_vfio', 'nouveau'] as $module) {
+            if (is_dir($this->paths->path('/sys/module/' . $module))) {
+                return $this->result(false, 'module_loaded', 'A GPU module is already loaded', ['runtime' => $state]);
+            }
+        }
+        // Physical NVIDIA cards may belong to vfio-pci instead of nvidia.
+        // Cold installation is an early-boot operation, so any VFIO client
+        // blocks it rather than guessing which cdev or group belongs to a GPU.
+        $holders = $this->openHandles([], null, null, true);
+        if (!$holders['known']) return $this->result(false, 'usage_unknown', 'GPU file descriptors could not be inspected', ['runtime' => $state]);
+        if ($holders['holders']) return $this->result(false, 'gpu_busy', 'A GPU or VFIO client is active', ['runtime' => $state, 'holders' => $holders['holders']]);
+        return $this->result(true, 'cold_start', 'GPU stack is ready for installation', ['runtime' => $state]);
+    }
+
     public function ensure(array $settings, array $devices): array
     {
         try {
@@ -51,7 +80,7 @@ final class Runtime
             $vermagic = $this->command(['modinfo', '-F', 'vermagic', 'nvidia']);
             $version = trim($installed['stdout']);
             if ($installed['code'] !== 0 || !preg_match('/^\d+\.\d+(?:\.\d+)?$/D', $version)) {
-                return $this->result(false, 'driver_missing', 'No installed NVIDIA driver module was identified; cached packages are not installed automatically');
+                return $this->result(false, 'driver_missing', 'No installed NVIDIA driver module was identified');
             }
             if ($vermagic['code'] !== 0 || explode(' ', trim($vermagic['stdout']))[0] !== $state['kernel']) {
                 return $this->result(false, 'kernel_mismatch', 'Installed module vermagic does not match the running kernel');
@@ -465,7 +494,7 @@ final class Runtime
         }
     }
 
-    private function openHandles(array $ignoredPids, ?string $group, ?string $pci = null): array
+    private function openHandles(array $ignoredPids, ?string $group, ?string $pci = null, bool $allVfio = false): array
     {
         $known = is_readable($this->paths->path('/proc'));
         $holders = [];
@@ -493,7 +522,8 @@ final class Runtime
                 $gpu = preg_match('#^/dev/(?:nvidia(?:[0-9]+|ctl|-uvm(?:-tools)?|-modeset)?|nvidia-caps/nvidia-cap[0-9]+)(?: \(deleted\))?$#D', $target) || in_array($target, $drmNodes, true);
                 // VFIO cdev numbering is NOT the IOMMU group number. Until a
                 // cdev-to-target mapping is proven, refuse conservatively.
-                $vfio = $group !== null && ($target === '/dev/vfio/' . $group || preg_match('#^/dev/vfio/devices/vfio[0-9]+$#D', $target));
+                $vfio = ($allVfio && preg_match('#^/dev/vfio/(?:[0-9]+|devices/vfio[0-9]+)$#D', $target)) ||
+                    ($group !== null && ($target === '/dev/vfio/' . $group || preg_match('#^/dev/vfio/devices/vfio[0-9]+$#D', $target)));
                 if ($gpu || $vfio) $handles[] = $target;
             }
             if ($handles) {

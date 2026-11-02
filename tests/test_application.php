@@ -41,6 +41,7 @@ final class ApplicationFixture
     public Store $store;
     public Application $application;
     public array $calls = [];
+    public array $downloadInputs = [];
     public bool $defined = false;
     public string $failure = '';
     public array $domains = [];
@@ -52,6 +53,7 @@ final class ApplicationFixture
         $this->paths = new Paths($this->root);
         $this->store = new Store($this->paths);
         $this->put('/proc/sys/kernel/osrelease', "6.18.58-Unraid\n");
+        $this->put('/proc/sys/kernel/random/boot_id', "11111111-1111-4111-8111-111111111111\n");
         $this->put('/sys/module/nvidia/version', "595.58.03\n");
         $this->directory('/sys/bus/mdev/devices');
         $this->directory('/sys/bus/pci/drivers/nvidia/' . self::PCI);
@@ -59,11 +61,12 @@ final class ApplicationFixture
         $this->put('/usr/lib64/libvgpu_unlock_rs.so', 'fixture-library-not-a-real-driver');
         $this->put('/usr/share/nvidia/vgpu/vgpuConfig.xml', '<fixture/>');
         $runtime = new Runtime($this->paths, $this->run(...));
-        $download = new Download($this->paths, function (array $argv): array {
+        $download = new Download($this->paths, function (array $argv, int $timeout = 15, ?string $stdin = null): array {
             $this->calls[] = $argv;
+            $this->downloadInputs[] = $stdin;
             throw new RuntimeException('Unexpected network/download invocation in application test');
         });
-        $this->application = new Application($this->store, $runtime, $download);
+        $this->application = new Application($this->store, $runtime, $download, $this->run(...));
     }
 
     public function device(): array
@@ -73,9 +76,9 @@ final class ApplicationFixture
 
     public function source(): array
     {
-        return array_replace(Store::defaults()['source'], [
+        return Store::validateSource(array_replace(Store::defaults()['source'], [
             'repository' => 'https://git.example.test/group/driver', 'project_id' => '42', 'driver' => '595.58.03',
-        ]);
+        ]));
     }
 
     public function directory(string $path): string
@@ -178,7 +181,7 @@ try {
     application_check(!is_dir($fixture->paths->configDir), 'Status must not persist configuration');
     application_check(!$status['credential_configured'] && $status['override_content'] === '', 'Unconfigured source must allow status');
     $plan = $app->dispatch('plan');
-    application_check(str_contains($plan['message'], 'No hot driver'), 'Plan must not promise hot deployment');
+    application_check(str_contains($plan['message'], 'installation runs at boot'), 'Plan must describe boot-time installation');
     application_check($fixture->calls === [], 'Plan must be read-only');
 
     $secret = 'application-fixture-secret-not-a-real-token';
@@ -227,7 +230,7 @@ try {
         $bindingSource = $bindingFixture->source();
         $bindingApp->dispatch('config-save', ['source' => $bindingSource]);
         $scope = Store::sourceIdentity($bindingSource);
-        $otherScope = Store::sourceIdentity(array_replace($bindingSource, ['repository' => 'https://different.example.test/group/driver']));
+        $otherScope = Store::sourceIdentity(array_replace($bindingSource, ['repository' => 'https://different.example.test/group/driver', 'url' => 'https://different.example.test/group/driver']));
         application_check($scope !== $otherScope, 'Source identity must bind the repository origin/path');
         application_check($scope === Store::sourceIdentity(array_replace($bindingSource, ['driver' => '595.71.05'])), 'Source identity must not change when only driver changes');
         application_check($scope !== Store::sourceIdentity(array_replace($bindingSource, ['project_id' => '43'])), 'Source identity must bind GitLab project ID');
@@ -253,6 +256,28 @@ try {
         application_check(count($bindingFixture->calls) === 1 && $bindingFixture->calls[0][0] === 'curl', 'A newly bound token must pass the gate and reach only the mocked transport');
         application_check(!str_contains(implode(' ', $bindingFixture->calls[0]), $replacement), 'Even a newly bound token must not enter transport argv');
     }
+
+    $selectionFixture = $fixtures[] = new ApplicationFixture();
+    $selectionApp = $selectionFixture->application;
+    $selectionSource = array_replace($selectionFixture->source(), ['mode' => 'generic']);
+    $selectionApp->dispatch('config-save', ['source' => $selectionSource, 'credential' => ['type' => 'auto', 'token' => 'selection-fixture-secret']]);
+    $settingsBytes = file_get_contents($selectionFixture->paths->settingsFile);
+    $credentialBytes = file_get_contents($selectionFixture->paths->credentialsFile);
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => ['invalid']]), 'Driver version');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => 'bad-version']), 'Driver version');
+    application_check($selectionFixture->calls === [], 'Invalid per-download selection must be rejected before networking');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => '595.71.05']), 'Unexpected network/download invocation');
+    application_check(str_contains($selectionFixture->downloadInputs[0] ?? '', 'v6.18.58-595.71.05'), 'Explicit per-download selection must reach the temporary source context');
+    application_check(file_get_contents($selectionFixture->paths->settingsFile) === $settingsBytes && file_get_contents($selectionFixture->paths->credentialsFile) === $credentialBytes, 'Failed or temporary per-download selection must preserve saved source and credential binding');
+    application_check($selectionFixture->store->settings()['source']['driver'] === '595.58.03', 'Per-download selection must not replace saved source version');
+    application_rejects(fn() => $selectionApp->dispatch('source-test', ['driver' => '595.71.05']), 'Unexpected network/download invocation');
+    application_check(str_contains($selectionFixture->downloadInputs[1] ?? '', 'v6.18.58-595.58.03'), 'Source test must ignore unsaved per-download selection');
+
+    $legacySource = $selectionFixture->store->settings()['source'];
+    $legacySource['repository'] = 'https://different.example.test/group/driver';
+    $selectionApp->dispatch('config-save', ['source' => $legacySource]);
+    application_check($selectionFixture->store->settings()['source']['url'] === $legacySource['repository'], 'Legacy full snapshots may still update repository without editing url');
+    application_check($selectionFixture->store->credentials()['token'] === '', 'A legacy repository update must clear the old source token');
 
     $device = $fixture->device();
     $app->dispatch('device-save', $device);
@@ -321,6 +346,73 @@ try {
     application_check(!$changed['ok'] && $changed['code'] === 'maintenance_required', 'Live configuration mismatch must refuse ensure');
     application_check($sameFixture->store->settings()['pending_restart'], 'Refused ensure must retain pending maintenance');
 
+    $upgradeFixture = $fixtures[] = new ApplicationFixture();
+    $upgradeApp = $upgradeFixture->application;
+    $upgradeSource = $upgradeFixture->source();
+    $upgradeSource['driver'] = '';
+    $baselineSettings = $upgradeFixture->store->settings();
+    $baselineSettings['source'] = $upgradeSource;
+    $baselineName = 'nvidia-595.58.03-6.18.58-Unraid-1.txz';
+    $baselinePath = $upgradeFixture->paths->cacheDir . '/6.18.58/' . $baselineName;
+    $upgradeFixture->put('/boot/config/plugins/unraid-vgpu-manager/packages/6.18.58/' . $baselineName, 'application-cache-fixture');
+    $baselineSettings['selected_package'] = ['source' => $upgradeSource['repository'], 'provider' => $upgradeSource['provider'], 'driver' => '595.58.03',
+        'kernel' => '6.18.58-Unraid', 'filename' => $baselineName, 'path' => $baselinePath,
+        'md5' => hash_file('md5', $baselinePath)];
+    $upgradeFixture->store->saveSettings($baselineSettings);
+    $upgradeApp->dispatch('config-save', ['source' => $upgradeSource, 'upgrade' => [
+        'enabled' => true, 'enabled_boot_id' => 'forged', 'driver_branch' => '580',
+    ]]);
+    $upgradeSettings = $upgradeFixture->store->settings();
+    application_check($upgradeSettings['upgrade']['enabled'] === true, 'Upgrade following must require explicit enablement');
+    application_check($upgradeSettings['upgrade']['driver_branch'] === '595', 'Auto policy must pin the installed NVIDIA branch, not client-supplied internal fields');
+    application_check($upgradeSettings['upgrade']['enabled_boot_id'] === '11111111-1111-4111-8111-111111111111', 'Enablement must capture the actual current boot');
+    application_check($upgradeSettings['runtime']['enabled'] === false && $upgradeFixture->calls === [], 'Enabling upgrade following must not take over vGPU or call a missing helper');
+    application_rejects(fn() => $upgradeApp->dispatch('config-save', ['upgrade' => ['enabled' => 'true']]), 'must be a boolean');
+    $upgradeFixture->put('/boot/changes.txt', "# Version 7.3.4\n## Linux kernel\n* version: 6.18.58\n");
+    $checked = $upgradeApp->dispatch('upgrade-check');
+    application_check($checked['status'] === 'current' && $upgradeFixture->calls === [], 'Same-kernel upgrade checks must avoid network and installation');
+    application_check($upgradeFixture->store->settings() === $upgradeSettings, 'Upgrade preparation must not replace the selected current package');
+    application_rejects(fn() => $upgradeApp->dispatch('upgrade-check', ['target_kernel' => ['bad']]), 'Invalid target');
+    application_rejects(fn() => $upgradeApp->dispatch('upgrade-check', ['force' => 'true']), 'must be a boolean');
+    $newSource = $upgradeSource;
+    $newSource['driver'] = '580.159.03';
+    $upgradeApp->dispatch('config-save', ['source' => $newSource]);
+    application_check($upgradeFixture->store->settings()['upgrade']['driver_branch'] === '580', 'An explicit driver choice may change the saved branch');
+    $upgradeApp->dispatch('config-save', ['source' => $upgradeSource]);
+    application_check($upgradeFixture->store->settings()['upgrade']['driver_branch'] === '580', 'Returning to automatic selection must not silently switch the saved branch');
+
+    $reenableFixture = $fixtures[] = new ApplicationFixture();
+    $reenableFixture->application->dispatch('config-save', ['upgrade' => ['enabled' => true]]);
+    application_check($reenableFixture->store->settings()['upgrade']['driver_branch'] === '595', 'Initial enablement captures the live driver branch');
+    $reenableFixture->application->dispatch('config-save', ['upgrade' => ['enabled' => false]]);
+    $reenableFixture->put('/sys/module/nvidia/version', "580.159.03\n");
+    $reenableFixture->application->dispatch('config-save', ['upgrade' => ['enabled' => true]]);
+    application_check($reenableFixture->store->settings()['upgrade']['driver_branch'] === '580', 'Re-enabling after an external rollback must recapture the live branch instead of restoring an obsolete branch');
+    application_check($reenableFixture->calls === [], 'Recapturing branch policy must not modify GPU services');
+
+    $receiptFixture = $fixtures[] = new ApplicationFixture();
+    $receiptSettings = $receiptFixture->store->settings();
+    $receiptSettings['source'] = $receiptFixture->source();
+    $receiptSettings['selected_package'] = ['source' => $receiptSettings['source']['repository'], 'driver' => '595.58.03', 'kernel' => '6.18.58-Unraid'];
+    $receiptFixture->store->saveSettings($receiptSettings);
+    $receiptFixture->application->dispatch('config-save', ['upgrade' => ['enabled' => true]]);
+    $receiptSettings = $receiptFixture->store->settings();
+    application_check($receiptSettings['selected_package']['saved_boot_id'] === '11111111-1111-4111-8111-111111111111', 'Enabling installation can authorize a legacy cache selection from the same source for the next boot');
+    application_check($receiptSettings['selected_package']['source_id'] === Store::sourceIdentity($receiptSettings['source']), 'Legacy cache authorization must retain source binding');
+    application_check($receiptSettings['selected_package']['source_fingerprint'] === \Vgpu\Upgrade::sourceFingerprint($receiptSettings['source']), 'Legacy cache authorization must capture all source settings');
+
+    $bootFixture = $fixtures[] = new ApplicationFixture();
+    $bootSettings = $bootFixture->store->settings();
+    $bootSettings['upgrade'] = ['enabled' => true, 'driver_branch' => '595', 'enabled_boot_id' => '22222222-2222-4222-8222-222222222222'];
+    $bootSettings['runtime']['enabled'] = true;
+    $bootFixture->store->saveSettings($bootSettings);
+    $booted = $bootFixture->application->dispatch('boot');
+    application_check(!$booted['ok'] && $booted['status'] === 'missing_package', 'Boot must stop before Runtime.ensure if no package matches the current kernel');
+    $bootCommands = array_map(static fn(array $args): string => basename($args[0]), $bootFixture->calls);
+    application_check(!array_intersect($bootCommands, ['upgradepkg', 'modprobe', 'nvidia-modprobe', 'mdevctl']), 'Failed boot preparation must not load modules or start mdevs');
+    $bootStatus = $bootFixture->application->dispatch('status');
+    application_check($bootStatus['driver_installation']['status'] === 'missing_package', 'Installation failure must be visible through the read-only status endpoint');
+
     $runner = new Process();
     $literal = 'literal; $(not-a-shell-command)';
     $process = $runner([PHP_BINARY, '-n', '-r', 'echo $argv[1];', $literal], 5);
@@ -329,6 +421,10 @@ try {
     application_check($process['code'] === 0 && $process['stdout'] === hash('sha256', str_repeat('stdin-fixture-', 20000)) && strlen($process['stderr']) === 150000, 'Process must handle stdin plus full stdout/stderr pipes');
     application_rejects(fn() => $runner(['bad' . "\0" . 'argument']), 'Invalid command argument');
     application_rejects(fn() => $runner([12]), 'Invalid command argument');
+    application_rejects(fn() => $runner([PHP_BINARY], 3601), 'Invalid command or timeout');
+    application_rejects(fn() => $runner([PHP_BINARY], 0), 'Invalid command or timeout');
+    $process = $runner([PHP_BINARY, '-n', '-r', 'echo "bounded";'], 3600);
+    application_check($process['code'] === 0 && $process['stdout'] === 'bounded', 'Upgrade preparation must support a bounded hour for two package downloads');
     $start = microtime(true);
     $process = $runner([PHP_BINARY, '-n', '-r', 'sleep(5);'], 1);
     application_check($process['code'] === 124 && str_contains($process['stderr'], 'completion is unknown'), 'Process timeout must not claim successful completion');
