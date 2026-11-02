@@ -31,6 +31,17 @@
 main 的发布清单或工作流变化触发测试；只有测试通过才发布，并匿名核对远端附件字节。
 实际发布状态见仓库 Releases/Actions；代码推送到附件上传完成前可能短暂返回 404。
 
+### 首版发布验收（2026-11-02）
+
+- [Alpha 1](https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/tag/v2026.11.02.3-alpha.1)
+  已公开发布，tag 绑定 `c0a7e719f358cbf598c3ecfdcb441065623a2b77`。
+- [自动工作流](https://github.com/ManuZhu0728/unraid-vgpu-plugin/actions/runs/41432256501)
+  的 test 和 release 均成功。
+- 独立匿名下载三个附件通过；固定 raw/main PLG 与 Release PLG 字节一致。
+- TXZ 大小 55,816 字节，MD5 与附件和 PLG 一致；归档仅包含新插件目录的
+  11 个 root-owned 普通文件，无 NVIDIA 驱动或凭据。
+- 以上仅为发布和下载验收；没有连接或修改用户 Unraid，运行管理仍默认关闭。
+
 ## 构建记录
 
 `.1` 是第一次集成预览，保留在 `dist/2026.11.02.1/`，**不要交付/安装**。
