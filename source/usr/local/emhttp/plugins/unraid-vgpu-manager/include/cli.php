@@ -28,7 +28,7 @@ try {
     }
     // A plain interactive source-download keeps its saved version. Web requests
     // may supply an explicit driver over stdin without changing saved settings.
-    $readPayload = in_array($action, $payloadActions, true) || (in_array($action, ['source-download', 'upgrade-check'], true) && !$stdinIsTty);
+    $readPayload = in_array($action, $payloadActions, true) || (in_array($action, ['source-download', 'upgrade-check', 'logs'], true) && !$stdinIsTty);
     $raw = $readPayload ? stream_get_contents(STDIN, 131073) : '';
     if (strlen($raw) > 131072) throw new InvalidArgumentException('Request is too large');
     $input = trim($raw) === '' ? [] : json_decode($raw, true, 32, JSON_THROW_ON_ERROR);

@@ -16,6 +16,11 @@ final class Application
     public function dispatch(string $action, array $input = []): array
     {
         if ($action === 'status') return $this->status();
+        if ($action === 'logs') {
+            $category = $input['category'] ?? 'plugin';
+            if (!is_string($category)) throw new \InvalidArgumentException('Invalid log category');
+            return (new Logs($this->store->paths, (string)($this->store->credentials()['token'] ?? '')))->read($category);
+        }
         if (!in_array($action, ['config-save', 'source-test', 'source-versions', 'source-download', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-save', 'device-start', 'device-stop', 'device-remove', 'ensure', 'boot', 'plan'], true)) {
             throw new \InvalidArgumentException('Unknown operation');
         }

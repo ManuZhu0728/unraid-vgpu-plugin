@@ -16,5 +16,9 @@
 上游致谢：stl88083365、mbuchel、LIL'pingu、DualCoder、snowman、midi。
 原 README 保留于 [UPSTREAM-README](UPSTREAM-README.md)，来源也可由 upstream remote 追溯。
 
+分页组织参考 [Appdata Backup](https://github.com/Commifreak/unraid-appdata.backup) 的原生标签页。
+加载与切换行为核对了 [Unraid WebGUI 的分页实现](https://github.com/unraid/webgui/blob/master/emhttp/plugins/dynamix/include/DefaultPageLayout/MainContentTabbed.php)；
+三页内容在同一请求中载入，插件自行隔离表单处理与页面状态。
+
 公开仓库：https://github.com/ManuZhu0728/unraid-vgpu-plugin 。首版为 Alpha，分发内容
 仅限插件程序，不包含 NVIDIA 驱动。记录来源不代表任意第三方驱动或输入包可再分发。

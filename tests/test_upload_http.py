@@ -30,6 +30,7 @@ class UploadHttpTests(unittest.TestCase):
         directory = Path(cls.temporary.name)
         fixture = r'''<?php
 require_once BOOTSTRAP;
+require_once UI_TEMPLATE;
 function uvm_cli(string $action, array $payload = []): array {
     if ($action === 'status') return ['settings' => \Vgpu\Store::defaults(), 'devices' => [], 'runtime' => []];
     if ($action === 'source-upload-chunk') {
@@ -41,10 +42,6 @@ function uvm_cli(string $action, array $payload = []): array {
 }
 function uvm_profile_scan(): array { return []; }
 function uvm_read(string $path, int $limit = 65536): string { return ''; }
-$page = file_get_contents(PAGE);
-foreach (['uvm_cli', 'uvm_profile_scan', 'uvm_read'] as $function) {
-    $page = str_replace('function ' . $function . '(', 'function uvm_original_' . substr($function, 4) . '(', $page);
-}
 $var = ['csrf_token' => 'http-upload-fixture-csrf'];
 echo '<!doctype html><main data-unraid-wrapper="fixture">';
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
@@ -55,11 +52,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     }
     unset($_POST['csrf_token']);
 }
-eval('?>' . $page);
+// The native xmenu renderer evaluates all children in the same PHP scope.
+foreach (['driver', 'vgpu', 'status'] as $ui_tab) {
+    $page = ui_template($ui_tab);
+    foreach (['uvm_cli', 'uvm_profile_scan', 'uvm_read'] as $function) {
+        $page = str_replace('function ' . $function . '(', 'function uvm_original_' . substr($function, 4) . '(', $page);
+    }
+    eval('?>' . $page);
+}
 echo '</main>';
 '''
         fixture = fixture.replace("BOOTSTRAP", json.dumps(str(PREFIX / "include/bootstrap.php")))
-        fixture = fixture.replace("PAGE", json.dumps(str(PREFIX / "unraid-vgpu-manager.page")))
+        fixture = fixture.replace("UI_TEMPLATE", json.dumps(str(ROOT / "tests/ui_template.php")))
         (directory / "fixture.php").write_text(fixture)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -87,6 +91,7 @@ echo '</main>';
         cls.temporary.cleanup()
 
     def post(self, fields, chunk=None, origin=None):
+        fields = {"uvm_tab": "driver", **fields}
         boundary = "upload-fixture-multipart-boundary"
         body = bytearray()
         for key, value in fields.items():
@@ -106,6 +111,7 @@ echo '</main>';
         self.assertIn('data-unraid-wrapper="fixture"', html)
         match = re.search(r'<script type="application/json" id="uvm-upload-result">(.*?)</script>', html, re.S)
         self.assertIsNotNone(match, html[:500])
+        self.assertEqual(html.count('id="uvm-upload-result"'), 1, "Native multi-tab rendering must emit the upload result only once")
         return json.loads(match.group(1))
 
     def test_begin_finish_and_cancel_survive_an_html_page_wrapper(self):

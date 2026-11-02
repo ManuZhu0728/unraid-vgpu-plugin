@@ -14,6 +14,11 @@
 - `Upload.php` 处理本地分块上传，完成后复用下载器的校验和缓存逻辑。
 - `Upgrade.php` 准备当前/目标内核缓存；独立 PHP 助手监听系统升级。
 - `Installer.php` 在后续启动安装已验证缓存；`Runtime.php` 随后恢复 vGPU。
+- WebUI 使用原生 `xmenu` + `Tabs`：主 `.page` 定义菜单，三个子 `.page` 分别显示驱动、vGPU、状态与日志。
+  `include/ui-page.php` 负责公共状态栏，`include/ui/` 保存公共函数、请求处理和各页内容。
+  Unraid 在同一请求内渲染全部子页；`state.php` 只处理一次提交和状态读取，各页使用独立 DOM 标识。
+  表单用 `uvm_tab` 标记目标标签，按页面限制操作；驱动页只保存 source/credential/upgrade，vGPU 页只保存 runtime/override。
+- `Logs.php` 从固定日志文件读取最近记录，按类别筛选并过滤凭据。
 
 ## 测试
 
@@ -28,19 +33,19 @@ bash tests/run-tests.sh
 ## 离线预览包
 
 ```bash
-python3 scripts/build-plugin.py --version 2026.11.02.6
+python3 scripts/build-plugin.py --version 2026.11.02.7
 ```
 
-产物在 `dist/2026.11.02.6/`：插件 TXZ、MD5、自包含离线 `offline/unraid-vgpu-manager.plg`。
+产物在 `dist/2026.11.02.7/`：插件 TXZ、MD5、自包含离线 `offline/unraid-vgpu-manager.plg`。
 离线定义内嵌同一 TXZ；在线定义从公开 Release 下载插件包。
 
 生成常规 URL 安装器，地址仅用于插件自身：
 
 ```bash
 python3 scripts/build-plugin.py \
-  --version 2026.11.02.6 \
+  --version 2026.11.02.7 \
   --output dist/public-preview \
-  --public-base https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.02.6-alpha.4 \
+  --public-base https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.02.7-alpha.5 \
   --update-url https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg
 ```
 
@@ -67,10 +72,13 @@ python3 scripts/build-plugin.py \
 生产 CLI 只允许 Unraid/root，不能通过环境变量或请求切换测试 root。
 测试直接构造 `Paths($temporaryRoot)` 和模拟 runner。
 
-命令：`status`、`plan`、`config-save`、`source-test`、`source-versions`、`source-download`、
+命令：`status`、`logs`、`plan`、`config-save`、`source-test`、`source-versions`、`source-download`、
 `source-import`、`source-upload-begin`、`source-upload-chunk`、`source-upload-finish`、
 `source-upload-cancel`、`upgrade-check`、`device-save`、`device-start`、`device-stop`、`device-remove`、`ensure`、`boot`。
-status/plan 只读，其余加锁。
+status/logs/plan 只读，其余加锁。
+
+`logs` 接受 `category: plugin | vgpu | kernel`，返回最近 200 行匹配记录。
+页面日志通过 GET 刷新，不改变设置。
 
 `upgrade-check` 读取系统目标内核并准备缓存。CLI 可通过 stdin 显式提供 `target_kernel`，
 页面只能使用系统升级元数据。`boot` 在更新开关启用时先运行安装器，成功后才调用 Runtime。
