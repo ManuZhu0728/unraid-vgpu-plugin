@@ -12,7 +12,15 @@ https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgp
 
 ## 下载驱动
 
-1. 在“下载地址”粘贴仓库、Release 页面或 TXZ 下载链接。
+插件包含三个标签页：
+
+| 页面 | 功能 |
+| --- | --- |
+| 驱动管理 | 在线下载、本地上传、驱动缓存和 Unraid 升级准备 |
+| vGPU 管理 | 开机管理、设备配置与操作、VM XML、UnlockRS |
+| 状态与日志 | 模块与服务状态、启动入口、驱动任务、分类日志 |
+
+1. 在“驱动管理 → 在线下载”的“下载地址”粘贴仓库、Release 页面或 TXZ 下载链接。
 2. 私有源填写 Token，公开源留空。
 3. 点击“查找驱动”，选择版本后下载到缓存。
 
@@ -32,7 +40,8 @@ https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgp
 
 ## 本地导入
 
-选择本地 TXZ，点击“导入到缓存”。可以附带 MD5 文件；大文件会分块上传，页面显示进度。
+在“驱动管理”将获取方式切换为“本地上传”，选择 TXZ，点击“导入到缓存”。
+可以附带 MD5 文件；大文件会分块上传，页面显示进度。
 
 下载和导入都会检查归档、内核及模块版本。文件名使用统一格式：
 
@@ -44,8 +53,14 @@ nvidia-595.58.03-6.18.58-Unraid-1.txz
 
 ## vGPU 管理
 
-在“vGPU 启动设置”中配置 UnlockRS，然后添加设备，并将设备 UUID 写入虚拟机 XML。
+在“vGPU 管理”中展开“添加设备”，选择显卡和配置，并将设备 UUID 写入虚拟机 XML。
+UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置与 vGPU 启动设置分别保存。
 使用原插件或 User Scripts 的用户，先完成启动入口迁移，再开启“开机管理 vGPU”。
+
+## 查看状态与日志
+
+“状态与日志”显示驱动模块、vGPU 服务、设备和启动入口，以及缓存、升级准备和开机安装结果。
+日志可切换为插件升级助手、vGPU 管理器或 NVIDIA 内核，点击“刷新日志”更新最近记录。
 
 ## Unraid 更新
 
@@ -68,7 +83,7 @@ nvidia-595.58.03-6.18.58-Unraid-1.txz
 
 ```bash
 bash tests/run-tests.sh
-python3 scripts/build-plugin.py --version 2026.11.02.6
+python3 scripts/build-plugin.py --version 2026.11.02.7
 ```
 
 更多内容：[开发文档](docs/DEVELOPMENT.md) · [下载源格式](docs/DRIVER-SOURCES.md) ·

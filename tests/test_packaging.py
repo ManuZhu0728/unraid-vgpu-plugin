@@ -25,8 +25,16 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue(all(name.startswith('usr/local/emhttp/plugins/unraid-vgpu-manager/') for name in names))
                 self.assertFalse(any('novidio-vgpu-driver/' in name or 'credentials.json' in name for name in names))
                 self.assertTrue(all(member.uid == 0 and member.gid == 0 for member in archive.getmembers()))
-                for component in ['include/Upgrade.php', 'include/Installer.php', 'include/upgrade-watch.php', 'scripts/upgrade-helper']:
+                for component in ['include/Upgrade.php', 'include/Installer.php', 'include/upgrade-watch.php', 'scripts/upgrade-helper', 'include/Logs.php', 'include/ui-page.php', 'include/ui/common.php', 'include/ui/state.php', 'include/ui/driver.php', 'include/ui/vgpu.php', 'include/ui/status.php']:
                     self.assertIn('usr/local/emhttp/plugins/unraid-vgpu-manager/' + component, names)
+                prefix = 'usr/local/emhttp/plugins/unraid-vgpu-manager/'
+                parent = archive.extractfile(prefix + 'unraid-vgpu-manager.page').read().decode()
+                self.assertIn('Type="xmenu"', parent)
+                self.assertIn('Tabs="true"', parent)
+                for index, tab in enumerate(['driver', 'vgpu', 'status'], 1):
+                    child = archive.extractfile(prefix + 'unraid-vgpu-manager-' + tab + '.page').read().decode()
+                    self.assertIn(f'Menu="unraid-vgpu-manager:{index}"', child)
+                    self.assertIn("include/ui-page.php", child)
             xml = ET.parse(installer).getroot()
             entry = xml.find('FILE')
             self.assertEqual(entry.attrib['Type'], 'base64')

@@ -42,7 +42,7 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
 <CHANGES>
 Automatic GitHub/GitLab source detection and kernel-matched driver downloads.
 Local TXZ import with chunked uploads and optional MD5 verification.
-Simplified settings and status page.
+Native Unraid tabs for drivers, vGPU management, status and logs.
 Unraid upgrade preparation and verified boot-time driver installation.
 Fix form and upload validation after Unraid consumes the native CSRF field.
 </CHANGES>
@@ -77,7 +77,16 @@ def build(version, output, public_base=None, update_url=None):
     if not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d+", version):
         raise ValueError("Plugin version must be YYYY.MM.DD.N")
     source = ROOT / "source" / PREFIX
-    required = ["unraid-vgpu-manager.page", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]
+    required = [
+        "unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page",
+        "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page",
+        "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php",
+        "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php",
+        "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php",
+        "include/Store.php", "include/Runtime.php", "include/Download.php",
+        "include/Source.php", "include/Upload.php", "include/Upgrade.php",
+        "include/Installer.php", "include/upgrade-watch.php",
+    ]
     for name in required:
         if not (source / name).is_file():
             raise ValueError(f"Missing component: {name}")
@@ -123,7 +132,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.02.6")
+    parser.add_argument("--version", default="2026.11.02.7")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

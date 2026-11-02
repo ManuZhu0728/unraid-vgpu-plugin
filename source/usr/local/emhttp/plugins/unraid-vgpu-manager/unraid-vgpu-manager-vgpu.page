@@ -1,0 +1,8 @@
+Menu="unraid-vgpu-manager:2"
+Title="vGPU 管理"
+Tag="icon-desktop"
+---
+<?php
+$uvm_tab = 'vgpu';
+require '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/ui-page.php';
+
