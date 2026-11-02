@@ -1,7 +1,9 @@
 Menu="unraid-vgpu-manager:3"
 Title="状态与日志"
 Tag="icon-list-alt"
+Markdown="false"
 ---
 <?php
 $uvm_tab = 'status';
 require '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/ui-page.php';
+?>

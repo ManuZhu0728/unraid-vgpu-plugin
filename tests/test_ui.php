@@ -112,6 +112,29 @@ ui_check(!str_contains($parent, '<form') && !str_contains($parent, 'uvm_cli'), '
 foreach (['driver' => ['1', '驱动管理'], 'vgpu' => ['2', 'vGPU 管理'], 'status' => ['3', '状态与日志']] as $tab => [$order, $title]) {
     $child = (string)file_get_contents($prefix . '/unraid-vgpu-manager-' . $tab . '.page');
     ui_check(str_contains($child, 'Menu="unraid-vgpu-manager:' . $order . '"') && str_contains($child, 'Title="' . $title . '"'), 'Each tab must have its ordered native menu entry');
+    $parts = preg_split('/^---\s*$/m', $child, 2);
+    ui_check(preg_match('/^Markdown="false"$/m', $parts[0]) === 1, 'Each PHP-only child must explicitly disable native Markdown');
+    ui_check(preg_match('/\A\s*<\?php\b[\s\S]*?\?>\s*\z/', $parts[1]) === 1, 'Each child entrypoint must be a complete, explicitly closed PHP block');
+    ui_check(ui_native_page_content($child) === $parts[1], 'Native generation must preserve the declared PHP-only child content');
+
+    // Reproduce the published Alpha 5 bug before replacing I/O boundaries:
+    // default Markdown + no closing tag displays PHP rather than running it.
+    $entrypoint = "require '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/ui-page.php';";
+    $legacyClosed = preg_replace('/^Markdown="false"\R/m', '', $child);
+    $legacyClosed = str_replace($entrypoint, '$ui_native_entrypoint_calls++;', $legacyClosed);
+    $legacyUnclosed = preg_replace('/\?>\s*\z/', '', $legacyClosed);
+    $ui_native_entrypoint_calls = 0;
+    $uvm_tab = 'not-executed';
+    $unclosedContent = ui_native_page_content($legacyUnclosed);
+    ob_start();
+    eval('?>' . $unclosedContent);
+    $literalOutput = ob_get_clean();
+    ui_check($ui_native_entrypoint_calls === 0 && $uvm_tab === 'not-executed', 'The native boundary must reproduce unclosed PHP being inert under default Markdown');
+    ui_check(str_contains($literalOutput, '&lt;?php') && str_contains($literalOutput, '$uvm_tab'), 'The broken wrapper must reproduce PHP source shown as text');
+    ob_start();
+    eval('?>' . ui_native_page_content($legacyClosed));
+    $closedOutput = ob_get_clean();
+    ui_check($ui_native_entrypoint_calls === 1 && $uvm_tab === $tab && trim($closedOutput) === '', 'Explicitly closed PHP must execute even if native Markdown is enabled');
 }
 
 $rendered = ui_render($base);

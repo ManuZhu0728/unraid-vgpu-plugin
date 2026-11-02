@@ -83,7 +83,7 @@ UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置�
 
 ```bash
 bash tests/run-tests.sh
-python3 scripts/build-plugin.py --version 2026.11.02.7
+python3 scripts/build-plugin.py --version 2026.11.03.1
 ```
 
 更多内容：[开发文档](docs/DEVELOPMENT.md) · [下载源格式](docs/DRIVER-SOURCES.md) ·

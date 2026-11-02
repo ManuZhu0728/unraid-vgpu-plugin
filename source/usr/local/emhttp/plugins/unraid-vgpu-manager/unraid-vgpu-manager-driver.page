@@ -1,7 +1,9 @@
 Menu="unraid-vgpu-manager:1"
 Title="驱动管理"
 Tag="icon-download"
+Markdown="false"
 ---
 <?php
 $uvm_tab = 'driver';
 require '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/ui-page.php';
+?>

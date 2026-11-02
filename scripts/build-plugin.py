@@ -40,6 +40,7 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
+Fix native tab PHP entrypoints being displayed as text.
 Automatic GitHub/GitLab source detection and kernel-matched driver downloads.
 Local TXZ import with chunked uploads and optional MD5 verification.
 Native Unraid tabs for drivers, vGPU management, status and logs.
@@ -132,7 +133,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.02.7")
+    parser.add_argument("--version", default="2026.11.03.1")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

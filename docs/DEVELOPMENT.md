@@ -18,6 +18,7 @@
   `include/ui-page.php` 负责公共状态栏，`include/ui/` 保存公共函数、请求处理和各页内容。
   Unraid 在同一请求内渲染全部子页；`state.php` 只处理一次提交和状态读取，各页使用独立 DOM 标识。
   表单用 `uvm_tab` 标记目标标签，按页面限制操作；驱动页只保存 source/credential/upgrade，vGPU 页只保存 runtime/override。
+  PHP 分页入口使用完整的 `<?php ... ?>`，并设置 `Markdown="false"`；普通被包含的 `.php` 文件不经过 Markdown。
 - `Logs.php` 从固定日志文件读取最近记录，按类别筛选并过滤凭据。
 
 ## 测试
@@ -33,19 +34,19 @@ bash tests/run-tests.sh
 ## 离线预览包
 
 ```bash
-python3 scripts/build-plugin.py --version 2026.11.02.7
+python3 scripts/build-plugin.py --version 2026.11.03.1
 ```
 
-产物在 `dist/2026.11.02.7/`：插件 TXZ、MD5、自包含离线 `offline/unraid-vgpu-manager.plg`。
+产物在 `dist/2026.11.03.1/`：插件 TXZ、MD5、自包含离线 `offline/unraid-vgpu-manager.plg`。
 离线定义内嵌同一 TXZ；在线定义从公开 Release 下载插件包。
 
 生成常规 URL 安装器，地址仅用于插件自身：
 
 ```bash
 python3 scripts/build-plugin.py \
-  --version 2026.11.02.7 \
+  --version 2026.11.03.1 \
   --output dist/public-preview \
-  --public-base https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.02.7-alpha.5 \
+  --public-base https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.03.1-alpha.6 \
   --update-url https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg
 ```
 
