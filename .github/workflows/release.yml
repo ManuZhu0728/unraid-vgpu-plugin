@@ -1,0 +1,39 @@
+name: Test and publish plugin
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/release.json']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Hardware-free tests
+        run: bash tests/run-tests.sh
+
+  release:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build, publish and verify public plugin assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/publish-github.py

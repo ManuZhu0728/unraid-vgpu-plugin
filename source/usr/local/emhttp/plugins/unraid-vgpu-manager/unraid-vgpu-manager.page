@@ -1,0 +1,643 @@
+Menu="Utilities"
+Title="NVIDIA vGPU Manager"
+Icon="nvidia-driver.png"
+---
+<?php
+/* Public UI only. Configuration, credentials and device mutations belong to cli.php. */
+
+function uvm_h($value): string
+{
+    return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function uvm_json($value): string
+{
+    return json_encode($value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES);
+}
+
+function uvm_read(string $path, int $limit = 65536): string
+{
+    if (!is_readable($path) || !is_file($path)) return '';
+    $value = @file_get_contents($path, false, null, 0, $limit);
+    return $value === false ? '' : trim($value);
+}
+
+function uvm_post(string $key, string $default = ''): string
+{
+    if (!isset($_POST[$key])) return $default;
+    if (!is_string($_POST[$key])) throw new InvalidArgumentException('Invalid form field: ' . $key);
+    return $_POST[$key];
+}
+
+function uvm_redact($value)
+{
+    global $uvm_secrets;
+    if (is_array($value)) {
+        $clean = [];
+        foreach ($value as $key => $entry) {
+            if (is_string($key) && preg_match('/token|password|secret|authorization/i', $key)) {
+                $clean[$key] = '[redacted]';
+            } else {
+                $clean[$key] = uvm_redact($entry);
+            }
+        }
+        return $clean;
+    }
+    if (!is_string($value)) return $value;
+    foreach ($uvm_secrets as $secret) {
+        if ($secret !== '') $value = str_replace($secret, '[redacted]', $value);
+    }
+    $value = preg_replace('~https?://[^\s/@]+:[^\s/@]+@~i', 'https://[redacted]@', $value);
+    return preg_replace('/\b(?:glpat-|github_pat_|gh[pousr]_)[A-Za-z0-9_.-]+/', '[redacted]', $value);
+}
+
+function uvm_cli(string $action, array $payload = []): array
+{
+    $allowed = ['status', 'config-save', 'source-test', 'source-versions', 'source-download', 'device-save', 'device-start', 'device-stop', 'device-remove'];
+    if (!in_array($action, $allowed, true)) throw new InvalidArgumentException('Unsupported action');
+    // Unraid may evaluate/cache .page templates outside their installed directory.
+    $entrypoint = '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/cli.php';
+    if (!is_file($entrypoint) || !is_executable('/usr/bin/php')) {
+        throw new RuntimeException('The plugin backend is not installed completely (include/cli.php or /usr/bin/php is missing).');
+    }
+    $input = json_encode($payload, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (strlen($input) > 131072) throw new InvalidArgumentException('The request exceeds 128 KiB.');
+    $pipes = [];
+    // argv array: no shell, and credentials are delivered only over stdin.
+    $process = proc_open(['/usr/bin/php', $entrypoint, $action], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($process)) throw new RuntimeException('Unable to start the plugin backend.');
+    foreach ($pipes as $pipe) stream_set_blocking($pipe, false);
+    $timeout = $action === 'source-download' ? 900 : (str_starts_with($action, 'source-') ? 90 : 30);
+    $deadline = microtime(true) + $timeout;
+    $offset = 0;
+    $output = '';
+    $tooLarge = false;
+    $expired = false;
+    $status = ['running' => true, 'exitcode' => -1];
+    while (true) {
+        if (is_resource($pipes[0])) {
+            if ($offset < strlen($input)) {
+                $written = @fwrite($pipes[0], substr($input, $offset, 65536));
+                if ($written !== false) $offset += $written;
+            }
+            if ($offset >= strlen($input)) fclose($pipes[0]);
+        }
+        $chunk = stream_get_contents($pipes[1]);
+        if ($chunk !== false) {
+            if (strlen($output) + strlen($chunk) > 2097152) $tooLarge = true;
+            $output .= substr($chunk, 0, max(0, 2097152 - strlen($output)));
+        }
+        // Drain stderr to avoid a full pipe; never return raw stderr containing secrets.
+        stream_get_contents($pipes[2]);
+        $status = proc_get_status($process);
+        if (!$status['running']) break;
+        if (microtime(true) >= $deadline) {
+            $expired = true;
+            proc_terminate($process, 15);
+            break;
+        }
+        usleep(20000);
+    }
+    $chunk = stream_get_contents($pipes[1]);
+    if ($chunk !== false) {
+        if (strlen($output) + strlen($chunk) > 2097152) $tooLarge = true;
+        $output .= substr($chunk, 0, max(0, 2097152 - strlen($output)));
+    }
+    foreach ($pipes as $pipe) if (is_resource($pipe)) fclose($pipe);
+    if ($expired) {
+        // Do not wait forever on a kernel-stuck child or claim that an action was cancelled.
+        throw new RuntimeException('The backend did not finish within its time limit. Completion is unknown; check status before retrying.');
+    }
+    $closed = proc_close($process);
+    $exitCode = $status['exitcode'] >= 0 ? $status['exitcode'] : $closed;
+    $result = json_decode($output, true);
+    if ($tooLarge || !is_array($result) || !array_key_exists('ok', $result) || !is_bool($result['ok'])) {
+        throw new RuntimeException('The backend returned an invalid response. Check the plugin installation and server logs.');
+    }
+    if (!$result['ok']) {
+        $error = $result['error'] ?? $result['data']['error'] ?? $result['data']['message'] ?? 'The requested action failed.';
+        throw new RuntimeException(is_string($error) ? uvm_redact($error) : 'The requested action failed.');
+    }
+    if ($exitCode !== 0) throw new RuntimeException('The backend exited with an error; the operation was not confirmed.');
+    if (isset($result['data']) && !is_array($result['data'])) {
+        throw new RuntimeException('The backend returned an invalid data object.');
+    }
+    return $result['data'] ?? [];
+}
+
+function uvm_csrf_token(): string
+{
+    global $var;
+    // Unraid's native token is held in var.ini and usually exposed as $var by emhttp.
+    $native = is_array($var ?? null) && is_string($var['csrf_token'] ?? null) ? $var['csrf_token'] : '';
+    if ($native !== '') return $native;
+    if (is_readable('/var/local/emhttp/var.ini')) {
+        $variables = @parse_ini_file('/var/local/emhttp/var.ini', false, INI_SCANNER_RAW);
+        if (is_array($variables) && is_string($variables['csrf_token'] ?? null)) return $variables['csrf_token'];
+    }
+    return '';
+}
+
+function uvm_origin_authority(string $url): string
+{
+    $parts = parse_url($url);
+    if (!$parts || !in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true) || empty($parts['host']) || isset($parts['user']) || isset($parts['pass'])) return '';
+    $scheme = strtolower($parts['scheme']);
+    $port = $parts['port'] ?? ($scheme === 'https' ? 443 : 80);
+    return $scheme . '://' . strtolower($parts['host']) . ':' . $port;
+}
+
+function uvm_check_post(string $expected): void
+{
+    if ($expected === '' || !hash_equals($expected, uvm_post('csrf_token'))) {
+        throw new RuntimeException('Unraid CSRF validation failed. Reload this page and sign in again if necessary.');
+    }
+    $fetchSite = strtolower((string)($_SERVER['HTTP_SEC_FETCH_SITE'] ?? ''));
+    if (in_array($fetchSite, ['cross-site', 'same-site'], true)) throw new RuntimeException('Cross-origin requests are not allowed.');
+    $scheme = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') || (string)($_SERVER['SERVER_PORT'] ?? '') === '443' ? 'https' : 'http';
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $local = uvm_origin_authority($scheme . '://' . $host);
+    $origin = (string)($_SERVER['HTTP_ORIGIN'] ?? '');
+    $referrer = (string)($_SERVER['HTTP_REFERER'] ?? '');
+    if ($local === '' || ($origin !== '' ? uvm_origin_authority($origin) !== $local : ($referrer === '' || uvm_origin_authority($referrer) !== $local))) {
+        throw new RuntimeException('The request origin does not match this Unraid web interface. Open the page using the same server URL.');
+    }
+}
+
+function uvm_form_hidden(string $action, string $csrf, array $fields = []): void
+{
+    echo '<input type="hidden" name="uvm_action" value="' . uvm_h($action) . '">';
+    echo '<input type="hidden" name="csrf_token" value="' . uvm_h($csrf) . '">';
+    foreach ($fields as $name => $value) echo '<input type="hidden" name="' . uvm_h($name) . '" value="' . uvm_h($value) . '">';
+}
+
+function uvm_profile_scan(): array
+{
+    $gpus = [];
+    foreach (glob('/sys/bus/pci/devices/*') ?: [] as $directory) {
+        if (uvm_read($directory . '/vendor') !== '0x10de' || !str_starts_with(uvm_read($directory . '/class'), '0x03')) continue;
+        $pci = basename($directory);
+        if (!preg_match('/^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$/D', $pci)) continue;
+        $profiles = [];
+        foreach (glob($directory . '/mdev_supported_types/*') ?: [] as $typeDirectory) {
+            $type = basename($typeDirectory);
+            if (!preg_match('/^nvidia-[0-9]+$/D', $type)) continue;
+            $info = [];
+            foreach (preg_split('/,\s*/', uvm_read($typeDirectory . '/description')) as $item) {
+                $pair = explode('=', $item, 2);
+                if (count($pair) === 2) $info[trim($pair[0])] = trim($pair[1]);
+            }
+            $profiles[] = [
+                'type' => $type, 'name' => uvm_read($typeDirectory . '/name'),
+                'available' => uvm_read($typeDirectory . '/available_instances'),
+                'framebuffer' => $info['framebuffer'] ?? '', 'heads' => $info['num_heads'] ?? '',
+                'resolution' => $info['max_resolution'] ?? '', 'frl' => $info['frl_config'] ?? '',
+                'maximum' => $info['max_instance'] ?? '',
+            ];
+        }
+        usort($profiles, static fn($left, $right) => strnatcmp($left['name'], $right['name']));
+        $gpus[$pci] = ['device' => uvm_read($directory . '/device'), 'profiles' => $profiles];
+    }
+    return $gpus;
+}
+
+$uvm_secrets = [];
+$uvm_csrf = uvm_csrf_token();
+$uvm_message = '';
+$uvm_error = '';
+$uvm_action_data = null;
+$uvm_versions = [];
+$uvm_action = '';
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    try {
+        uvm_check_post($uvm_csrf);
+        $uvm_action = uvm_post('uvm_action');
+        $payload = [];
+        switch ($uvm_action) {
+            case 'config-save':
+                $source = [];
+                foreach (['provider', 'mode', 'repository', 'driver', 'tag_template', 'project_id', 'package_name', 'package_version_template'] as $key) $source[$key] = trim(uvm_post('source_' . $key));
+                $payload = [
+                    'source' => $source,
+                    'runtime' => [
+                        'enabled' => uvm_post('runtime_enabled') === '1',
+                        'unlock' => uvm_post('runtime_unlock') === '1',
+                        'unlock_library' => trim(uvm_post('runtime_unlock_library')),
+                        'xml_override' => uvm_post('runtime_xml_override') === '1',
+                    ],
+                ];
+                $credentialChange = uvm_post('credential_change', 'keep');
+                if ($credentialChange === 'replace') {
+                    $token = uvm_post('credential_token');
+                    if ($token === '') throw new InvalidArgumentException('To replace credentials, enter a token. Choose “keep” or “remove” otherwise.');
+                    $uvm_secrets[] = $token;
+                    $payload['credential'] = ['type' => uvm_post('credential_type'), 'token' => $token, 'username' => trim(uvm_post('credential_username'))];
+                } elseif ($credentialChange === 'remove') {
+                    $payload['credential'] = ['type' => 'none', 'token' => '', 'username' => ''];
+                } elseif ($credentialChange !== 'keep') {
+                    throw new InvalidArgumentException('Invalid credential operation.');
+                }
+                if (uvm_post('override_replace') === '1') {
+                    $overrideContent = str_replace("\r", '', uvm_post('override_content'));
+                    if (strlen($overrideContent) > 65536) throw new InvalidArgumentException('profile_override.toml must not exceed 64 KiB.');
+                    $payload['override_content'] = $overrideContent;
+                }
+                $uvm_action_data = uvm_cli($uvm_action, $payload);
+                $uvm_message = '设置已保存。没有自动重启 vGPU、替换驱动或启动设备；需维护部署的更改请按下方状态处理。';
+                if (!empty($uvm_action_data['credential_cleared'])) $uvm_message .= ' 仓库身份已更改：旧仓库凭据不会转发给新仓库，请核对凭据状态。';
+                break;
+            case 'source-test':
+            case 'source-versions':
+            case 'source-download':
+                // Only saved source + saved credentials are used. No implicit config-save.
+                $uvm_action_data = uvm_cli($uvm_action);
+                if (($uvm_action_data['ok'] ?? true) === false) throw new RuntimeException((string)($uvm_action_data['error'] ?? $uvm_action_data['message'] ?? 'The source operation failed.'));
+                if ($uvm_action === 'source-versions') {
+                    $uvm_versions = is_array($uvm_action_data['versions'] ?? null) ? $uvm_action_data['versions'] : [];
+                    $uvm_message = count($uvm_versions) ? '已查询保存的驱动源。列表不会自动修改已选驱动版本。' : '查询完成，未返回可用版本；检查仓库、权限与下载模式。';
+                } elseif ($uvm_action === 'source-download') {
+                    $uvm_message = '驱动包下载操作已完成。下载仅进入插件缓存，不代表当前驱动已安装或切换；请检查下方缓存结果并安排维护重启部署。';
+                } else {
+                    $uvm_message = '已完成保存的驱动源访问测试；这不代表 GPU 功能测试通过。';
+                }
+                break;
+            case 'device-save':
+                foreach (['uuid', 'pci', 'profile', 'type'] as $key) $payload[$key] = trim(uvm_post($key));
+                $uvm_action_data = uvm_cli($uvm_action, $payload);
+                $uvm_message = '设备配置保存操作已完成；保存不等于创建成功或虚拟机已启动。已存在且一致的配置不会重复更改，请查看设备的当前状态。';
+                break;
+            case 'device-start':
+            case 'device-stop':
+            case 'device-remove':
+                $uvm_action_data = uvm_cli($uvm_action, ['uuid' => trim(uvm_post('uuid'))]);
+                $uvm_message = ['device-start' => '设备启动操作已完成。请查看下方 sysfs 实际状态；虚拟机不会自动启动。', 'device-stop' => '设备停止操作已完成；保存的配置仍保留。', 'device-remove' => '设备移除操作已完成。请查看下方保存配置与实际状态。'][$uvm_action];
+                break;
+            default:
+                throw new InvalidArgumentException('Unsupported page action.');
+        }
+    } catch (Throwable $exception) {
+        $uvm_error = uvm_redact($exception->getMessage());
+        $uvm_message = '';
+    }
+}
+
+$uvm_status = [];
+$uvm_status_ok = false;
+try {
+    $uvm_status = uvm_cli('status');
+    $uvm_status_ok = true;
+} catch (Throwable $exception) {
+    $uvm_error .= ($uvm_error !== '' ? "\n" : '') . '状态读取失败：' . uvm_redact($exception->getMessage());
+}
+$uvm_defaults = [
+    'source' => ['provider' => 'gitlab', 'mode' => 'generic', 'repository' => '', 'driver' => '', 'project_id' => '', 'tag_template' => 'v{kernel}-{driver}', 'package_name' => 'build', 'package_version_template' => 'v{kernel}-{driver}'],
+    'runtime' => ['enabled' => false, 'unlock' => true, 'unlock_library' => '/usr/lib64/libvgpu_unlock_rs.so', 'xml_override' => false],
+];
+$uvm_settings = array_replace_recursive($uvm_defaults, is_array($uvm_status['settings'] ?? null) ? $uvm_status['settings'] : []);
+$uvm_source = $uvm_settings['source'];
+$uvm_runtime_settings = $uvm_settings['runtime'];
+$uvm_devices = is_array($uvm_status['devices'] ?? null) ? $uvm_status['devices'] : [];
+$uvm_runtime = is_array($uvm_status['runtime'] ?? null) ? $uvm_status['runtime'] : [];
+$uvm_pending = !empty($uvm_status['pending_restart']) || !empty($uvm_settings['pending_restart']);
+$uvm_controls = $uvm_status_ok && $uvm_csrf !== '';
+$uvm_gpus = uvm_profile_scan();
+$uvm_selected_package = $uvm_settings['selected_package'] ?? null;
+$uvm_override = is_string($uvm_status['override_content'] ?? null) ? $uvm_status['override_content'] : '';
+$uvm_uuid_bytes = random_bytes(16);
+$uvm_uuid_bytes[6] = chr((ord($uvm_uuid_bytes[6]) & 15) | 64);
+$uvm_uuid_bytes[8] = chr((ord($uvm_uuid_bytes[8]) & 63) | 128);
+$uvm_uuid_hex = bin2hex($uvm_uuid_bytes);
+$uvm_new_uuid = substr($uvm_uuid_hex, 0, 8) . '-' . substr($uvm_uuid_hex, 8, 4) . '-' . substr($uvm_uuid_hex, 12, 4) . '-' . substr($uvm_uuid_hex, 16, 4) . '-' . substr($uvm_uuid_hex, 20);
+?>
+<style>
+.uvm-wrap { max-width: 1400px; margin: 18px 0; }
+.uvm-wrap h2 { margin: 0 0 12px; font-size: 1.2em; }
+.uvm-wrap h3 { margin: 20px 0 10px; font-size: 1.05em; }
+.uvm-panel { border: 1px solid #8885; border-radius: 5px; padding: 18px; margin: 16px 0; }
+.uvm-note { padding: 12px 15px; margin: 12px 0; border-left: 4px solid #7596b4; background: #7596b412; line-height: 1.6; }
+.uvm-warning { border-left-color: #d29b36; background: #d29b3612; }
+.uvm-error { border-left-color: #c75555; background: #c7555512; white-space: pre-wrap; }
+.uvm-success { border-left-color: #548c65; background: #548c6512; }
+.uvm-muted { opacity: .75; font-size: .94em; }
+.uvm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px 22px; }
+.uvm-field { display: block; }
+.uvm-field > span { display: block; margin-bottom: 5px; }
+.uvm-field input:not([type=checkbox]), .uvm-field select, .uvm-field textarea { width: 100%; box-sizing: border-box; min-height: 32px; }
+.uvm-field small { display: block; margin: 5px 0; line-height: 1.45; opacity: .8; }
+.uvm-field textarea { min-height: 180px; font-family: monospace; }
+.uvm-wrap fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.uvm-wrap fieldset:disabled { opacity: .65; }
+.uvm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.uvm-actions form, .uvm-inline-form { display: inline-block; margin: 0; }
+.uvm-scroll { overflow-x: auto; }
+.uvm-wrap table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+.uvm-wrap th, .uvm-wrap td { padding: 9px; text-align: left; vertical-align: top; border-bottom: 1px solid #8884; white-space: normal; }
+.uvm-wrap code, .uvm-wrap pre { overflow-wrap: anywhere; }
+.uvm-wrap pre { white-space: pre-wrap; margin: 10px 0; padding: 12px; background: #8881; max-height: 450px; overflow: auto; }
+.uvm-status { display: flex; gap: 22px; flex-wrap: wrap; margin: 10px 0; }
+.uvm-status span { min-width: 170px; }
+.uvm-wrap button { margin: 0; }
+.uvm-wrap summary { cursor: pointer; }
+.uvm-form-busy { opacity: .65; }
+.uvm-profile-current { background: #7596b418; }
+</style>
+
+<div class="uvm-wrap" id="uvm-manager">
+  <h2>NVIDIA vGPU Manager</h2>
+  <p>独立插件 <code>unraid-vgpu-manager</code>。公开插件代码与驱动包来源分开管理；GitHub / GitLab 驱动源为可选配置，未配置 Token 不影响查看本地状态。</p>
+  <div class="uvm-note uvm-warning">首次迁移不会自动启用。请先核对旧插件、User Scripts 的自启任务及现有 VM / mdev 配置，避免两个管理器同时操作同一显卡。本页不热安装、重载或卸载 NVIDIA 驱动，也不自动导入旧配置。</div>
+  <?php if ($uvm_error !== ''): ?><div class="uvm-note uvm-error" role="alert"><?=uvm_h($uvm_error)?></div><?php endif; ?>
+  <?php if ($uvm_message !== ''): ?><div class="uvm-note uvm-success" role="status"><?=uvm_h($uvm_message)?></div><?php endif; ?>
+  <?php if ($uvm_csrf === ''): ?><div class="uvm-note uvm-error">无法读取 Unraid 原生 CSRF Token。所有操作已禁用；请从 Unraid WebUI 打开此页面。</div><?php endif; ?>
+  <div id="uvm-browser-message" class="uvm-note" role="status" hidden></div>
+
+  <section class="uvm-panel">
+    <h2>本机状态</h2>
+    <div class="uvm-status">
+      <span>内核：<code><?=uvm_h(php_uname('r'))?></code></span>
+      <span>已加载驱动：<code><?=uvm_h(uvm_read('/sys/module/nvidia/version') ?: '未加载 / 未知')?></code></span>
+      <span>管理器配置：<?=!empty($uvm_runtime_settings['enabled']) ? '启用（不代表已接管运行时）' : '禁用（默认）'?></span>
+      <span>驱动源凭据：<?=!empty($uvm_status['credential_configured']) ? '已配置（不显示内容）' : '未配置'?></span>
+    </div>
+    <?php if ($uvm_pending): ?><div class="uvm-note uvm-warning">存在待维护部署 / 重启的更改。保存配置或下载缓存不会自动应用到当前驱动；不要将“下载成功”视作“驱动已切换”。</div><?php endif; ?>
+    <?php if ($uvm_runtime): ?>
+    <details><summary>运行时后端状态（只读，不等于完整 GPU 验收）</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_runtime), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
+    <?php endif; ?>
+    <?php if ($uvm_selected_package): ?>
+    <details open><summary>已选择 / 缓存的驱动包（未热安装）</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_selected_package), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
+    <?php endif; ?>
+    <?php if ($uvm_action_data !== null): ?>
+    <details><summary>本次操作返回结果</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_action_data), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
+    <?php endif; ?>
+    <p class="uvm-muted">刷新页面只读取本地状态，不自动访问驱动仓库、不启动设备、不执行 ensure。</p>
+  </section>
+
+  <section class="uvm-panel">
+    <h2>保存配置</h2>
+    <form method="post" class="uvm-submit-form" autocomplete="off">
+      <?php uvm_form_hidden('config-save', $uvm_csrf); ?>
+      <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
+      <h3>可选驱动源</h3>
+      <div class="uvm-grid">
+        <label class="uvm-field"><span>平台</span><select name="source_provider" id="uvm-source-provider"><option value="gitlab" <?=$uvm_source['provider'] === 'gitlab' ? 'selected' : ''?>>GitLab</option><option value="github" <?=$uvm_source['provider'] === 'github' ? 'selected' : ''?>>GitHub</option></select></label>
+        <label class="uvm-field"><span>下载模式</span><select name="source_mode" id="uvm-source-mode"><option value="generic" <?=$uvm_source['mode'] === 'generic' ? 'selected' : ''?>>GitLab Generic Packages</option><option value="releases" <?=$uvm_source['mode'] === 'releases' ? 'selected' : ''?>>Releases</option></select><small>GitHub 只支持 Releases。GitLab deploy-token 不能枚举 Releases，应使用 Generic Packages，或改用适当的 API Token。</small></label>
+        <label class="uvm-field"><span>仓库 HTTPS 地址</span><input name="source_repository" type="url" maxlength="1024" placeholder="https://gitlab.example/group/project" value="<?=uvm_h($uvm_source['repository'])?>"><small>可以留空。不在地址中填写用户名、密码、Token 或查询参数。</small></label>
+        <label class="uvm-field"><span>驱动版本</span><input name="source_driver" type="text" maxlength="32" placeholder="595.58.03" value="<?=uvm_h($uvm_source['driver'])?>"><small>X.Y.Z；下载以当前保存版本和本机内核为准。</small></label>
+        <label class="uvm-field"><span>Release Tag 模板</span><input name="source_tag_template" type="text" maxlength="1024" value="<?=uvm_h($uvm_source['tag_template'])?>"><small>可用占位符：<code>{kernel}</code>、<code>{driver}</code>。</small></label>
+        <label class="uvm-field"><span>GitLab 项目 ID（可选）</span><input name="source_project_id" type="text" maxlength="128" value="<?=uvm_h($uvm_source['project_id'])?>"><small>留空时由仓库路径定位；私有 GitLab 可填写数值项目 ID。</small></label>
+        <label class="uvm-field"><span>Generic Package 名称</span><input name="source_package_name" type="text" maxlength="128" value="<?=uvm_h($uvm_source['package_name'])?>"></label>
+        <label class="uvm-field"><span>Generic Package 版本模板</span><input name="source_package_version_template" type="text" maxlength="1024" value="<?=uvm_h($uvm_source['package_version_template'])?>"><small>可用占位符：<code>{kernel}</code>、<code>{driver}</code>。</small></label>
+      </div>
+
+      <h3>驱动源凭据</h3>
+      <div class="uvm-grid">
+        <label class="uvm-field"><span>本次保存如何处理凭据</span><select name="credential_change" id="uvm-credential-change"><option value="keep">保留现有凭据 / 不设置</option><option value="replace">替换凭据</option><option value="remove">删除保存的凭据（使用公开访问）</option></select><small>Token 永不回填；同一仓库留空不会覆盖已保存 Token。更换平台 / 仓库 / 项目 ID 时，后端会清除旧仓库凭据，需为新仓库重新填写。</small></label>
+        <label class="uvm-field"><span>凭据类型（仅替换时使用）</span><select name="credential_type" id="uvm-credential-type"><option value="private-token">GitLab PRIVATE-TOKEN</option><option value="deploy-token">GitLab deploy-token（Generic Packages）</option><option value="bearer">GitHub Bearer Token</option></select></label>
+        <label class="uvm-field"><span>Token（仅替换时填写）</span><input name="credential_token" id="uvm-credential-token" type="password" maxlength="4096" value="" autocomplete="new-password" spellcheck="false"><small>通过后端 stdin 保存，不进入命令参数。公开仓库不必填写。</small></label>
+        <label class="uvm-field"><span>用户名（后端需要时填写）</span><input name="credential_username" id="uvm-credential-username" type="text" maxlength="256" value="" autocomplete="off"></label>
+      </div>
+
+      <h3>vGPU 运行配置</h3>
+      <div class="uvm-grid">
+        <label class="uvm-field"><span>管理器开机接管</span><select name="runtime_enabled"><option value="0" <?=empty($uvm_runtime_settings['enabled']) ? 'selected' : ''?>>禁用（仅查看 / 维护配置）</option><option value="1" <?=!empty($uvm_runtime_settings['enabled']) ? 'selected' : ''?>>启用（完成迁移后下次维护启动使用）</option></select><small>启用前须停用冲突的旧插件 / User Scripts。此处仅保存配置，不立即 ensure 或重启服务。</small></label>
+        <label class="uvm-field"><span>UnlockRS unlock</span><select name="runtime_unlock"><option value="1" <?=!empty($uvm_runtime_settings['unlock']) ? 'selected' : ''?>>true</option><option value="0" <?=empty($uvm_runtime_settings['unlock']) ? 'selected' : ''?>>false</option></select><small>须与实际驱动及 UnlockRS 实现匹配；保存后不热重载驱动。</small></label>
+        <label class="uvm-field"><span>UnlockRS 库路径</span><select name="runtime_unlock_library"><option value="/usr/lib64/libvgpu_unlock_rs.so" <?=$uvm_runtime_settings['unlock_library'] === '/usr/lib64/libvgpu_unlock_rs.so' ? 'selected' : ''?>>/usr/lib64/libvgpu_unlock_rs.so</option><option value="/usr/lib/libvgpu_unlock_rs.so" <?=$uvm_runtime_settings['unlock_library'] === '/usr/lib/libvgpu_unlock_rs.so' ? 'selected' : ''?>>/usr/lib/libvgpu_unlock_rs.so</option></select><small>仅支持已安装驱动包内的路径，不由本页下载或替换。</small></label>
+        <label class="uvm-field"><span>自定义 vgpuConfig.xml</span><select name="runtime_xml_override"><option value="0">禁用，使用已安装驱动配套 XML</option></select><small>本预览版本不支持 XML 覆盖。不要沿用其他驱动分支 XML。</small></label>
+      </div>
+
+      <details style="margin-top:18px"><summary>profile_override.toml（高级；仅勾选后替换）</summary>
+        <p><label><input type="checkbox" name="override_replace" value="1" id="uvm-override-replace"> 本次保存替换 profile_override.toml 内容（空内容表示清空）</label></p>
+        <label class="uvm-field"><textarea name="override_content" id="uvm-override-content" spellcheck="false" maxlength="65536"><?=uvm_h($uvm_override)?></textarea><small>最多 64 KiB；未勾选时保留现有文件。本页不自动覆盖旧插件目录中的文件。</small></label>
+      </details>
+      <div class="uvm-actions"><button type="submit">保存配置</button><span class="uvm-muted">只保存，不启动 / 重启 vGPU。</span></div>
+      </fieldset>
+    </form>
+
+    <h3>手动驱动源操作</h3>
+    <p>先保存上方配置，再执行下列操作。操作只使用已保存的驱动源和凭据，不会自动保存未提交表单；页面加载时不执行网络查询。</p>
+    <div class="uvm-actions">
+      <?php foreach (['source-test' => '测试保存的驱动源', 'source-versions' => '查询版本', 'source-download' => '下载保存版本到缓存'] as $action => $label): ?>
+      <form method="post" class="uvm-submit-form" <?=$action === 'source-download' ? 'data-confirm="仅下载到缓存，不立即安装或重启。继续？"' : ''?>><?php uvm_form_hidden($action, $uvm_csrf); ?><button type="submit" <?=!$uvm_controls ? 'disabled' : ''?>><?=uvm_h($label)?></button></form>
+      <?php endforeach; ?>
+    </div>
+    <p class="uvm-muted">下载可能需要数分钟；不要重复提交。缓存包须经维护部署并重启后再验收，不能直接据此判定与旧插件兼容。</p>
+    <?php if ($uvm_versions): ?><div class="uvm-scroll"><table><thead><tr><th>驱动</th><th>内核</th><th>Tag / 版本</th><th>文件名</th></tr></thead><tbody>
+    <?php foreach ($uvm_versions as $version): if (!is_array($version)) continue; ?><tr><td><?=uvm_h($version['driver'] ?? '')?></td><td><?=uvm_h($version['kernel'] ?? '')?></td><td><?=uvm_h($version['tag'] ?? '')?></td><td><?=uvm_h($version['filename'] ?? '')?></td></tr><?php endforeach; ?>
+    </tbody></table></div><?php endif; ?>
+  </section>
+
+  <section class="uvm-panel">
+    <h2>已保存的 vGPU 设备</h2>
+    <p>设备 UUID 必须与 VM XML 一致。运行中的 VM 不应停止或移除对应 mdev；后端会进行在用检查。保存配置与启动设备是独立操作。</p>
+    <?php if (!$uvm_devices): ?><p class="uvm-muted">本插件尚未保存设备。现有旧插件 / User Scripts 的设备不会自动导入。</p><?php else: ?>
+    <div class="uvm-scroll"><table><thead><tr><th>UUID / VM XML</th><th>GPU / 配置</th><th>sysfs 实际状态</th><th>操作</th></tr></thead><tbody>
+    <?php foreach ($uvm_devices as $device):
+      if (!is_array($device)) continue;
+      $uuid = (string)($device['uuid'] ?? '');
+      $validUuid = preg_match('/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/D', $uuid) === 1;
+      $active = $validUuid && is_dir('/sys/bus/mdev/devices/' . $uuid);
+      $xml = "<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci' display='off' ramfb='off'>\n  <source>\n    <address uuid='" . $uuid . "'/>\n  </source>\n</hostdev>";
+    ?>
+      <tr><td><code><?=uvm_h($uuid)?></code><?php if ($validUuid): ?><details><summary>VM XML 片段</summary><pre class="uvm-vm-xml"><?=uvm_h($xml)?></pre><button type="button" class="uvm-copy-xml">复制 XML</button></details><?php endif; ?></td>
+        <td><code><?=uvm_h($device['pci'] ?? '')?></code><br><?=uvm_h($device['profile'] ?? '')?><br><code><?=uvm_h($device['type'] ?? '')?></code></td>
+        <td><?=$active ? 'mdev 存在（不代表 VM 正在运行）' : 'mdev 不存在 / 未启动'?></td>
+        <td><div class="uvm-actions" style="margin-top:0">
+          <button type="button" class="uvm-edit-device" data-device="<?=uvm_h(uvm_json($device))?>" <?=!$uvm_controls ? 'disabled' : ''?>>载入配置</button>
+          <?php foreach (['device-start' => '启动', 'device-stop' => '停止', 'device-remove' => '移除配置'] as $action => $label): ?>
+          <form method="post" class="uvm-submit-form" <?=in_array($action, ['device-stop', 'device-remove'], true) ? 'data-confirm="请确认 VM 已关闭且未占用此 mdev。继续此操作？"' : ''?>><?php uvm_form_hidden($action, $uvm_csrf, ['uuid' => $uuid]); ?><button type="submit" <?=!$uvm_controls || !$validUuid || ($action === 'device-start' && ($active || empty($uvm_runtime_settings['enabled']))) || ($action === 'device-stop' && !$active) ? 'disabled' : ''?>><?=uvm_h($label)?></button></form>
+          <?php endforeach; ?>
+        </div></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody></table></div><?php endif; ?>
+  </section>
+
+  <section class="uvm-panel">
+    <h2>添加设备 / 查看保存配置</h2>
+    <form method="post" class="uvm-submit-form" id="uvm-device-form">
+      <?php uvm_form_hidden('device-save', $uvm_csrf); ?>
+      <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
+      <div class="uvm-grid">
+        <label class="uvm-field"><span>mdev UUID</span><input name="uuid" id="uvm-device-uuid" type="text" maxlength="36" required pattern="[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" value="<?=uvm_h($uvm_new_uuid)?>"><small>同 UUID 配置必须一致。更换 PCI / profile 前须关闭 VM，停止并移除旧配置，再用原 UUID 添加；本页不会更改 VM XML。</small></label>
+        <label class="uvm-field"><span>物理 GPU PCI 地址</span><select name="pci" id="uvm-device-pci" required><option value="">选择 GPU</option><?php foreach ($uvm_gpus as $pci => $gpu): ?><option value="<?=uvm_h($pci)?>"><?=uvm_h($pci . ' · NVIDIA ' . $gpu['device'])?></option><?php endforeach; ?></select></label>
+        <label class="uvm-field"><span>配置名称（以当前驱动 sysfs 为准）</span><input name="profile" id="uvm-device-profile" type="text" maxlength="128" required readonly placeholder="在下表选择配置"></label>
+        <label class="uvm-field"><span>当前 mdev 类型 ID</span><input name="type" id="uvm-device-type" type="text" maxlength="32" readonly placeholder="nvidia-…"><small>升级后 ID 可能变化，后端会按配置名称重新核对；不要套用其他版本的 ID。</small></label>
+      </div>
+      <div class="uvm-scroll"><table><thead><tr><th>选择</th><th>配置名称</th><th>类型</th><th>显存</th><th>显示头</th><th>最大分辨率</th><th>FRL</th><th>可用 / 上限</th></tr></thead><tbody id="uvm-profile-body"><tr><td colspan="8">选择 GPU 后显示驱动提供的配置。</td></tr></tbody></table></div>
+      <p class="uvm-muted">配置表只读扫描 <code>mdev_supported_types</code>。可用 / 上限是驱动公布的配置实例数，不是本卡实际可分配显存总量；仍需给宿主机、Docker 和其他 VM 预留资源。</p>
+      <?php if (!$uvm_gpus): ?><div class="uvm-note uvm-warning">未发现 NVIDIA 显示设备。请先检查已安装驱动及硬件，本页不会自动加载模块。</div><?php endif; ?>
+      <div class="uvm-actions"><button type="submit">仅保存设备配置</button><button type="button" id="uvm-new-device">新建设备 UUID</button></div>
+      </fieldset>
+    </form>
+    <p class="uvm-muted">若配置列表为空，请检查运行时状态和既有服务。不要为了刷新列表而热卸载共享中的显卡。</p>
+  </section>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const root = document.getElementById('uvm-manager');
+  if (!root) return;
+  const gpus = <?=uvm_json($uvm_gpus)?>;
+  const notice = document.getElementById('uvm-browser-message');
+  function message(text, error) {
+    notice.textContent = text;
+    notice.hidden = false;
+    notice.className = error ? 'uvm-note uvm-error' : 'uvm-note';
+  }
+  const provider = document.getElementById('uvm-source-provider');
+  const mode = document.getElementById('uvm-source-mode');
+  function sourceOptions() {
+    const generic = mode.querySelector('option[value="generic"]');
+    generic.disabled = provider.value === 'github';
+    if (generic.disabled && mode.value === 'generic') mode.value = 'releases';
+    const credentialType = document.getElementById('uvm-credential-type');
+    Array.from(credentialType.options).forEach(function (option) {
+      option.disabled = provider.value === 'github' ? option.value !== 'bearer' : option.value === 'bearer';
+    });
+    if (credentialType.selectedOptions[0].disabled) credentialType.value = provider.value === 'github' ? 'bearer' : 'private-token';
+  }
+  provider.addEventListener('change', sourceOptions);
+  sourceOptions();
+  const credentialChange = document.getElementById('uvm-credential-change');
+  function credentialOptions() {
+    const replacing = credentialChange.value === 'replace';
+    ['uvm-credential-type', 'uvm-credential-token', 'uvm-credential-username'].forEach(function (id) {
+      document.getElementById(id).disabled = !replacing;
+    });
+    const token = document.getElementById('uvm-credential-token');
+    token.required = replacing;
+    if (!replacing) token.value = '';
+  }
+  credentialChange.addEventListener('change', credentialOptions);
+  credentialOptions();
+  const replaceOverride = document.getElementById('uvm-override-replace');
+  const override = document.getElementById('uvm-override-content');
+  function overrideOptions() { override.disabled = !replaceOverride.checked; }
+  replaceOverride.addEventListener('change', overrideOptions);
+  overrideOptions();
+
+  const pci = document.getElementById('uvm-device-pci');
+  const profile = document.getElementById('uvm-device-profile');
+  const type = document.getElementById('uvm-device-type');
+  const uuid = document.getElementById('uvm-device-uuid');
+  const body = document.getElementById('uvm-profile-body');
+  function cell(row, text) {
+    const node = document.createElement('td');
+    node.textContent = text;
+    row.appendChild(node);
+    return node;
+  }
+  function renderProfiles(selectedName) {
+    body.replaceChildren();
+    const rows = gpus[pci.value] ? gpus[pci.value].profiles : [];
+    if (!rows.length) {
+      const row = document.createElement('tr');
+      const node = cell(row, pci.value ? '驱动尚未公布此 GPU 的 mdev 配置；请检查运行时状态。' : '选择 GPU 后显示驱动提供的配置。');
+      node.colSpan = 8;
+      body.appendChild(row);
+      return;
+    }
+    rows.forEach(function (entry) {
+      const row = document.createElement('tr');
+      const select = document.createElement('input');
+      select.type = 'radio';
+      select.name = 'uvm_profile_picker';
+      select.value = entry.type;
+      select.setAttribute('aria-label', entry.name);
+      const current = selectedName === entry.name;
+      select.checked = current;
+      // Existing definitions can still be viewed/edited even if their profile is full.
+      select.disabled = Number(entry.available) === 0 && !current;
+      if (current) row.className = 'uvm-profile-current';
+      select.addEventListener('change', function () {
+        profile.value = entry.name;
+        type.value = entry.type;
+        body.querySelectorAll('tr').forEach(function (item) { item.classList.remove('uvm-profile-current'); });
+        row.classList.add('uvm-profile-current');
+      });
+      const selected = cell(row, '');
+      selected.appendChild(select);
+      [entry.name, entry.type, entry.framebuffer, entry.heads, entry.resolution, entry.frl, entry.available + ' / ' + (entry.maximum || '未知')].forEach(function (value) { cell(row, value); });
+      body.appendChild(row);
+      if (current) type.value = entry.type;
+    });
+  }
+  pci.addEventListener('change', function () {
+    profile.value = '';
+    type.value = '';
+    renderProfiles('');
+  });
+  root.querySelectorAll('.uvm-edit-device').forEach(function (button) {
+    button.addEventListener('click', function () {
+      try {
+        const device = JSON.parse(button.dataset.device);
+        uuid.value = device.uuid;
+        if (!gpus[device.pci]) {
+          const existing = Array.from(pci.options).find(function (option) { return option.value === device.pci; });
+          if (!existing) {
+            const option = document.createElement('option');
+            option.value = device.pci;
+            option.textContent = device.pci + '（当前未发现）';
+            pci.appendChild(option);
+          }
+        }
+        pci.value = device.pci;
+        profile.value = device.profile;
+        type.value = device.type;
+        renderProfiles(device.profile);
+        document.getElementById('uvm-device-form').scrollIntoView({behavior: 'smooth', block: 'center'});
+      } catch (_) { message('无法读取该设备配置，请刷新页面后重试。', true); }
+    });
+  });
+  document.getElementById('uvm-new-device').addEventListener('click', function () {
+    if (!window.crypto || !window.crypto.getRandomValues) {
+      message('浏览器无法安全生成 UUID，请刷新页面使用服务端生成的 UUID。', true);
+      return;
+    }
+    const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    const hex = Array.from(bytes, function (value) { return value.toString(16).padStart(2, '0'); }).join('');
+    uuid.value = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+    pci.value = '';
+    profile.value = '';
+    type.value = '';
+    renderProfiles('');
+  });
+  root.querySelectorAll('.uvm-copy-xml').forEach(function (button) {
+    button.addEventListener('click', async function () {
+      const snippet = button.parentElement.querySelector('.uvm-vm-xml');
+      try {
+        if (!navigator.clipboard) throw new Error('clipboard unavailable');
+        await navigator.clipboard.writeText(snippet.textContent);
+        message('XML 已复制。修改 VM XML 前先关闭虚拟机并核对 UUID。', false);
+      } catch (_) {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(snippet);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        message('浏览器未允许剪贴板访问，已选中 XML，请手动复制。', false);
+      }
+    });
+  });
+  let submitting = false;
+  root.querySelectorAll('.uvm-submit-form').forEach(function (form) {
+    form.addEventListener('submit', function (event) {
+      if (submitting) { event.preventDefault(); return; }
+      if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) { event.preventDefault(); return; }
+      if (form.id === 'uvm-device-form' && (!profile.value || !type.value)) {
+        event.preventDefault();
+        message('请先从当前 GPU 配置表选择 profile。', true);
+        return;
+      }
+      submitting = true;
+      form.classList.add('uvm-form-busy');
+      // Do not disable form fields: their values must remain in the submitted POST.
+      message('正在提交操作，请勿重复点击或刷新；下载可能需要数分钟。', false);
+    });
+  });
+  renderProfiles('');
+})();
+</script>

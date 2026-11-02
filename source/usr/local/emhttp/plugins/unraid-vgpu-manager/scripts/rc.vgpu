@@ -1,0 +1,19 @@
+#!/bin/bash
+# Compatibility shim: the PHP backend is the only runtime mutation boundary.
+set -eu
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+case "${1:-status}" in
+  status|plan|ensure|boot)
+    [ "$#" -le 1 ] || { echo 'Unexpected arguments' >&2; exit 2; }
+    exec php "${SCRIPT_DIR}/../include/cli.php" "${1:-status}"
+    ;;
+  start)
+    [ "$#" -eq 1 ] || { echo 'Unexpected arguments' >&2; exit 2; }
+    exec php "${SCRIPT_DIR}/../include/cli.php" ensure
+    ;;
+  stop|restart|update|apply)
+    echo 'Global runtime stop/restart/hot-update is disabled. Use the locked WebGUI/CLI device actions, or plan maintenance and reboot.' >&2
+    exit 2
+    ;;
+  *) echo 'Usage: rc.vgpu [status|plan|ensure|boot|start]' >&2; exit 2 ;;
+esac

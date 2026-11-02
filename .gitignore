@@ -1,2 +1,9 @@
 makepkg*
 .claude
+.tools/
+dist/
+work/
+__pycache__/
+*.pyc
+*.token
+credentials.json

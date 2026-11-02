@@ -1,76 +1,79 @@
-# Unraid Nvidia vGPU Driver plugin
+# Unraid vGPU Manager（Alpha）
 
-# NO LONGER MERGED DRIVER!!!!
+基于 novidio 新版派生，分开管理**公开插件自身**和**用户配置的驱动下载源**。
+公开插件仓库为 [ManuZhu0728/unraid-vgpu-plugin](https://github.com/ManuZhu0728/unraid-vgpu-plugin)。
+当前为 Alpha：已进行无硬件测试，尚未在真实 Unraid 上验收，不建议直接替换现用启动链。
 
-As of 6.12.54 we are no longer using the merged driver. This means the driver will not work on docker containers in Unraid. The driver will only support vGPU usage in a virtual machine.
+## 功能与边界
 
-- Latest version currently supported: Check releases tab
-- Unraid driver for vGPU. Split your GPU amongst VMs.
-- This is the repository for the Unraid vGPU Driver plugin.
+- 安装管理界面不依赖驱动仓库或 token；未配置不删除插件。
+- 支持 GitHub Releases、GitLab Releases/Generic，包括学校自建 GitLab。
+- 凭据不进入 URL、命令参数或插件包；跨源跳转不转发 token。
+- 按当前内核筛选驱动，校验 MD5、XZ/TAR、模块 version/vermagic 和 vGPU/CUDA 必需文件。
+- 下载只进缓存，不回退来源、不清理旧包、不自动切换驱动。
+- 所有页面写操作经统一后端和锁；运行管理默认关闭。
+- 设备保存 UUID、PCI、profile 名；停止失败不删除定义，未知占用拒绝破坏性操作。
 
-## How it works
+**Alpha 仅管理已经安装的驱动；缓存不代表驱动已安装。** 缓存驱动的安装和服务器
+迁移需另行审查/授权。模拟测试不等于实机通过，MMIO 不属于这轮改造。
 
-Install the plugin, then go to **Settings → Novidio vGPU**. Everything is managed from
-that page — **no user-scripts script is needed anymore**:
+## 安装入口
 
-1. The plugin downloads and installs the driver build matching your Unraid kernel
-   (published on the releases tab, tagged by kernel version).
-2. At every boot the plugin loads the modules in the right order
-   (`nvidia` → `mdev` → `nvidia-vgpu-vfio`), starts `nvidia-vgpud` / `nvidia-vgpu-mgr`
-   with vgpu_unlock, waits for the vGPU types to appear and recreates your configured
-   vGPU devices.
-3. On the plugin page you add a vGPU by picking your GPU, a profile (read live from
-   the driver) and a UUID (generated for you). The page shows the `<hostdev>` XML
-   snippet to paste into your VM template — uuid is the only thing that differs
-   per device:
+在 Unraid 的 Plugins → Install Plugin 中使用：
 
-```xml
-    <hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci' display='off' ramfb='off'>
-      <source>
-        <address uuid='2b6976dd-8620-49de-8d8d-ae9ba47a50db'/>
-      </source>
-    </hostdev>
+```text
+https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg
 ```
 
-## Driver updates without a reboot
+安装只下载公开的插件管理程序，不需要学校 GitLab token，也不携带 NVIDIA 驱动。
+运行管理默认关闭；现有 novidio 插件或 User Scripts 仍在使用时，不要启用新运行管理。
+先备份并明确唯一启动入口，再单独安排维护迁移。
 
-When a new driver build is available the plugin page shows an **Update Now** button.
-The update stops the vGPU devices and daemons, unloads the old module, installs the
-new package and brings everything back up — no reboot needed. If a VM is holding a
-vGPU the module can't be unloaded; the plugin then keeps the old driver running and
-the new one installs on the next reboot instead.
+版本附件和已知边界见 [Releases](https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases)
+及 [首版说明](docs/releases/v2026.11.02.3-alpha.1.md)。不使用 `releases/latest/download`，
+因为 Alpha 是预发布；根目录 PLG 作为固定更新入口，指向明确版本的附件。
 
-## Settings stored on the flash drive
+## 私有 GitLab 配置示例
 
-| Path | Purpose |
-|---|---|
-| `/boot/config/plugins/novidio-vgpu-driver/settings.cfg` | plugin settings (`unlock`, `update_check`, …) |
-| `/boot/config/plugins/novidio-vgpu-driver/vgpu-devices.cfg` | your vGPU devices (`UUID\|PCI\|TYPE`, managed by the page) |
-| `/boot/config/nvidia-vgpu/profile_override.toml` | vgpu_unlock profile overrides (editable on the page) |
-| `/boot/config/nvidia-vgpu/vgpuConfig.xml` | **optional** vgpuConfig.xml override |
+在页面保存以下非敏感字段；真实 token 不写进仓库：
 
-### vgpuConfig.xml override (older GPUs, e.g. Pascal / Tesla P4)
+| 字段 | 示例 |
+| --- | --- |
+| 平台 / 模式 | GitLab / Generic Package |
+| 仓库 | `https://gitlab.example.com/group/unraid-vgpu`（替换为自己的项目） |
+| 驱动 | `595.58.03` |
+| Package 名称 | `build` |
+| Package 版本模板 | `v{kernel}-{driver}` |
+| 凭据 | Deploy Token，或有读取权限的 Private Token |
 
-`nvidia-vgpud` only accepts GPUs listed in `/usr/share/nvidia/vgpu/vgpuConfig.xml`.
-The 550 (vGPU 17.x) driver dropped Pascal cards from that file, so the daemon logs
-`GPU not supported by vGPU` and no mdev types appear. Fix: extract `vgpuConfig.xml`
-from a 16.x (535) vgpu-kvm host driver and place it at
-`/boot/config/nvidia-vgpu/vgpuConfig.xml`. The plugin applies it before starting the
-daemons at every boot and after **Restart vGPU Services**.
+Generic 使用明确版本；Deploy Token 只需 `read_package_registry`，但不能查询普通
+Releases API。Releases 发现需要 API 读取权限。GitHub 私有源使用目标仓库 Contents
+只读 token；公开源可不填。token 单独保存、页面不回填。
 
-### vGPU unlock
+驱动文件如 `nvidia-595.58.03-6.18.58-Unraid-1.txz` 和同名 `.md5`，不下载底包、分卷或
+构建输入。首版包校验面向本项目 merged vGPU/CUDA 格式，不承诺兼容任意第三方格式。
+novidio 风格的 GitHub tag 可配置 `{kernel}-Unraid`。
 
-The *vGPU unlock* setting on the plugin page is the single source of truth for
-`/etc/vgpu_unlock/config.toml`. Leave it **disabled** for natively supported cards
-(Tesla/Quadro — you get the native profiles, e.g. `P4-1Q`); enable it to spoof
-consumer GPUs. Changing it requires **Restart vGPU Services**. Note that the
-reported device ID changes with this setting (a P4 spoofed as P40 exposes different
-profile IDs), so pick your profile after setting it.
+## 测试与打包
 
-### Credits
-- Thanks to stl88083365 for the unraid plugin foundation
-- Thanks to the discord user @mbuchel for the experimental patches
-- Thanks to the discord user @LIL'pingu for the extended 43 crash fix
-- Special thanks to @DualCoder without his work (vGPU_Unlock) we would not be here
-- and thanks to the discord user @snowman for creating this patcher
-- thanks to the discord user @midi creating this shell scripts
+```bash
+bash tests/run-tests.sh
+python3 scripts/build-plugin.py --version 2026.11.02.3
+```
+
+产物在 `dist/2026.11.02.3/`，包括插件 TXZ、MD5 和无需联网的
+`offline/unraid-vgpu-manager.plg`。离线和在线定义使用相同文件名，避免遗留双启动定义。
+在线安装器和自动发布方法见 [开发文档](docs/DEVELOPMENT.md)。
+
+## 配置安全
+
+持久目录为 `/boot/config/plugins/unraid-vgpu-manager/`，包含配置、独立凭据和驱动缓存。
+Unraid 闪存常为 FAT，不能只靠 `chmod 600` 保证持久凭据私密；闪存和配置备份都按
+敏感文件处理。推荐使用项目级、只读、可撤销的 token。
+
+保存 override 不会修改运行快照；默认不覆盖驱动配套 XML，不强杀进程、不热卸载驱动。
+卸载插件不自动停止 GPU 任务或删除持久凭据/缓存；维护迁移与凭据撤销要明确处理。
+
+`upstream/novidio-vgpu-driver.plg` 和旧源码只是保留的上游对照，**不要用于安装本插件**。
+构建器仅打包 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
+来源与致谢见 [UPSTREAM](docs/UPSTREAM.md)。
