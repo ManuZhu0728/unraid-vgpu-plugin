@@ -101,7 +101,11 @@ final class Source
 
     private static function package(array $result): array
     {
-        if (!preg_match('/^nvidia-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+-Unraid-1\.txz$/D', $result['filename'])) throw new \InvalidArgumentException('Use a driver TXZ link, for example nvidia-595.58.03-6.18.58-Unraid-1.txz');
+        try {
+            PackageIdentity::parse($result['filename']);
+        } catch (\InvalidArgumentException $error) {
+            throw new \InvalidArgumentException('Use a driver TXZ link, for example nvidia-595.58.03-6.18.58-Unraid-1.txz');
+        }
         return $result;
     }
 }

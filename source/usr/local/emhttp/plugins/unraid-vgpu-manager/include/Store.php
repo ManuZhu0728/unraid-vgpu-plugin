@@ -10,17 +10,18 @@ final class Store
     public static function defaults(): array
     {
         return [
-            'schema_version' => 1,
+            'schema_version' => 2,
             'source' => [
                 'provider' => 'auto', 'mode' => 'auto', 'repository' => '', 'url' => '',
-                'project_id' => '', 'driver' => '', 'tag_template' => 'v{kernel}-{driver}',
+                'project_id' => '', 'driver' => '', 'build' => '', 'tag_template' => 'v{kernel}-{driver}',
                 'package_name' => 'build', 'package_version_template' => 'v{kernel}-{driver}',
             ],
             'runtime' => [
                 'enabled' => false, 'unlock' => true,
                 'unlock_library' => '/usr/lib64/libvgpu_unlock_rs.so', 'xml_override' => false,
             ],
-            'upgrade' => ['enabled' => false, 'driver_branch' => '', 'enabled_boot_id' => ''],
+            'driver' => ['enabled' => false, 'enabled_boot_id' => ''],
+            'upgrade' => ['enabled' => false, 'driver_branch' => ''],
             'selected_package' => null,
             'pending_restart' => false,
         ];
@@ -28,7 +29,25 @@ final class Store
 
     public function settings(): array
     {
-        return array_replace_recursive(self::defaults(), $this->read($this->paths->settingsFile, []));
+        $stored = $this->read($this->paths->settingsFile, []);
+        foreach (['driver', 'upgrade', 'runtime'] as $section) {
+            if (array_key_exists($section, $stored) && !is_array($stored[$section])) {
+                throw new \RuntimeException('Invalid ' . $section . ' configuration');
+            }
+        }
+        $settings = array_replace_recursive(self::defaults(), $stored);
+        // The former upgrade switch enabled both prefetch and installation.
+        // Normalize in memory only; reading status must not rewrite settings.
+        if (!array_key_exists('driver', $stored) && ($stored['schema_version'] ?? 1) === 1) {
+            $legacyBoot = $stored['upgrade']['enabled_boot_id'] ?? '';
+            $settings['driver'] = [
+                'enabled' => ($stored['upgrade']['enabled'] ?? false) === true,
+                'enabled_boot_id' => is_string($legacyBoot) ? $legacyBoot : '',
+            ];
+        }
+        $settings['schema_version'] = 2;
+        unset($settings['upgrade']['enabled_boot_id']);
+        return $settings;
     }
 
     public function devices(): array
@@ -80,13 +99,17 @@ final class Store
         if ($source['driver'] !== '' && !preg_match('/^\d+\.\d+\.\d+$/D', $source['driver'])) {
             throw new \InvalidArgumentException('Driver version must be X.Y.Z');
         }
+        if ($source['build'] !== '') {
+            $source['build'] = (string)PackageIdentity::build($source['build']);
+            if ($source['driver'] === '') throw new \InvalidArgumentException('Choose a driver version before pinning a package build');
+        }
         if (($source['project_id'] !== '' && !preg_match('/^[1-9][0-9]*$/D', $source['project_id'])) || !preg_match('/^[A-Za-z0-9_.-]+$/D', $source['package_name'])) {
             throw new \InvalidArgumentException('Invalid project ID or package name');
         }
         foreach (['tag_template', 'package_version_template'] as $field) {
-            $literal = str_replace(['{kernel}', '{driver}'], '', $source[$field]);
+            $literal = str_replace(['{kernel}', '{driver}', '{build}'], '', $source[$field]);
             if (!preg_match('/^[A-Za-z0-9_.{}-]+$/D', $source[$field]) || preg_match('/[{}]/', $literal)) {
-                throw new \InvalidArgumentException('Only {kernel} and {driver} placeholders are supported');
+                throw new \InvalidArgumentException('Only {kernel}, {driver} and {build} placeholders are supported');
             }
         }
         return $source;

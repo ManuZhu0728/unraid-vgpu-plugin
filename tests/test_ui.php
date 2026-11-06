@@ -91,6 +91,12 @@ function ui_panel(array $rendered, string $tab): string
     return $rendered['panels'][$tab];
 }
 
+function ui_form(array $rendered, string $id): string
+{
+    ui_check(preg_match('~<form\b(?=[^>]*\bid="' . preg_quote($id, '~') . '")[^>]*>.*?</form>~s', $rendered['html'], $form) === 1, 'Expected independent form: ' . $id);
+    return $form[0];
+}
+
 function ui_inventory_fixture(array $base, array $rows, array $checks = ['active_known' => true, 'defined_known' => true], array $messages = []): array
 {
     $base['status']['device_inventory'] = ['devices' => $rows, 'checks' => $checks, 'messages' => $messages];
@@ -171,19 +177,26 @@ ui_check($rendered['profile_scans'] === 1, 'All native tabs must share one profi
 ui_check(str_contains($rendered['html'], 'uvm-source-url') && str_contains($rendered['html'], 'GitHub / GitLab'), 'UI must offer a repository or release URL as the primary input');
 ui_check(str_contains($rendered['html'], 'name="credential_token"') && preg_match('/name="credential_token"[^>]*value=""/', $rendered['html']) === 1, 'Token must render as an empty password field');
 ui_check(str_contains($rendered['html'], '<summary>高级设置</summary>') && str_contains($rendered['html'], '下载到缓存'), 'Protocol options must be folded into advanced settings');
-ui_check(str_contains($rendered['html'], '跟随 Unraid 更新驱动') && str_contains($rendered['html'], '下次开机安装'), 'UI must expose opt-in OS-following preparation and boot installation');
+ui_check(str_contains($rendered['html'], '开机恢复驱动') && str_contains($rendered['html'], '系统升级预下载') && str_contains($rendered['html'], '下次开机安装'), 'UI must distinguish cached boot installation from upgrade prefetch');
 ui_check(!str_contains($rendered['html'], '不等于完整 GPU 验收') && !str_contains($rendered['html'], '不执行 ensure'), 'Status copy must not repeat implementation caveats');
 ui_check(str_contains($rendered['html'], 'uvm-upload-package') && str_contains($rendered['html'], 'source-upload-chunk'), 'Local package upload must be exposed');
 ui_check(str_contains($rendered['html'], 'window.location.replace(') && !str_contains($rendered['html'], 'window.location.reload('), 'Upload completion must navigate with GET rather than replaying an earlier POST');
-ui_check(str_contains($rendered['html'], 'name="upgrade_enabled"') && str_contains($rendered['html'], '升级准备'), 'OS following must have one setting and a preparation status panel');
+ui_check(substr_count($rendered['html'], 'name="upgrade_enabled"') === 1 && str_contains($rendered['html'], '升级准备'), 'Upgrade prefetch must have one setting and a preparation status panel');
 ui_check(str_contains($rendered['html'], 'name="csrf_token"') && str_contains($rendered['html'], 'name="uvm_csrf_token"'), 'Forms must include native gateway and plugin CSRF fields');
 ui_check(!str_contains(ui_panel($rendered, 'driver'), 'name="runtime_enabled"') && !str_contains(ui_panel($rendered, 'driver'), 'id="uvm-device-form"'), 'Driver tab must not render runtime controls');
 ui_check(str_contains(ui_panel($rendered, 'driver'), 'name="config_section" value="source"'), 'Source form must identify its independent save section');
+$sourceForm = ui_form($rendered, 'uvm-source-form');
+$policyForm = ui_form($rendered, 'uvm-driver-policy-form');
+foreach (['driver_enabled', 'upgrade_enabled', 'runtime_enabled'] as $field) ui_check(!str_contains($sourceForm, 'name="' . $field . '"'), 'Source form must not own lifecycle control ' . $field);
+ui_check(str_contains($policyForm, 'name="config_section" value="driver"'), 'The boot and prefetch policy must save through its own driver section');
+foreach (['driver_enabled', 'upgrade_enabled'] as $field) ui_check(str_contains($policyForm, 'name="' . $field . '"'), 'Policy form must expose ' . $field);
+foreach (['source_url', 'credential_token', 'runtime_enabled'] as $field) ui_check(!str_contains($policyForm, 'name="' . $field . '"'), 'Policy form must not submit unrelated field ' . $field);
 
 $vgpuRendered = ui_render($base + ['tab' => 'vgpu']);
 ui_check(ui_actions($vgpuRendered) === ['status', 'logs'], 'vGPU tab GET must not start devices or query remote sources');
 ui_check(str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="runtime_enabled"') && str_contains(ui_panel($vgpuRendered, 'vgpu'), 'id="uvm-device-form"'), 'vGPU tab must contain boot settings and the device editor');
 ui_check(!str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="source_url"') && !str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="credential_token"'), 'vGPU tab must not render source credentials or download settings');
+ui_check(!str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="driver_enabled"') && !str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="upgrade_enabled"'), 'vGPU initialization must not own either driver lifecycle switch');
 ui_check(preg_match('/<details[^>]*id="uvm-device-editor"[^>]*>\s*<summary[^>]*>添加设备/u', ui_panel($vgpuRendered, 'vgpu'), $editor) === 1 && preg_match('/\bopen\b/', $editor[0]) !== 1, 'Add device editor must start collapsed');
 $statusRendered = ui_render($base + ['tab' => 'status']);
 ui_check(ui_actions($statusRendered) === ['status', 'logs'], 'Status tab GET must only read local status and whitelisted logs');
@@ -205,6 +218,32 @@ foreach (['driver', 'vgpu', 'status'] as $tab) {
 ui_check(preg_match('/<section[^>]*id="uvm-local-panel"[^>]*\bhidden\b/', ui_render($base)['html']) === 1, 'Local upload must be an alternate mode rather than a second expanded panel');
 $localRendered = ui_render($base + ['get' => ['driver_mode' => 'local']]);
 ui_check(preg_match('/<section[^>]*id="uvm-online-panel"[^>]*\bhidden\b/', $localRendered['html']) === 1 && preg_match('/<section[^>]*id="uvm-local-panel"[^>]*\bhidden\b/', $localRendered['html']) !== 1, 'Local mode must render the upload panel and hide online settings');
+ui_check(ui_form($localRendered, 'uvm-driver-policy-form') === $policyForm, 'Local-only users must get the same boot controls without a repository or credential');
+foreach (['uvm-online-panel', 'uvm-local-panel'] as $panelId) {
+    preg_match('~<section\b(?=[^>]*\bid="' . $panelId . '")[^>]*>.*?</section>~s', $localRendered['html'], $modePanel);
+    ui_check(!str_contains($modePanel[0], 'uvm-driver-policy-form'), 'Policy controls must remain outside mode-specific visibility panels');
+}
+ui_check(preg_match('/<section[^>]*id="uvm-driver-policy-panel"[^>]*\bhidden\b/', $localRendered['html']) !== 1 && !str_contains(ui_form($localRendered, 'uvm-driver-policy-form'), '<fieldset disabled'), 'Local mode must leave policy controls visible and enabled');
+
+foreach ([false, true] as $driverEnabled) foreach ([false, true] as $upgradeEnabled) foreach ([false, true] as $runtimeEnabled) {
+    $flagsFixture = $base;
+    $flagsFixture['status']['settings']['driver']['enabled'] = $driverEnabled;
+    $flagsFixture['status']['settings']['upgrade']['enabled'] = $upgradeEnabled;
+    $flagsFixture['status']['settings']['runtime']['enabled'] = $runtimeEnabled;
+    $flagsRendered = ui_render($flagsFixture);
+    foreach (['driver' => $driverEnabled, 'upgrade' => $upgradeEnabled, 'runtime' => $runtimeEnabled] as $section => $enabled) {
+        preg_match('~<select name="' . $section . '_enabled">.*?</select>~s', $flagsRendered['html'], $select);
+        ui_check(str_contains($select[0] ?? '', '<option value="' . (int)$enabled . '" selected>'), 'The ' . $section . ' select must reflect only its own setting');
+    }
+    foreach (['开机恢复驱动' => $driverEnabled, '系统升级预下载' => $upgradeEnabled, 'vGPU 初始化' => $runtimeEnabled] as $label => $enabled) {
+        ui_check(str_contains(ui_panel($flagsRendered, 'status'), '<tr><td>' . $label . '</td><td>' . ($enabled ? '开启' : '关闭')), 'Status must independently report ' . $label);
+    }
+}
+$legacyFlags = $base;
+unset($legacyFlags['status']['settings']['driver']);
+$legacyFlags['status']['settings']['upgrade']['enabled'] = true;
+$legacyRendered = ui_render($legacyFlags);
+ui_check(str_contains(ui_panel($legacyRendered, 'status'), '<tr><td>开机恢复驱动</td><td>关闭'), 'An incomplete status snapshot must not infer a driver setting from prefetch; persisted migration belongs to Store');
 foreach (['kernel', 'vgpu', '../../etc/shadow', ['bad']] as $category) {
     $rendered = ui_render($base + ['tab' => 'status', 'get' => ['log_category' => $category]]);
     ui_check($rendered['calls'][1]['payload'] === ['category' => is_string($category) && in_array($category, ['kernel', 'vgpu'], true) ? $category : 'plugin'], 'Log GET must pass only a known category to the local backend');
@@ -247,6 +286,7 @@ $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' 
 ui_check(ui_actions($rendered) === ['config-save', 'status', 'logs'], 'Explicit config POST must save once then read status');
 ui_check($rendered['calls'][0]['payload']['credential']['token'] === 'ui-fixture-secret-value', 'Token must reach backend JSON payload unchanged');
 ui_check(!isset($rendered['calls'][0]['payload']['runtime']), 'Saving source must not submit runtime booleans');
+ui_check(!isset($rendered['calls'][0]['payload']['driver']) && !isset($rendered['calls'][0]['payload']['upgrade']), 'A current source-only form must preserve both driver lifecycle switches');
 ui_check(!str_contains($rendered['html'], 'ui-fixture-secret-value'), 'Submitted token must never reappear in rendered HTML');
 ui_check(!isset($rendered['calls'][0]['payload']['override_content']), 'Unchecked override must not overwrite existing file');
 $post['credential_change'] = 'keep';
@@ -263,22 +303,49 @@ $runtimePost = array_replace($config, [
     'uvm_tab' => 'vgpu', 'config_section' => 'runtime', 'runtime_enabled' => '1', 'runtime_unlock' => '1',
     'override_replace' => '1', 'override_content' => "[fixture]\r\nvalue = true\r\n",
     'credential_change' => 'replace', 'credential_token' => 'unrelated-source-token',
-    'upgrade_enabled' => '0', 'source_connect' => '1',
+    'upgrade_enabled' => '0', 'driver_enabled' => '0', 'source_connect' => '1',
 ]);
 $rendered = ui_render($base + ['tab' => 'vgpu', 'server' => ['REQUEST_METHOD' => 'POST'], 'post' => $runtimePost]);
 ui_check(ui_actions($rendered) === ['config-save', 'status', 'logs'], 'Runtime save must stay on its tab without a source lookup');
 ui_check($rendered['calls'][0]['payload']['runtime']['enabled'] === true, 'Runtime save must carry its own booleans');
 ui_check($rendered['calls'][0]['payload']['override_content'] === "[fixture]\nvalue = true\n", 'Runtime override replacement must normalize CR');
-foreach (['source', 'credential', 'upgrade'] as $otherSection) ui_check(!isset($rendered['calls'][0]['payload'][$otherSection]), 'Runtime save must not alter ' . $otherSection);
+foreach (['source', 'credential', 'driver', 'upgrade'] as $otherSection) ui_check(!isset($rendered['calls'][0]['payload'][$otherSection]), 'Runtime save must not alter ' . $otherSection);
 ui_check(str_contains($rendered['html'], 'const preferredTab = "vgpu";'), 'Runtime save must select the vGPU native tab after the full page renders');
 ui_check(str_contains(ui_panel($rendered, 'vgpu'), 'vGPU 设置已保存。') && !str_contains(ui_panel($rendered, 'driver'), 'vGPU 设置已保存。'), 'Success notices must stay inside the tab that submitted the request');
 $withoutOverride = array_replace($runtimePost, ['override_replace' => '0']);
 $rendered = ui_render($base + ['tab' => 'vgpu', 'server' => ['REQUEST_METHOD' => 'POST'], 'post' => $withoutOverride]);
 ui_check(!isset($rendered['calls'][0]['payload']['override_content']), 'Unchecked runtime override editor must preserve the stored file');
+
+$policyPost = [
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_action' => 'config-save',
+    'uvm_tab' => 'driver', 'config_section' => 'driver',
+];
+foreach (['0', '1'] as $driverEnabled) foreach (['0', '1'] as $upgradeEnabled) {
+    $post = $policyPost + [
+        'driver_enabled' => $driverEnabled, 'upgrade_enabled' => $upgradeEnabled,
+        'runtime_enabled' => '1', 'source_url' => 'https://stale.example.test/driver', 'source_connect' => '1',
+        'credential_change' => 'replace', 'credential_token' => 'irrelevant-stale-token', 'driver_enabled_boot_id' => 'forged',
+    ];
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $post]);
+    ui_check(ui_actions($rendered) === ['config-save', 'status', 'logs'], 'Policy save must run once across native tabs without source lookup, driver install or runtime execution');
+    ui_check($rendered['calls'][0]['payload'] === ['driver' => ['enabled' => $driverEnabled === '1'], 'upgrade' => ['enabled' => $upgradeEnabled === '1']], 'Policy save must forward only its two explicit switches and never browser boot IDs');
+    ui_check(str_contains(ui_panel($rendered, 'driver'), '驱动启动与升级设置已保存。') && !str_contains(ui_panel($rendered, 'vgpu'), '驱动启动与升级设置已保存。'), 'Policy notices must belong to the driver tab');
+}
+foreach (['driver', 'upgrade'] as $section) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $policyPost + [$section . '_enabled' => '1']]);
+    ui_check($rendered['calls'][0]['payload'] === [$section => ['enabled' => true]], 'Missing policy fields must preserve the other switch instead of turning it off');
+}
+foreach ([$policyPost, $policyPost + ['driver_enabled' => 'invalid'], $policyPost + ['driver_enabled' => ['1']], $policyPost + ['upgrade_enabled' => 'true'], $policyPost + ['upgrade_enabled' => ['0']]] as $post) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $post]);
+    ui_check(ui_actions($rendered) === ['status', 'logs'], 'Empty or malformed policy forms must not write configuration');
+}
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $config + ['driver_enabled' => '0']]);
+ui_check(!isset($rendered['calls'][0]['payload']['driver']), 'An old source form or stale browser field must not reset driver restoration');
 foreach ([
     array_replace($config, ['uvm_tab' => 'vgpu']),
     array_replace($runtimePost, ['uvm_tab' => 'driver']),
     array_replace($config, ['uvm_tab' => 'status']),
+    array_replace($policyPost, ['uvm_tab' => 'vgpu', 'driver_enabled' => '1']),
     array_replace($config, ['uvm_action' => 'device-start']),
     array_replace($config, ['uvm_tab' => 'vgpu', 'uvm_action' => 'source-download']),
     array_replace($config, ['uvm_tab' => 'unknown']),
@@ -445,6 +512,7 @@ ui_check($rendered['calls'][0]['payload']['source']['repository'] === '', 'Clear
 $simple['upgrade_enabled'] = '1';
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $simple]);
 ui_check($rendered['calls'][0]['payload']['upgrade'] === ['enabled' => true], 'Upgrade following must be an explicit saved boolean');
+ui_check(!isset($rendered['calls'][0]['payload']['driver']), 'Legacy source forms may retain their prefetch setting but must never toggle cached boot installation');
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
     'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'upgrade-check', 'target_kernel' => '1.2.3-Unraid',
 ], 'responses' => ['upgrade-check' => ['ok' => true, 'status' => 'ready']]]);
@@ -458,6 +526,57 @@ $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' 
     'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'source-download', 'download_driver' => '580.159.03',
 ]]);
 ui_check($rendered['calls'][0]['payload'] === ['driver' => '580.159.03'], 'Download version selection must be an explicit per-request override');
+
+$revisions = [];
+foreach ([1, 2, 10] as $build) {
+    $revisions[] = ['driver' => '595.58.03', 'kernel' => '6.18.58-Unraid', 'build' => $build,
+        'filename' => 'nvidia-595.58.03-6.18.58-Unraid-' . $build . '.txz'];
+}
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'source-versions',
+], 'responses' => ['source-versions' => ['versions' => $revisions]]]);
+foreach ($revisions as $revision) {
+    ui_check(str_contains(ui_panel($rendered, 'driver'), 'value="' . $revision['filename'] . '">595.58.03 · 构建 ' . $revision['build']), 'Every build must have a distinct filename-valued option and a visible revision label');
+}
+ui_check(str_contains(ui_panel($rendered, 'driver'), '<th>构建号</th>'), 'The package table must distinguish builds of the same driver');
+foreach ($revisions as $revision) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
+        'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'source-download',
+        'download_package' => $revision['filename'], 'download_driver' => '580.159.03',
+    ]]);
+    ui_check(ui_actions($rendered) === ['source-download', 'status', 'logs'], 'Choosing a build must only download that package then read status');
+    ui_check($rendered['calls'][0]['payload'] === ['filename' => $revision['filename']], 'Canonical package selection must take precedence over a stale legacy driver field');
+}
+$pinPost = array_replace($config, ['source_driver' => '595.58.03', 'source_build' => '2']);
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $pinPost]);
+ui_check($rendered['calls'][0]['payload']['source']['build'] === '2', 'The advanced build pin must reach configuration validation');
+$legacyPost = $pinPost;
+unset($legacyPost['source_build']);
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $legacyPost]);
+ui_check($rendered['calls'][0]['payload']['source']['build'] === '', 'Old forms without a build field must keep automatic build selection');
+$cachedBuild = $base;
+$cachedBuild['status']['settings']['selected_package'] = $revisions[1] + ['source' => 'local'];
+$cachedBuild['status']['driver_installation'] = ['status' => 'pending_reboot', 'kernel' => '6.18.58-Unraid', 'message' => 'Selected build awaits reboot'];
+$rendered = ui_render($cachedBuild);
+ui_check(str_contains(ui_panel($rendered, 'driver'), 'NVIDIA 595.58.03 · 构建 2'), 'Cached build2 must be visible separately from the loaded driver version');
+ui_check(str_contains(ui_panel($rendered, 'driver'), '等待重启安装所选构建'), 'A selected but not installed build must show pending reboot');
+ui_check(str_contains(ui_panel($rendered, 'status'), '<tr><td>开机安装</td><td>等待重启</td>'), 'Status tab must translate pending reboot without claiming the selected build is active');
+$installationFixture = $cachedBuild;
+$installationFixture['status']['driver_installation']['last_success'] = ['package' => $revisions[0]];
+$installationFixture['status']['driver_installation']['attempted_package'] = $revisions[1];
+foreach (['pending_reboot' => 2, 'failed' => 2, 'installed' => 1, 'already_active' => 1] as $state => $expectedBuild) {
+    $installationFixture['status']['driver_installation']['status'] = $state;
+    $rendered = ui_render($installationFixture);
+    preg_match('~<tr><td>开机安装</td>.*?</tr>~s', ui_panel($rendered, 'status'), $installationRow);
+    ui_check(str_contains($installationRow[0], '595.58.03 · 构建 ' . $expectedBuild . ' · 6.18.58-Unraid'), 'Installation task must use attempted package for pending/failure and the last successful receipt for installed/active states');
+}
+$disabledFixture = $base;
+$disabledFixture['status']['upgrade'] = ['status' => 'disabled'];
+$disabledRendered = ui_render($disabledFixture);
+ui_check(str_contains(ui_panel($disabledRendered, 'status'), '升级预下载已关闭') && !str_contains(ui_panel($disabledRendered, 'status'), '自动更新已关闭'), 'Disabled upgrade status must describe prefetch only');
+unset($cachedBuild['status']['settings']['selected_package']['build']);
+$rendered = ui_render($cachedBuild);
+ui_check(str_contains(ui_panel($rendered, 'driver'), 'NVIDIA 595.58.03 · 构建 未记录'), 'The UI must not guess build1 from a driver version or incomplete build2 receipt');
 
 $upload = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'source-upload-begin',
     'filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz', 'total' => '200'];

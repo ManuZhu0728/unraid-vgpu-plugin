@@ -12,15 +12,32 @@ $uvm_status_defined_count = count(array_filter($uvm_status_inventory_rows, stati
 $uvm_log_categories = ['plugin' => '插件升级助手', 'vgpu' => 'vGPU 管理器', 'kernel' => 'NVIDIA 内核'];
 $uvm_log_category = $uvm_logs['category'] ?? 'plugin';
 if (!is_string($uvm_log_category) || !isset($uvm_log_categories[$uvm_log_category])) $uvm_log_category = 'plugin';
-$uvm_upgrade_labels = ['idle' => '尚无升级任务', 'current' => '当前内核缓存已就绪', 'disabled' => '自动更新已关闭', 'downloading' => '正在下载驱动', 'ready' => '驱动已准备好', 'missing' => '目标内核驱动尚未发布', 'error' => '准备失败', 'blocked' => '等待迁移启动入口'];
-$uvm_install_labels = ['installed' => '已完成', 'already_active' => '驱动已加载', 'installing' => '正在安装', 'failed' => '失败', 'blocked' => '等待迁移启动入口', 'missing_package' => '缺少匹配包'];
+$uvm_upgrade_labels = ['idle' => '尚无升级任务', 'current' => '当前内核缓存已就绪', 'disabled' => '升级预下载已关闭', 'downloading' => '正在下载驱动', 'ready' => '驱动已准备好', 'missing' => '目标内核驱动尚未发布', 'error' => '准备失败', 'blocked' => '等待迁移启动入口'];
+$uvm_install_labels = ['installed' => '已完成', 'already_active' => '驱动已加载', 'installing' => '正在安装', 'pending_reboot' => '等待重启', 'failed' => '失败', 'blocked' => '等待迁移启动入口', 'missing_package' => '缺少匹配包', 'disabled' => '开机恢复已关闭'];
+$uvm_install_package = $uvm_installation['attempted_package'] ?? [];
+if (in_array($uvm_installation['status'] ?? '', ['installed', 'already_active'], true)) {
+    $uvm_install_package = $uvm_installation['last_success']['package'] ?? $uvm_install_package;
+}
+$uvm_package_label = static function ($package, string $kernel = ''): string {
+    if (!is_array($package)) $package = [];
+    $parts = [];
+    if (!empty($package['driver'])) {
+        $parts[] = $package['driver'];
+        $parts[] = '构建 ' . ($package['build'] ?? '未记录');
+    }
+    $kernel = $package['kernel'] ?? $kernel;
+    if ($kernel !== '') $parts[] = $kernel;
+    return implode(' · ', $parts);
+};
 ?>
 <section class="uvm-panel">
   <h2>运行状态</h2>
   <div class="uvm-scroll"><table>
     <thead><tr><th>项目</th><th>状态</th></tr></thead>
     <tbody>
-      <tr><td>vGPU 开机管理</td><td><?=!empty($uvm_runtime_settings['enabled']) ? '开启' : '关闭'?><?php if ($uvm_pending): ?> · 设置待应用<?php endif; ?></td></tr>
+      <tr><td>开机恢复驱动</td><td><?=!empty($uvm_settings['driver']['enabled']) ? '开启' : '关闭'?></td></tr>
+      <tr><td>系统升级预下载</td><td><?=!empty($uvm_settings['upgrade']['enabled']) ? '开启' : '关闭'?></td></tr>
+      <tr><td>vGPU 初始化</td><td><?=!empty($uvm_runtime_settings['enabled']) ? '开启' : '关闭'?><?php if ($uvm_pending): ?> · 设置待应用<?php endif; ?></td></tr>
       <tr><td>nvidia-vgpu-mgr</td><td><?=!$uvm_process_known ? '读取失败' : ($uvm_manager_pids ? '运行中 · PID ' . uvm_h(implode(', ', $uvm_manager_pids)) : '未运行')?></td></tr>
       <tr><td>nvidia-vgpud</td><td><?=!$uvm_process_known ? '读取失败' : ($uvm_vgpud_pids ? '运行中 · PID ' . uvm_h(implode(', ', $uvm_vgpud_pids)) : '当前无常驻进程')?></td></tr>
       <tr><td>vGPU 配置列表</td><td><?=!empty($uvm_state['profiles_present']) ? '可用' : '未发现'?></td></tr>
@@ -67,16 +84,16 @@ $uvm_install_labels = ['installed' => '已完成', 'already_active' => '驱动�
 
 <section class="uvm-panel">
   <h2>驱动任务</h2>
-  <div class="uvm-scroll"><table>
+  <div class="uvm-scroll"><table id="uvm-driver-tasks">
     <thead><tr><th>任务</th><th>状态</th><th>版本 / 内核</th></tr></thead>
     <tbody>
-      <tr><td>驱动缓存</td><td><?=$uvm_selected_package ? (($uvm_selected_package['source'] ?? '') === 'local' ? '已导入' : '已下载') : '尚无缓存'?></td><td><?=uvm_h($uvm_selected_package['driver'] ?? '')?><?=isset($uvm_selected_package['kernel']) ? ' · ' . uvm_h($uvm_selected_package['kernel']) : ''?></td></tr>
-      <tr><td>升级准备</td><td><?=uvm_h($uvm_upgrade_labels[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?></td><td><?=uvm_h($uvm_upgrade['package']['driver'] ?? '')?><?=!empty($uvm_upgrade['target_kernel']) ? ' · ' . uvm_h($uvm_upgrade['target_kernel']) : ''?></td></tr>
-      <tr><td>开机安装</td><td><?=uvm_h($uvm_install_labels[$uvm_installation['status'] ?? ''] ?? ($uvm_installation['status'] ?? '尚无安装记录'))?></td><td><?=uvm_h($uvm_installation['driver'] ?? '')?><?=!empty($uvm_installation['kernel']) ? ' · ' . uvm_h($uvm_installation['kernel']) : ''?></td></tr>
+      <tr><td>驱动缓存</td><td><?=$uvm_selected_package ? (($uvm_selected_package['source'] ?? '') === 'local' ? '已导入' : '已下载') : '尚无缓存'?></td><td><?=uvm_h($uvm_package_label($uvm_selected_package))?></td></tr>
+      <tr><td>升级准备</td><td><?=uvm_h($uvm_upgrade_labels[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?></td><td><?=uvm_h($uvm_package_label($uvm_upgrade['package'] ?? [], $uvm_upgrade['target_kernel'] ?? ''))?></td></tr>
+      <tr><td>开机安装</td><td><?=uvm_h($uvm_install_labels[$uvm_installation['status'] ?? ''] ?? ($uvm_installation['status'] ?? '尚无安装记录'))?></td><td><?=uvm_h($uvm_package_label($uvm_install_package, $uvm_installation['kernel'] ?? ''))?></td></tr>
     </tbody>
   </table></div>
   <?php foreach (['升级准备' => $uvm_upgrade, '开机安装' => $uvm_installation] as $task_label => $task): ?>
-  <?php if (in_array($task['status'] ?? '', ['error', 'missing', 'failed', 'blocked', 'missing_package'], true) && !empty($task['message'])): ?><p><?=uvm_h($task_label)?>：<?=uvm_h(uvm_redact($task['message']))?></p><?php endif; ?>
+  <?php if (in_array($task['status'] ?? '', ['error', 'missing', 'failed', 'blocked', 'missing_package', 'pending_reboot'], true) && !empty($task['message'])): ?><p><?=uvm_h($task_label)?>：<?=uvm_h(uvm_redact($task['message']))?></p><?php endif; ?>
   <?php endforeach; ?>
   <details><summary>任务详情</summary><pre><?=uvm_h(json_encode(uvm_redact(['cache' => $uvm_selected_package, 'upgrade' => $uvm_upgrade, 'installation' => $uvm_installation]), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
 </section>

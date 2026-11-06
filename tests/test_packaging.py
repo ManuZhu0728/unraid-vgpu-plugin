@@ -28,6 +28,8 @@ class PackagingTests(unittest.TestCase):
                 for component in ['include/Upgrade.php', 'include/Installer.php', 'include/upgrade-watch.php', 'scripts/upgrade-helper', 'include/Logs.php', 'include/Inventory.php', 'include/ui-page.php', 'include/ui/common.php', 'include/ui/state.php', 'include/ui/driver.php', 'include/ui/vgpu.php', 'include/ui/status.php']:
                     self.assertIn('usr/local/emhttp/plugins/unraid-vgpu-manager/' + component, names)
                 prefix = 'usr/local/emhttp/plugins/unraid-vgpu-manager/'
+                self.assertIn(prefix + 'include/PackageIdentity.php', names)
+                self.assertIn(prefix + 'include/InstallConfiguration.php', names)
                 parent = archive.extractfile(prefix + 'unraid-vgpu-manager.page').read().decode()
                 self.assertIn('Type="xmenu"', parent)
                 self.assertIn('Tabs="true"', parent)

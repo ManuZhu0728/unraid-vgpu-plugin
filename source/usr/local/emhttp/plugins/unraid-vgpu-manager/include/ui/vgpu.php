@@ -88,7 +88,7 @@ if (!$uvm_inventory) {
   <form method="post" class="uvm-submit-form" id="uvm-runtime-form" autocomplete="off">
     <?php uvm_form_hidden('config-save', $uvm_csrf, ['config_section' => 'runtime']); ?>
     <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
-      <label class="uvm-field"><span>开机管理 vGPU</span><select name="runtime_enabled"><option value="0" <?=empty($uvm_runtime_settings['enabled']) ? 'selected' : ''?>>关闭</option><option value="1" <?=!empty($uvm_runtime_settings['enabled']) ? 'selected' : ''?>>开启</option></select><small>开机创建下面配置的设备。首次启用前，请停用原来的 vGPU 启动脚本。</small></label>
+      <label class="uvm-field"><span>vGPU 初始化</span><select name="runtime_enabled"><option value="0" <?=empty($uvm_runtime_settings['enabled']) ? 'selected' : ''?>>关闭</option><option value="1" <?=!empty($uvm_runtime_settings['enabled']) ? 'selected' : ''?>>开启</option></select><small>开机启动 vGPU 服务并创建已配置的设备。驱动安装在“驱动管理”页单独设置；首次启用请停用原 vGPU 启动脚本。</small></label>
       <details class="uvm-advanced"><summary>高级设置</summary>
         <div class="uvm-grid">
           <label class="uvm-field"><span>UnlockRS</span><select name="runtime_unlock"><option value="1" <?=!empty($uvm_runtime_settings['unlock']) ? 'selected' : ''?>>开启</option><option value="0" <?=empty($uvm_runtime_settings['unlock']) ? 'selected' : ''?>>关闭</option></select></label>

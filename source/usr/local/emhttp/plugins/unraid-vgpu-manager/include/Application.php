@@ -70,9 +70,23 @@ final class Application
         if (in_array($action, ['source-test', 'source-versions', 'source-download'], true)) {
             $source = Store::validateSource($settings['source']);
             if ($source['repository'] === '' && ($source['url'] ?? '') === '') throw new \RuntimeException('Save a driver link before connecting');
-            if ($action === 'source-download' && array_key_exists('driver', $input)) {
-                if (!is_string($input['driver'])) throw new \InvalidArgumentException('Driver version must be X.Y.Z');
-                $source = Store::validateSource(array_replace($source, ['driver' => $input['driver']]));
+            if ($action === 'source-download') {
+                $selection = [];
+                if (array_key_exists('filename', $input)) {
+                    if (!is_string($input['filename'])) throw new \InvalidArgumentException('Invalid driver package filename');
+                    if (array_key_exists('driver', $input) || array_key_exists('build', $input)) throw new \InvalidArgumentException('Choose a package filename or a driver/build pair');
+                    $identity = PackageIdentity::parse($input['filename'], $this->kernel());
+                    $selection = ['driver' => $identity['driver'], 'build' => (string)$identity['build']];
+                } else {
+                    if (array_key_exists('driver', $input)) {
+                        if (!is_string($input['driver'])) throw new \InvalidArgumentException('Driver version must be X.Y.Z');
+                        $selection = ['driver' => $input['driver']];
+                    }
+                    if (array_key_exists('build', $input)) $selection['build'] = (string)PackageIdentity::build($input['build']);
+                }
+                $effectiveSource = Store::validateSource(array_replace($source, $selection));
+                $this->assertPackagePolicy($effectiveSource, $source);
+                $source = $effectiveSource;
             }
             $credentials = $this->store->credentials();
             if (($credentials['token'] ?? '') !== '' && ($credentials['source_id'] ?? '') !== Store::sourceIdentity($source)) {
@@ -92,7 +106,7 @@ final class Application
         }
         if ($action === 'ensure' || $action === 'boot') {
             $installation = null;
-            if ($action === 'boot' && ($settings['upgrade']['enabled'] ?? false) === true) {
+            if ($action === 'boot' && ($settings['driver']['enabled'] ?? false) === true) {
                 $prepared = (new Upgrade($this->store, $this->download, $this->runner))->status();
                 $installation = (new Installer($this->store, $this->download, $this->runtime, $this->runner))->boot($settings, $prepared);
                 if (!($installation['ok'] ?? false)) return $installation;
@@ -141,6 +155,7 @@ final class Application
     {
         $previousSource = $settings['source'];
         $previousUpgrade = $settings['upgrade'];
+        $previousDriver = $settings['driver'];
         if (isset($input['source'])) {
             if (!is_array($input['source'])) throw new \InvalidArgumentException('Source must be an object');
             // Earlier clients edit repository on a complete settings snapshot.
@@ -168,16 +183,22 @@ final class Application
             }
             if ($settings['runtime']['xml_override']) throw new \InvalidArgumentException('XML overrides are not enabled in this preview; keep the XML paired with the installed driver');
         }
-        if (isset($input['upgrade'])) {
+        if (array_key_exists('driver', $input)) {
+            if (!is_array($input['driver']) || !is_bool($input['driver']['enabled'] ?? null)) {
+                throw new \InvalidArgumentException('Driver enabled must be a boolean');
+            }
+            $settings['driver']['enabled'] = $input['driver']['enabled'];
+            if ($input['driver']['enabled'] && !$previousDriver['enabled']) {
+                $bootId = $this->bootId();
+                if ($bootId === '') throw new \RuntimeException('Cannot identify this boot before enabling driver restoration');
+                $settings['driver']['enabled_boot_id'] = $bootId;
+            }
+        }
+        if (array_key_exists('upgrade', $input)) {
             if (!is_array($input['upgrade']) || !is_bool($input['upgrade']['enabled'] ?? null)) {
                 throw new \InvalidArgumentException('Upgrade enabled must be a boolean');
             }
             $settings['upgrade']['enabled'] = $input['upgrade']['enabled'];
-            if ($input['upgrade']['enabled'] && !$previousUpgrade['enabled']) {
-                $bootId = $this->bootId();
-                if ($bootId === '') throw new \RuntimeException('Cannot identify this boot before enabling automatic installation');
-                $settings['upgrade']['enabled_boot_id'] = $bootId;
-            }
         }
         $override = null;
         if (array_key_exists('override_content', $input)) {
@@ -213,21 +234,21 @@ final class Application
         // Validate the complete transaction before any persistent write.
         self::validateCredential($credentials, $settings['source']['provider']);
         $credentials['source_id'] = Store::sourceIdentity($settings['source']);
-        if (($settings['upgrade']['enabled'] ?? false) === true) {
+        if ($settings['driver']['enabled'] === true || $settings['upgrade']['enabled'] === true) {
             $driver = $settings['source']['driver'];
-            if ($driver === '' && ($settings['upgrade']['driver_branch'] === '' || !$previousUpgrade['enabled'])) {
+            $newDriver = $settings['driver']['enabled'] && !$previousDriver['enabled'];
+            $newPrefetch = $settings['upgrade']['enabled'] && !$previousUpgrade['enabled'];
+            $selected = $this->selectedPackageForPolicy($settings, $newDriver);
+            if ($driver === '' && ($settings['upgrade']['driver_branch'] === '' || $newDriver || $newPrefetch)) {
                 $loaded = $this->store->paths->path('/sys/module/nvidia/version');
-                $driver = is_file($loaded) ? trim((string)file_get_contents($loaded)) : (string)($settings['selected_package']['driver'] ?? '');
+                $driver = $selected['driver'] ?? (is_file($loaded) ? trim((string)file_get_contents($loaded)) : '');
                 $settings['upgrade']['driver_branch'] = '';
             }
             if (preg_match('/^([0-9]+)\.[0-9]+\.[0-9]+$/D', $driver, $match)) $settings['upgrade']['driver_branch'] = $match[1];
             // Explicitly enabling installation authorizes the previous cache
             // selection, but boot still revalidates every byte and module.
-            if (!$previousUpgrade['enabled'] && is_array($settings['selected_package'])) {
-                $selected = $settings['selected_package'];
-                if (($selected['source'] ?? '') === 'local' || ($selected['source'] ?? '') === $settings['source']['repository']) {
-                    $settings['selected_package'] = $this->packageReceipt($selected, $settings['source']);
-                }
+            if ($newDriver && $selected !== null) {
+                $settings['selected_package'] = $this->packageReceipt($selected, $settings['source']);
             }
         }
         if ($settings['runtime'] !== $oldRuntime) $settings['pending_restart'] = true;
@@ -235,8 +256,30 @@ final class Application
         if ($override !== null) $this->saveOverride($override);
         $this->store->saveSettings($settings);
         $result = ['message' => 'Configuration saved. No running GPU service was changed.', 'pending_restart' => $settings['pending_restart'], 'credential_cleared' => $changedIdentity];
-        if (isset($input['upgrade'])) $result['upgrade_helper'] = $this->syncUpgradeHelper($settings['upgrade']['enabled']);
+        if ($settings['upgrade']['enabled'] !== $previousUpgrade['enabled']) $result['upgrade_helper'] = $this->syncUpgradeHelper($settings['upgrade']['enabled']);
         return $result;
+    }
+
+    private function selectedPackageForPolicy(array $settings, bool $authorizing): ?array
+    {
+        if (!is_array($settings['selected_package'])) return null;
+        try {
+            $selected = PackageIdentity::receipt($settings['selected_package']);
+        } catch (\InvalidArgumentException $error) {
+            if ($authorizing) throw $error;
+            return null;
+        }
+        try { $this->assertPackagePolicy($selected, $settings['source']); }
+        catch (\InvalidArgumentException) { return null; }
+        if ($selected['kernel'] !== $this->kernel() . '-Unraid') return null;
+        if (($selected['source'] ?? '') === 'local') return $selected;
+        if ($settings['source']['repository'] === '' || ($selected['source'] ?? '') !== $settings['source']['repository']) return null;
+        foreach (['source_id' => Store::sourceIdentity($settings['source']), 'source_fingerprint' => Upgrade::sourceFingerprint($settings['source'])] as $field => $value) {
+            // Old selections lack provenance; explicit driver enablement can
+            // authorize those, but must not revive a known-obsolete receipt.
+            if (array_key_exists($field, $selected) && $selected[$field] !== $value) return null;
+        }
+        return $selected;
     }
 
     private static function validateCredential(array $credential, string $provider): void
@@ -255,20 +298,27 @@ final class Application
         $upload = new Upload($this->store->paths);
         if ($action === 'source-upload-cancel') return $upload->cancel($input['upload_id'] ?? null);
         $kernel = $this->kernel();
-        if ($action === 'source-upload-begin') return $upload->begin($input, $kernel);
+        if ($action === 'source-upload-begin') {
+            $filename = $upload->filename($input['filename'] ?? null, $kernel);
+            $this->assertPackagePolicy(PackageIdentity::parse($filename, $kernel), $settings['source']);
+            return $upload->begin($input, $kernel);
+        }
         if ($action === 'source-upload-chunk') return $upload->chunk($input, $kernel);
         $id = null;
         if ($action === 'source-upload-finish') {
             $id = $input['upload_id'] ?? null;
             $candidate = $upload->completed($id, $kernel);
         } else {
+            $filename = $upload->filename($input['filename'] ?? null, $kernel);
+            $this->assertPackagePolicy(PackageIdentity::parse($filename, $kernel), $settings['source']);
             $candidate = [
-                'filename' => $upload->filename($input['filename'] ?? null, $kernel),
+                'filename' => $filename,
                 'path' => $upload->uploadedFile($input['path'] ?? null, Upload::MAX_PACKAGE),
                 'checksum_path' => isset($input['checksum_path']) ? $upload->uploadedFile($input['checksum_path'], 4096) : null,
             ];
         }
         try {
+            $this->assertPackagePolicy(PackageIdentity::parse($candidate['filename'], $kernel), $settings['source']);
             $result = $this->download->importLocal($candidate['path'], $candidate['filename'], $candidate['checksum_path'], $kernel);
             if (($result['ok'] ?? false) && isset($result['package'])) {
                 $result['package']['source'] = 'local';
@@ -281,6 +331,14 @@ final class Application
             return $result;
         } finally {
             if ($id !== null) $upload->cancel($id);
+        }
+    }
+
+    private function assertPackagePolicy(array $candidate, array $source): void
+    {
+        if ((($source['driver'] ?? '') !== '' && ($candidate['driver'] ?? '') !== $source['driver']) ||
+            (($source['build'] ?? '') !== '' && (string)($candidate['build'] ?? '') !== $source['build'])) {
+            throw new \InvalidArgumentException('所选包与固定驱动版本/构建号不一致，请先修改高级设置。');
         }
     }
 
@@ -315,6 +373,7 @@ final class Application
 
     private function packageReceipt(array $package, array $source): array
     {
+        $package = PackageIdentity::receipt($package);
         $package['saved_boot_id'] = $this->bootId();
         $package['source_id'] = Store::sourceIdentity($source);
         $package['source_fingerprint'] = Upgrade::sourceFingerprint($source);

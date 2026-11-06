@@ -138,6 +138,7 @@ final class ApplicationFixture
             $result['stdout'] = ($argv[2] === 'version' ? '595.58.03' : '6.18.58-Unraid SMP preempt mod_unload') . "\n";
             return $result;
         }
+        if ($argv[0] === '/bin/bash' && $argv[1] === $this->paths->path('/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper') && in_array($argv[2], ['start', 'stop'], true)) return $result;
         if ($argv[0] === 'virsh') {
             $result['stdout'] = $argv[3] === 'list' ? implode("\n", array_keys($this->domains)) : ($this->domains[$argv[4]] ?? '');
             return $result;
@@ -265,13 +266,63 @@ try {
     $credentialBytes = file_get_contents($selectionFixture->paths->credentialsFile);
     application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => ['invalid']]), 'Driver version');
     application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => 'bad-version']), 'Driver version');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['filename' => ['invalid']]), 'Invalid driver package filename');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['filename' => 'nvidia-595.58.03-6.18.54-Unraid-2.txz']), 'another kernel');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-2.txz', 'build' => '2']), 'filename or a driver/build pair');
+    foreach (['0', '-1', '02', 'not-a-build', [], true] as $invalidBuild) {
+        application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => '595.58.03', 'build' => $invalidBuild]), 'build');
+    }
     application_check($selectionFixture->calls === [], 'Invalid per-download selection must be rejected before networking');
-    application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => '595.71.05']), 'Unexpected network/download invocation');
-    application_check(str_contains($selectionFixture->downloadInputs[0] ?? '', 'v6.18.58-595.71.05'), 'Explicit per-download selection must reach the temporary source context');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => '595.71.05']), '请先修改高级设置');
+    application_check($selectionFixture->calls === [], 'Per-download driver selection must not bypass a saved driver pin');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => '595.58.03']), 'Unexpected network/download invocation');
+    application_check(str_contains($selectionFixture->downloadInputs[0] ?? '', 'v6.18.58-595.58.03'), 'A matching per-download selection must reach the source context');
     application_check(file_get_contents($selectionFixture->paths->settingsFile) === $settingsBytes && file_get_contents($selectionFixture->paths->credentialsFile) === $credentialBytes, 'Failed or temporary per-download selection must preserve saved source and credential binding');
     application_check($selectionFixture->store->settings()['source']['driver'] === '595.58.03', 'Per-download selection must not replace saved source version');
     application_rejects(fn() => $selectionApp->dispatch('source-test', ['driver' => '595.71.05']), 'Unexpected network/download invocation');
     application_check(str_contains($selectionFixture->downloadInputs[1] ?? '', 'v6.18.58-595.58.03'), 'Source test must ignore unsaved per-download selection');
+
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => '595.58.03', 'build' => '2']), 'Unexpected network/download invocation');
+    application_check(str_contains($selectionFixture->downloadInputs[2] ?? '', '/v6.18.58-595.58.03-build2/nvidia-595.58.03-6.18.58-Unraid-2.txz'), 'An explicit build must reach the canonical Generic build2 URL');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-10.txz']), 'Unexpected network/download invocation');
+    application_check(str_contains($selectionFixture->downloadInputs[3] ?? '', '/v6.18.58-595.58.03-build10/nvidia-595.58.03-6.18.58-Unraid-10.txz'), 'A selected filename must forward its exact driver and build to Download');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz']), 'Unexpected network/download invocation');
+    application_check(str_contains($selectionFixture->downloadInputs[4] ?? '', '/v6.18.58-595.58.03/nvidia-595.58.03-6.18.58-Unraid-1.txz'), 'Explicit build1 rollback must retain the legacy Generic URL');
+    application_check(file_get_contents($selectionFixture->paths->settingsFile) === $settingsBytes && file_get_contents($selectionFixture->paths->credentialsFile) === $credentialBytes, 'Per-package download selection must preserve saved pins, cache and credential configuration');
+
+    $pinnedSource = array_replace($selectionSource, ['build' => '2']);
+    $selectionApp->dispatch('config-save', ['source' => $pinnedSource]);
+    $pinnedSettings = file_get_contents($selectionFixture->paths->settingsFile);
+    $pinnedCredentials = file_get_contents($selectionFixture->paths->credentialsFile);
+    $beforePinChecks = count($selectionFixture->calls);
+    foreach ([
+        ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz'],
+        ['driver' => '595.58.03', 'build' => '1'],
+        ['filename' => 'nvidia-580.159.03-6.18.58-Unraid-2.txz'],
+    ] as $conflict) {
+        application_rejects(fn() => $selectionApp->dispatch('source-download', $conflict), '请先修改高级设置');
+    }
+    foreach (['nvidia-595.58.03-6.18.58-Unraid-1.txz', 'nvidia-580.159.03-6.18.58-Unraid-2.txz'] as $conflictFilename) {
+        application_rejects(fn() => $selectionApp->dispatch('source-upload-begin', ['filename' => $conflictFilename, 'total' => 10]), '请先修改高级设置');
+        application_rejects(fn() => $selectionApp->dispatch('source-import', ['filename' => $conflictFilename, 'path' => '/tmp/unused-policy-fixture']), '请先修改高级设置');
+    }
+    application_check(count($selectionFixture->calls) === $beforePinChecks, 'Conflicting remote and local selections must fail before network or import work');
+    application_check(file_get_contents($selectionFixture->paths->settingsFile) === $pinnedSettings && file_get_contents($selectionFixture->paths->credentialsFile) === $pinnedCredentials, 'Policy rejection must preserve source pins, selected cache and credentials');
+    application_rejects(fn() => $selectionApp->dispatch('source-download', ['driver' => '595.58.03']), 'Unexpected network/download invocation');
+    application_check(str_contains(end($selectionFixture->downloadInputs), '/v6.18.58-595.58.03-build2/'), 'Legacy driver-only requests must retain a saved build pin');
+
+    $uploadPolicyFixture = $fixtures[] = new ApplicationFixture();
+    $uploadPolicyApp = $uploadPolicyFixture->application;
+    $uploadPolicyFixture->put('/tmp/phpBuildPin1', 'test-bytes');
+    $uploadStarted = $uploadPolicyApp->dispatch('source-upload-begin', ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-2.txz', 'total' => 10]);
+    $uploadPolicyApp->dispatch('source-upload-chunk', ['upload_id' => $uploadStarted['upload_id'], 'offset' => 0,
+        'path' => $uploadPolicyFixture->paths->path('/tmp/phpBuildPin1')]);
+    $uploadPolicyApp->dispatch('config-save', ['source' => array_replace($uploadPolicyFixture->source(), ['build' => '1'])]);
+    $beforeUploadFinish = file_get_contents($uploadPolicyFixture->paths->settingsFile);
+    application_rejects(fn() => $uploadPolicyApp->dispatch('source-upload-finish', ['upload_id' => $uploadStarted['upload_id']]), '请先修改高级设置');
+    application_check($uploadPolicyFixture->calls === [] && !is_dir($uploadPolicyFixture->paths->cacheDir), 'Changing the pin during upload must be rechecked before package import or archive validation');
+    application_check(file_get_contents($uploadPolicyFixture->paths->settingsFile) === $beforeUploadFinish, 'An upload rejected after a pin change must not become the selected package');
+    application_check(!is_dir($uploadPolicyFixture->paths->runtimeDir . '/upload-' . $uploadStarted['upload_id']), 'Completed but policy-conflicting upload staging must be cleaned');
 
     $legacySource = $selectionFixture->store->settings()['source'];
     $legacySource['repository'] = 'https://different.example.test/group/driver';
@@ -357,7 +408,8 @@ try {
     $upgradeFixture->put('/boot/config/plugins/unraid-vgpu-manager/packages/6.18.58/' . $baselineName, 'application-cache-fixture');
     $baselineSettings['selected_package'] = ['source' => $upgradeSource['repository'], 'provider' => $upgradeSource['provider'], 'driver' => '595.58.03',
         'kernel' => '6.18.58-Unraid', 'filename' => $baselineName, 'path' => $baselinePath,
-        'md5' => hash_file('md5', $baselinePath)];
+        'md5' => hash_file('md5', $baselinePath), 'build' => 1, 'saved_boot_id' => '11111111-1111-4111-8111-111111111111',
+        'source_id' => Store::sourceIdentity($upgradeSource), 'source_fingerprint' => \Vgpu\Upgrade::sourceFingerprint($upgradeSource)];
     $upgradeFixture->store->saveSettings($baselineSettings);
     $upgradeApp->dispatch('config-save', ['source' => $upgradeSource, 'upgrade' => [
         'enabled' => true, 'enabled_boot_id' => 'forged', 'driver_branch' => '580',
@@ -365,7 +417,7 @@ try {
     $upgradeSettings = $upgradeFixture->store->settings();
     application_check($upgradeSettings['upgrade']['enabled'] === true, 'Upgrade following must require explicit enablement');
     application_check($upgradeSettings['upgrade']['driver_branch'] === '595', 'Auto policy must pin the installed NVIDIA branch, not client-supplied internal fields');
-    application_check($upgradeSettings['upgrade']['enabled_boot_id'] === '11111111-1111-4111-8111-111111111111', 'Enablement must capture the actual current boot');
+    application_check($upgradeSettings['driver'] === Store::defaults()['driver'] && !isset($upgradeSettings['upgrade']['enabled_boot_id']), 'Prefetch enablement must not authorize driver installation or save client-supplied boot IDs');
     application_check($upgradeSettings['runtime']['enabled'] === false && $upgradeFixture->calls === [], 'Enabling upgrade following must not take over vGPU or call a missing helper');
     application_rejects(fn() => $upgradeApp->dispatch('config-save', ['upgrade' => ['enabled' => 'true']]), 'must be a boolean');
     $upgradeFixture->put('/boot/changes.txt', "# Version 7.3.4\n## Linux kernel\n* version: 6.18.58\n");
@@ -393,17 +445,35 @@ try {
     $receiptFixture = $fixtures[] = new ApplicationFixture();
     $receiptSettings = $receiptFixture->store->settings();
     $receiptSettings['source'] = $receiptFixture->source();
-    $receiptSettings['selected_package'] = ['source' => $receiptSettings['source']['repository'], 'driver' => '595.58.03', 'kernel' => '6.18.58-Unraid'];
+    $receiptSettings['selected_package'] = ['source' => $receiptSettings['source']['repository'], 'driver' => '595.58.03', 'kernel' => '6.18.58-Unraid',
+        'filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz'];
     $receiptFixture->store->saveSettings($receiptSettings);
-    $receiptFixture->application->dispatch('config-save', ['upgrade' => ['enabled' => true]]);
+    $receiptFixture->application->dispatch('config-save', ['driver' => ['enabled' => true, 'enabled_boot_id' => 'forged']]);
     $receiptSettings = $receiptFixture->store->settings();
     application_check($receiptSettings['selected_package']['saved_boot_id'] === '11111111-1111-4111-8111-111111111111', 'Enabling installation can authorize a legacy cache selection from the same source for the next boot');
     application_check($receiptSettings['selected_package']['source_id'] === Store::sourceIdentity($receiptSettings['source']), 'Legacy cache authorization must retain source binding');
     application_check($receiptSettings['selected_package']['source_fingerprint'] === \Vgpu\Upgrade::sourceFingerprint($receiptSettings['source']), 'Legacy cache authorization must capture all source settings');
+    application_check($receiptSettings['selected_package']['build'] === 1, 'A validated legacy filename must normalize its cache receipt to build1');
+    application_check($receiptSettings['driver']['enabled_boot_id'] === '11111111-1111-4111-8111-111111111111' && !$receiptSettings['upgrade']['enabled'], 'Restoration authorization must use the real boot identity without enabling prefetch');
+    $receiptFixture->application->dispatch('config-save', ['driver' => ['enabled' => false]]);
+    $receiptSettings = $receiptFixture->store->settings();
+    $receiptSettings['selected_package']['filename'] = 'nvidia-595.58.03-6.18.58-Unraid-2.txz';
+    $receiptSettings['selected_package']['build'] = 2;
+    $receiptFixture->store->saveSettings($receiptSettings);
+    $receiptFixture->application->dispatch('config-save', ['driver' => ['enabled' => true]]);
+    application_check($receiptFixture->store->settings()['selected_package']['build'] === 2, 'Authorizing build2 must retain its explicit package identity');
+    $receiptFixture->application->dispatch('config-save', ['driver' => ['enabled' => false]]);
+    $receiptSettings = $receiptFixture->store->settings();
+    unset($receiptSettings['selected_package']['build']);
+    $receiptFixture->store->saveSettings($receiptSettings);
+    $beforeInvalidReceipt = file_get_contents($receiptFixture->paths->settingsFile);
+    application_rejects(fn() => $receiptFixture->application->dispatch('config-save', ['driver' => ['enabled' => true]]), 'build is missing');
+    application_check(file_get_contents($receiptFixture->paths->settingsFile) === $beforeInvalidReceipt, 'An incomplete build2 receipt must fail enablement without partially saving settings');
 
     $bootFixture = $fixtures[] = new ApplicationFixture();
     $bootSettings = $bootFixture->store->settings();
-    $bootSettings['upgrade'] = ['enabled' => true, 'driver_branch' => '595', 'enabled_boot_id' => '22222222-2222-4222-8222-222222222222'];
+    $bootSettings['driver'] = ['enabled' => true, 'enabled_boot_id' => '22222222-2222-4222-8222-222222222222'];
+    $bootSettings['upgrade'] = ['enabled' => false, 'driver_branch' => '595'];
     $bootSettings['runtime']['enabled'] = true;
     $bootFixture->store->saveSettings($bootSettings);
     $booted = $bootFixture->application->dispatch('boot');
@@ -412,6 +482,100 @@ try {
     application_check(!array_intersect($bootCommands, ['upgradepkg', 'modprobe', 'nvidia-modprobe', 'mdevctl']), 'Failed boot preparation must not load modules or start mdevs');
     $bootStatus = $bootFixture->application->dispatch('status');
     application_check($bootStatus['driver_installation']['status'] === 'missing_package', 'Installation failure must be visible through the read-only status endpoint');
+
+    $controlsFixture = $fixtures[] = new ApplicationFixture();
+    $controlsFixture->put('/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper', '# fixture; never executed');
+    foreach ([false, true] as $restore) foreach ([false, true] as $prefetch) foreach ([false, true] as $runtime) {
+        $before = $controlsFixture->store->settings();
+        $count = count($controlsFixture->calls);
+        $result = $controlsFixture->application->dispatch('config-save', [
+            'driver' => ['enabled' => $restore, 'enabled_boot_id' => 'forged'],
+            'upgrade' => ['enabled' => $prefetch, 'enabled_boot_id' => 'forged', 'driver_branch' => '999'],
+            'runtime' => ['enabled' => $runtime],
+        ]);
+        $actual = $controlsFixture->store->settings();
+        application_check($actual['driver']['enabled'] === $restore && $actual['upgrade']['enabled'] === $prefetch && $actual['runtime']['enabled'] === $runtime, 'All eight combinations of the three controls must be retained independently');
+        application_check($actual['schema_version'] === 2 && !isset($actual['upgrade']['enabled_boot_id']), 'Saved settings must use the split-control schema');
+        application_check(count($controlsFixture->calls) === $count + ($before['upgrade']['enabled'] !== $prefetch ? 1 : 0), 'Only a prefetch transition may start or stop the download helper');
+        application_check(array_key_exists('upgrade_helper', $result) === ($before['upgrade']['enabled'] !== $prefetch), 'A driver or runtime-only change must not report helper activity');
+        if ($restore) application_check($actual['driver']['enabled_boot_id'] === '11111111-1111-4111-8111-111111111111', 'Restoration boot identity is server-owned');
+    }
+    application_check(!array_filter($controlsFixture->calls, fn($argv) => $argv[0] !== '/bin/bash'), 'Saving independent controls must never install packages or change GPU services');
+    $controlsBefore = file_get_contents($controlsFixture->paths->settingsFile);
+    $callsBefore = count($controlsFixture->calls);
+    foreach ([null, false, 'true', [], ['enabled' => 1], ['enabled' => 'false']] as $invalidDriver) {
+        application_rejects(fn() => $controlsFixture->application->dispatch('config-save', ['driver' => $invalidDriver]), 'must be a boolean');
+        application_check(file_get_contents($controlsFixture->paths->settingsFile) === $controlsBefore && count($controlsFixture->calls) === $callsBefore, 'Invalid driver controls must fail before writes or helper calls');
+    }
+    $controlsFixture->application->dispatch('config-save', ['upgrade' => ['enabled' => false]]);
+    application_check($controlsFixture->store->settings()['driver']['enabled'] && $controlsFixture->store->settings()['runtime']['enabled'], 'An old form without driver fields must only change prefetch');
+    $controlsFixture->application->dispatch('config-save', ['driver' => ['enabled' => false]]);
+    application_check(!$controlsFixture->store->settings()['upgrade']['enabled'] && $controlsFixture->store->settings()['runtime']['enabled'], 'Disabling restoration must not disable the independently managed vGPU runtime');
+
+    $prefetchOnly = $fixtures[] = new ApplicationFixture();
+    unlink($prefetchOnly->paths->path('/proc/sys/kernel/random/boot_id'));
+    $prefetchOnly->application->dispatch('config-save', ['upgrade' => ['enabled' => true]]);
+    application_check($prefetchOnly->store->settings()['upgrade']['enabled'] && !$prefetchOnly->store->settings()['driver']['enabled'], 'Prefetch does not require or create installation boot authorization');
+    application_rejects(fn() => $prefetchOnly->application->dispatch('config-save', ['driver' => ['enabled' => true]]), 'Cannot identify this boot');
+    $prefetchBoot = $prefetchOnly->application->dispatch('boot');
+    application_check($prefetchBoot['ok'] && $prefetchOnly->calls === [] && !is_file($prefetchOnly->paths->configDir . '/driver-state.json'), 'Prefetch-only boot must not invoke the installer or the network');
+    application_check($prefetchOnly->application->dispatch('ensure')['ok'] && $prefetchOnly->calls === [], 'Ensure must never install a package');
+
+    $offline = $fixtures[] = new ApplicationFixture();
+    $offlineSettings = $offline->store->settings();
+    $offlineSettings['selected_package'] = ['source' => 'local', 'provider' => 'local', 'driver' => '580.159.03', 'kernel' => '6.18.58-Unraid',
+        'filename' => 'nvidia-580.159.03-6.18.58-Unraid-2.txz', 'build' => 2];
+    $offline->store->saveSettings($offlineSettings);
+    $offline->application->dispatch('config-save', ['driver' => ['enabled' => true]]);
+    $offlineSettings = $offline->store->settings();
+    application_check($offlineSettings['driver']['enabled'] && !$offlineSettings['upgrade']['enabled'] && $offlineSettings['source']['repository'] === '', 'A local imported package can enable restoration without a download source');
+    application_check($offlineSettings['selected_package']['source'] === 'local' && $offlineSettings['selected_package']['saved_boot_id'] === $offlineSettings['driver']['enabled_boot_id'] && $offline->calls === [], 'Local restoration records future-boot authorization without networking or starting the helper');
+    application_check($offlineSettings['upgrade']['driver_branch'] === '580', 'Enabling restoration must prefer the selected local R580 package over the currently loaded R595 driver');
+
+    foreach (['matching', 'different-source-id', 'different-fingerprint', 'different-repository', 'different-kernel', 'fixed-driver'] as $policyCase) {
+        $policyFixture = $fixtures[] = new ApplicationFixture();
+        $policySettings = $policyFixture->store->settings();
+        $policySettings['source'] = $policyFixture->source();
+        $policySettings['source']['driver'] = $policyCase === 'fixed-driver' ? '595.58.03' : '';
+        $policySource = $policySettings['source'];
+        $selectedKernel = $policyCase === 'different-kernel' ? '6.18.54-Unraid' : '6.18.58-Unraid';
+        $policySettings['selected_package'] = [
+            'source' => $policyCase === 'different-repository' ? 'https://github.com/other/project' : $policySource['repository'],
+            'driver' => '580.159.03', 'kernel' => $selectedKernel, 'build' => 2,
+            'filename' => 'nvidia-580.159.03-' . $selectedKernel . '-2.txz',
+            'saved_boot_id' => '22222222-2222-4222-8222-222222222222',
+            'source_id' => $policyCase === 'different-source-id' ? 'obsolete' : Store::sourceIdentity($policySource),
+            'source_fingerprint' => $policyCase === 'different-fingerprint' ? 'obsolete' : \Vgpu\Upgrade::sourceFingerprint($policySource),
+        ];
+        $policyFixture->store->saveSettings($policySettings);
+        $policyFixture->application->dispatch('config-save', ['driver' => ['enabled' => true]]);
+        $afterPolicy = $policyFixture->store->settings();
+        application_check($afterPolicy['upgrade']['driver_branch'] === ($policyCase === 'matching' ? '580' : '595'), 'Only a selected package matching kernel, source and explicit policy may determine the branch: ' . $policyCase);
+        application_check($afterPolicy['selected_package']['saved_boot_id'] === ($policyCase === 'matching' ? $afterPolicy['driver']['enabled_boot_id'] : '22222222-2222-4222-8222-222222222222'), 'Invalid or obsolete selections must not be reauthorized: ' . $policyCase);
+        application_check($policyFixture->calls === [], 'Selection policy inference must not change services or access the network');
+    }
+
+    $offlineSettings['upgrade']['driver_branch'] = '595';
+    $offline->store->saveSettings($offlineSettings);
+    $offline->application->dispatch('config-save', ['driver' => ['enabled' => true]]);
+    application_check($offline->store->settings()['upgrade']['driver_branch'] === '595', 'Saving an already-enabled restore switch does not silently change the established branch');
+    $offline->application->dispatch('config-save', ['source' => ['driver' => '580.159.03']]);
+    application_check($offline->store->settings()['upgrade']['driver_branch'] === '580', 'An explicit version choice can switch the branch without toggling restoration');
+
+    $legacy = $fixtures[] = new ApplicationFixture();
+    $legacySettings = Store::defaults();
+    $legacySettings['schema_version'] = 1;
+    unset($legacySettings['driver']);
+    $legacySettings['upgrade'] = ['enabled' => true, 'enabled_boot_id' => '22222222-2222-4222-8222-222222222222', 'driver_branch' => '595'];
+    $legacy->store->saveSettings($legacySettings);
+    $legacyBefore = file_get_contents($legacy->paths->settingsFile);
+    $legacyStatus = $legacy->application->dispatch('status');
+    application_check($legacyStatus['settings']['driver']['enabled'] && $legacyStatus['settings']['upgrade']['enabled'], 'Legacy status must show both halves of the original combined switch enabled');
+    application_check(file_get_contents($legacy->paths->settingsFile) === $legacyBefore && $legacy->calls === [], 'Status migration must neither persist settings nor execute commands');
+    $legacy->application->dispatch('config-save', ['upgrade' => ['enabled' => false]]);
+    $migrated = $legacy->store->settings();
+    application_check($migrated['driver']['enabled'] && !$migrated['upgrade']['enabled'] && $migrated['driver']['enabled_boot_id'] === '22222222-2222-4222-8222-222222222222', 'Turning off prefetch after migration must retain the previous driver restoration authorization');
+    application_check(json_decode(file_get_contents($legacy->paths->settingsFile), true)['schema_version'] === 2, 'Explicit save persists schema2 after read-only migration');
 
     $runner = new Process();
     $literal = 'literal; $(not-a-shell-command)';

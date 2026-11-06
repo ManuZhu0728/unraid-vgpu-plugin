@@ -29,16 +29,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         switch ($uvm_action) {
             case 'config-save':
                 $section = uvm_post('config_section');
-                if (($uvm_request_tab === 'driver' && $section !== 'source') || ($uvm_request_tab === 'vgpu' && $section !== 'runtime')) {
+                if (($uvm_request_tab === 'driver' && !in_array($section, ['source', 'driver'], true)) || ($uvm_request_tab === 'vgpu' && $section !== 'runtime')) {
                     throw new InvalidArgumentException('设置表单与当前页面不匹配。');
                 }
                 if ($section === 'source') {
                     $source = [];
-                    foreach (['provider', 'mode', 'repository', 'driver', 'tag_template', 'project_id', 'package_name', 'package_version_template'] as $key) $source[$key] = trim(uvm_post('source_' . $key));
+                    foreach (['provider', 'mode', 'repository', 'driver', 'build', 'tag_template', 'project_id', 'package_name', 'package_version_template'] as $key) $source[$key] = trim(uvm_post('source_' . $key));
                     if (isset($_POST['source_url'])) $source['url'] = trim(uvm_post('source_url'));
                     if (uvm_post('source_simple') === '1' && ($source['url'] ?? '') === '') $source['repository'] = '';
                     $payload['source'] = $source;
-                    if (isset($_POST['upgrade_enabled'])) $payload['upgrade'] = ['enabled' => uvm_post('upgrade_enabled') === '1'];
+                    // Old source forms included the prefetch switch. They never
+                    // change the independently saved cold-boot installation flag.
+                    if (isset($_POST['upgrade_enabled'])) {
+                        $enabled = uvm_post('upgrade_enabled');
+                        if (!in_array($enabled, ['0', '1'], true)) throw new InvalidArgumentException('升级预下载设置无效。');
+                        $payload['upgrade'] = ['enabled' => $enabled === '1'];
+                    }
                     $credentialChange = uvm_post('credential_change', 'auto');
                     if ($credentialChange === 'auto') $credentialChange = uvm_post('credential_token') !== '' ? 'replace' : 'keep';
                     if ($credentialChange === 'replace') {
@@ -51,6 +57,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     } elseif ($credentialChange !== 'keep') {
                         throw new InvalidArgumentException('Invalid credential operation.');
                     }
+                } elseif ($section === 'driver') {
+                    foreach (['driver', 'upgrade'] as $key) {
+                        if (!array_key_exists($key . '_enabled', $_POST)) continue;
+                        $enabled = uvm_post($key . '_enabled');
+                        if (!in_array($enabled, ['0', '1'], true)) throw new InvalidArgumentException('启动或升级设置无效。');
+                        $payload[$key] = ['enabled' => $enabled === '1'];
+                    }
+                    if (!$payload) throw new InvalidArgumentException('未收到启动或升级设置，请刷新页面。');
                 } else {
                     $payload['runtime'] = [
                         'enabled' => uvm_post('runtime_enabled') === '1',
@@ -65,9 +79,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     }
                 }
                 $uvm_action_data = uvm_cli($uvm_action, $payload);
-                $uvm_message = $section === 'source' ? '驱动设置已保存。' : 'vGPU 设置已保存。';
+                $uvm_message = ['source' => '驱动设置已保存。', 'driver' => '驱动启动与升级设置已保存。', 'runtime' => 'vGPU 设置已保存。'][$section];
                 if (isset($uvm_action_data['upgrade_helper']) && !($uvm_action_data['upgrade_helper']['ok'] ?? false)) {
-                    $uvm_error = '设置已保存，但升级助手未启动，请检查插件安装。';
+                    $uvm_error = '设置已保存，但升级助手未能应用设置，请查看日志。';
                 }
                 if ($section === 'source' && uvm_post('source_connect') === '1') {
                     $uvm_action_data = uvm_cli('source-versions');
@@ -84,7 +98,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'source-versions':
             case 'source-download':
                 // Only saved source + saved credentials are used. No implicit config-save.
-                if ($uvm_action === 'source-download' && uvm_post('download_driver') !== '') $payload['driver'] = trim(uvm_post('download_driver'));
+                if ($uvm_action === 'source-download') {
+                    if (uvm_post('download_package') !== '') $payload['filename'] = trim(uvm_post('download_package'));
+                    elseif (uvm_post('download_driver') !== '') $payload['driver'] = trim(uvm_post('download_driver'));
+                }
                 $uvm_action_data = uvm_cli($uvm_action, $payload);
                 if (($uvm_action_data['ok'] ?? true) === false) throw new RuntimeException((string)($uvm_action_data['error'] ?? $uvm_action_data['message'] ?? 'The source operation failed.'));
                 if ($uvm_action === 'source-versions') {
@@ -150,9 +167,10 @@ try {
     $uvm_error .= ($uvm_error !== '' ? "\n" : '') . '状态读取失败：' . uvm_redact($exception->getMessage());
 }
 $uvm_defaults = [
-    'source' => ['url' => '', 'provider' => 'auto', 'mode' => 'auto', 'repository' => '', 'driver' => '', 'project_id' => '', 'tag_template' => 'v{kernel}-{driver}', 'package_name' => 'build', 'package_version_template' => 'v{kernel}-{driver}'],
+    'source' => ['url' => '', 'provider' => 'auto', 'mode' => 'auto', 'repository' => '', 'driver' => '', 'build' => '', 'project_id' => '', 'tag_template' => 'v{kernel}-{driver}', 'package_name' => 'build', 'package_version_template' => 'v{kernel}-{driver}'],
     'runtime' => ['enabled' => false, 'unlock' => true, 'unlock_library' => '/usr/lib64/libvgpu_unlock_rs.so', 'xml_override' => false],
-    'upgrade' => ['enabled' => false, 'driver_branch' => '', 'enabled_boot_id' => ''],
+    'driver' => ['enabled' => false, 'enabled_boot_id' => ''],
+    'upgrade' => ['enabled' => false, 'driver_branch' => ''],
 ];
 $uvm_settings = array_replace_recursive($uvm_defaults, is_array($uvm_status['settings'] ?? null) ? $uvm_status['settings'] : []);
 $uvm_source = $uvm_settings['source'];

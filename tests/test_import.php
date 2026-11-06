@@ -209,6 +209,21 @@ try {
     $result = $single->application->dispatch('source-import', ['filename' => $single->filename, 'path' => $single->phpFile($single->package)]);
     import_check($result['ok'] && $result['package']['checksum_verified'] === false, 'No-MD5 single upload must clearly identify a locally computed checksum');
     import_check($single->store->settings()['selected_package']['provider'] === 'local', 'Single-upload fallback must select the cached package');
+    foreach ([2, 10] as $build) {
+        $revision = $fixtures[] = new ImportFixture();
+        $revision->filename = "nvidia-595.58.03-6.18.58-Unraid-$build.txz";
+        $revisionApp = $revision->application;
+        $started = $revisionApp->dispatch('source-upload-begin', ['filename' => $revision->filename, 'total' => strlen($revision->package)]);
+        $revisionApp->dispatch('source-upload-chunk', ['upload_id' => $started['upload_id'], 'offset' => 0, 'path' => $revision->phpFile($revision->package)]);
+        $result = $revisionApp->dispatch('source-upload-finish', ['upload_id' => $started['upload_id']]);
+        import_check($result['package']['build'] === $build && $result['package']['filename'] === $revision->filename, 'Chunk import must retain the chosen revision');
+        import_check($revision->store->settings()['selected_package']['build'] === $build, 'Selected local receipt must persist build');
+        import_check($result['package']['checksum_verified'] === false, 'Revision metadata must not imply independently verified checksum');
+        import_check(is_file($result['package']['path']) && !is_dir($revision->paths->runtimeDir . '/upload-' . $started['upload_id']), 'New build cache is published and staging cleared');
+    }
+    foreach (['0', '02', '-1'] as $badBuild) {
+        import_rejects(fn() => $single->upload->filename("nvidia-595.58.03-6.18.58-Unraid-$badBuild.txz", '6.18.58'), 'current kernel');
+    }
     echo 'Local import/upload: ' . $importChecks . " checks passed (mock package inspection; no GPU or network)\n";
 } finally {
     foreach (array_reverse($fixtures) as $fixture) $fixture->close();

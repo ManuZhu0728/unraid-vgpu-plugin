@@ -56,7 +56,7 @@ final class UpgradeFixture
         $this->settings['source'] = Store::validateSource(array_replace($this->settings['source'], [
             'url' => 'https://git.example.test/owner/repo', 'project_id' => '42',
         ]));
-        $this->settings['upgrade'] = ['enabled' => true, 'driver_branch' => '595', 'enabled_boot_id' => '11111111-1111-4111-8111-111111111111'];
+        $this->settings['upgrade'] = ['enabled' => true, 'driver_branch' => '595'];
         $this->credentials = ['type' => 'private-token', 'token' => 'upgrade-fixture-secret', 'username' => '',
             'source_id' => Store::sourceIdentity($this->settings['source'])];
         $this->addVersions(['595.58.03', '595.63.01', '580.159.03'], '6.18.58');
@@ -67,21 +67,43 @@ final class UpgradeFixture
         $this->upgrade = new Upgrade($this->store, $this->download, $this->run(...));
     }
 
-    public function addVersions(array $drivers, ?string $kernel = null): void
+    public function addVersions(array $drivers, ?string $kernel = null, array $builds = [1]): void
     {
         $kernel ??= $this->target;
         $assets = [];
         foreach ($drivers as $driver) {
-            $filename = 'nvidia-' . $driver . '-' . $kernel . '-Unraid-1.txz';
-            $url = 'https://git.example.test/api/v4/projects/42/packages/generic/build/v' . $kernel . '-' . $driver . '/' . $filename;
-            $body = "\xfd7zXZ\x00package-" . $filename;
-            $this->routes[$url] = ['body' => $body];
-            $this->routes[$url . '.md5'] = ['body' => md5($body) . '  ' . $filename . "\n"];
-            $assets[] = ['name' => $filename, 'url' => $url];
-            $assets[] = ['name' => $filename . '.md5', 'url' => $url . '.md5'];
+            foreach ($builds as $build) {
+                $filename = 'nvidia-' . $driver . '-' . $kernel . '-Unraid-' . $build . '.txz';
+                $version = 'v' . $kernel . '-' . $driver . ($build === 1 ? '' : '-build' . $build);
+                $url = 'https://git.example.test/api/v4/projects/42/packages/generic/build/' . $version . '/' . $filename;
+                $body = "\xfd7zXZ\x00package-" . $filename;
+                $this->routes[$url] = ['body' => $body];
+                $this->routes[$url . '.md5'] = ['body' => md5($body) . '  ' . $filename . "\n"];
+                $assets[] = ['name' => $filename, 'url' => $url];
+                $assets[] = ['name' => $filename . '.md5', 'url' => $url . '.md5'];
+            }
         }
         $this->routes['https://git.example.test/api/v4/projects/42/releases/' . $kernel . '-Unraid'] = [
             'body' => json_encode(['tag_name' => $kernel . '-Unraid', 'assets' => ['links' => $assets]]), 'type' => 'application/json',
+        ];
+    }
+
+    public function addGithubVersions(array $drivers, string $kernel, array $builds): void
+    {
+        $assets = [];
+        $id = count($this->routes) * 2 + 100;
+        foreach ($drivers as $driver) {
+            foreach ($builds as $build) {
+                $filename = 'nvidia-' . $driver . '-' . $kernel . '-Unraid-' . $build . '.txz';
+                $body = "\xfd7zXZ\x00package-" . $filename;
+                $assets[] = ['name' => $filename, 'id' => $id];
+                $this->routes['https://api.github.com/repos/owner/repo/releases/assets/' . $id++] = ['body' => $body, 'driver' => $driver, 'kernel' => $kernel];
+                $assets[] = ['name' => $filename . '.md5', 'id' => $id];
+                $this->routes['https://api.github.com/repos/owner/repo/releases/assets/' . $id++] = ['body' => md5($body) . '  ' . $filename . "\n"];
+            }
+        }
+        $this->routes['https://api.github.com/repos/owner/repo/releases/tags/' . $kernel . '-Unraid'] = [
+            'body' => json_encode(['tag_name' => $kernel . '-Unraid', 'assets' => $assets]), 'type' => 'application/json',
         ];
     }
 
@@ -111,15 +133,18 @@ final class UpgradeFixture
             $route = $this->routes[$url] ?? ['status' => 404, 'body' => 'missing'];
             $path = $argv[array_search('--output', $argv, true) + 1];
             file_put_contents($path, $route['body'] ?? 'missing');
-            if (preg_match('/\/nvidia-([0-9]+\.[0-9]+\.[0-9]+)-([0-9.]+)-Unraid-1\.txz$/D', $url, $driver)) {
+            if (preg_match('/\/nvidia-([0-9]+\.[0-9]+\.[0-9]+)-([0-9.]+)-Unraid-[1-9][0-9]*\.txz$/D', $url, $driver)) {
                 $this->activeDriver = $driver[1]; $this->activeKernel = $driver[2];
+            }
+            if (isset($route['driver'], $route['kernel'])) {
+                $this->activeDriver = $route['driver']; $this->activeKernel = $route['kernel'];
             }
             return ['code' => 0, 'stdout' => ($route['status'] ?? 200) . "\n" . ($route['type'] ?? 'application/octet-stream') . "\n\n", 'stderr' => ''];
         }
         if ($argv[0] === 'xz') return ['code' => 0, 'stdout' => '', 'stderr' => ''];
         if ($argv[0] === 'tar' && in_array('--list', $argv, true)) {
             $archive = basename($argv[array_search('--file', $argv, true) + 1]);
-            if (preg_match('/^nvidia-([0-9]+\.[0-9]+\.[0-9]+)-([0-9.]+)-Unraid-1\.txz$/D', $archive, $identity)) {
+            if (preg_match('/^nvidia-([0-9]+\.[0-9]+\.[0-9]+)-([0-9.]+)-Unraid-[1-9][0-9]*\.txz$/D', $archive, $identity)) {
                 $this->activeDriver = $identity[1]; $this->activeKernel = $identity[2];
             }
             $names = [];
@@ -175,10 +200,25 @@ try {
     upgrade_failure(fn() => Upgrade::targetFromChanges("# Version 7.3.5\nMissing kernel\n# Version 7.3.4\n## Linux kernel\n* version 6.18.99"), '目标内核');
     upgrade_failure(fn() => Upgrade::targetFromChanges("## Linux kernel\n* version 6.18.60"), '版本信息');
 
+    $legacySource = Store::validateSource(['url' => 'https://git.example.test/owner/repo']);
+    unset($legacySource['build']);
+    $legacyFingerprint = hash('sha256', json_encode($legacySource, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+    upgrade_check(Upgrade::sourceFingerprint($legacySource) === $legacyFingerprint, 'Empty build selection must preserve legacy source fingerprints');
+    upgrade_check(Upgrade::sourceFingerprint(array_replace($legacySource, ['driver' => '595.58.03', 'build' => '2'])) !== $legacyFingerprint, 'An explicit build pin must affect the source policy fingerprint');
+
     $f = $fixture();
     $f->settings['upgrade']['enabled'] = false;
+    $f->settings['driver']['enabled'] = true;
+    $f->settings['runtime']['enabled'] = true;
     upgrade_check($f->check()['status'] === 'disabled' && $f->calls === [], 'Disabled upgrades must not read source or execute commands');
     upgrade_check(!is_file($f->paths->configDir . '/upgrade-state.json'), 'Disabled upgrades must not write state');
+
+    $f = $fixture();
+    $f->settings['driver']['enabled'] = false;
+    $f->settings['runtime']['enabled'] = false;
+    $prefetchOnly = $f->check();
+    upgrade_check($prefetchOnly['ok'] && $prefetchOnly['status'] === 'ready' && $f->count('curl') > 0, 'Prefetch must prepare a target package while driver restoration and runtime are both off');
+    upgrade_check(!$f->store->settings()['driver']['enabled'] && !$f->store->settings()['runtime']['enabled'] && $f->count('upgradepkg') === 0 && $f->count('modprobe') === 0, 'Prefetch must never implicitly enable or install the driver');
 
     $f = $fixture();
     upgrade_check($f->check('6.18.58-Unraid')['status'] === 'current' && $f->calls === [], 'Same-kernel updates must not download');
@@ -199,6 +239,38 @@ try {
     $f->addVersions(['595.63.01', '580.159.03', '610.1.2']);
     $result = $f->check();
     upgrade_check($result['package']['driver'] === '595.63.01', 'Choose the highest available version only within the saved branch');
+
+    $f = $fixture();
+    $baseline = $f->settings['selected_package'];
+    $f->addVersions(['595.58.03', '595.63.01', '580.159.03'], null, [2, 1, 10]);
+    $result = $f->check();
+    upgrade_check($result['ok'] && $result['package']['driver'] === '595.58.03' && $result['package']['build'] === 10, 'Prefer the current driver and its highest numeric build, not asset order or lexicographic order');
+    upgrade_check($f->store->settings()['selected_package'] === $baseline + ['build' => 1] && is_file($baseline['path']), 'Preparing a future build must preserve the explicit current-kernel baseline and normalize its legacy revision');
+
+    $f = $fixture();
+    $f->addVersions(['595.63.01', '580.159.03', '610.1.2'], null, [10, 1, 2]);
+    $result = $f->check();
+    upgrade_check($result['ok'] && $result['package']['driver'] === '595.63.01' && $result['package']['build'] === 10, 'Within-branch fallback must retain the highest revision of the chosen driver');
+
+    foreach ([1, 2] as $pinBuild) {
+        $f = $fixture();
+        $f->addVersions(['595.58.03'], '6.18.58', [1, 2, 10]);
+        $f->addVersions(['595.58.03', '595.63.01', '580.159.03'], null, [10, 2, 1]);
+        $f->settings['source']['driver'] = '595.58.03';
+        $f->settings['source']['build'] = (string)$pinBuild;
+        $result = $f->check();
+        upgrade_check($result['ok'] && $result['package']['build'] === $pinBuild &&
+            $f->store->settings()['selected_package']['build'] === $pinBuild, 'Explicit build pin must govern both baseline and future kernel, including rollback to build one');
+    }
+
+    $f = $fixture();
+    $f->settings['source']['driver'] = '595.58.03';
+    $f->settings['source']['build'] = '2';
+    $f->addVersions(['595.58.03'], '6.18.58', [2]);
+    $f->addVersions(['595.58.03'], null, [1, 10]);
+    $result = $f->check();
+    upgrade_check(!$result['ok'] && $result['status'] === 'missing' && $result['phase'] === 'target', 'A missing pinned target build must not fall back to either another build or driver');
+    upgrade_check($f->store->settings()['selected_package']['build'] === 2, 'Missing target revision retains the prepared current-kernel baseline');
 
     $f = $fixture();
     $f->settings['source']['driver'] = '580.159.03';
@@ -274,6 +346,33 @@ try {
     ]));
     $f->credentials['source_id'] = Store::sourceIdentity($f->settings['source']);
     upgrade_check($f->check()['package']['kernel'] === '6.18.60-Unraid', 'Known Generic link layout must retarget the kernel without changing project');
+
+    $f = $fixture();
+    $f->addVersions(['595.58.03'], '6.18.58', [1, 2, 10]);
+    $f->addVersions(['595.58.03'], null, [10, 1, 2]);
+    $f->settings['source'] = Store::validateSource(array_replace($f->settings['source'], [
+        'url' => 'https://git.example.test/api/v4/projects/42/packages/generic/build/v6.18.58-595.58.03-build2/nvidia-595.58.03-6.18.58-Unraid-2.txz',
+    ]));
+    $f->credentials['source_id'] = Store::sourceIdentity($f->settings['source']);
+    $result = $f->check();
+    upgrade_check($result['ok'] && $result['package']['kernel'] === '6.18.60-Unraid' && $result['package']['build'] === 2, 'A Generic build-two link must preserve its revision in both the registry version and target filename');
+    $requests = implode("\n", array_column($f->calls, 'stdin'));
+    upgrade_check(str_contains($requests, '/v6.18.60-595.58.03-build2/nvidia-595.58.03-6.18.60-Unraid-2.txz'), 'Target Generic request must use the build-two immutable registry path');
+
+    $retarget = new ReflectionMethod(Upgrade::class, 'targetSource');
+    $github = Store::validateSource(['url' => 'https://github.com/owner/repo/releases/download/6.18.58-Unraid/nvidia-595.58.03-6.18.58-Unraid-2.txz']);
+    $rewritten = $retarget->invoke($f->upgrade, $github, '6.18.60-Unraid', '595.58.03');
+    upgrade_check($rewritten['url'] === 'https://github.com/owner/repo' && $rewritten['driver'] === '595.58.03' && $rewritten['build'] === '2', 'Retargeting a GitHub direct link must retain driver and build pins when searching the new kernel Release');
+
+    $f = $fixture();
+    file_put_contents($f->paths->path('/sys/module/nvidia/version'), '595.60.01');
+    $f->settings['source'] = Store::validateSource(['url' => 'https://github.com/owner/repo/releases/download/6.18.58-Unraid/nvidia-595.58.03-6.18.58-Unraid-2.txz']);
+    $f->credentials = ['type' => 'none', 'token' => '', 'source_id' => ''];
+    $f->addGithubVersions(['595.58.03', '595.60.01'], '6.18.58', [1, 2, 10]);
+    $f->addGithubVersions(['595.58.03', '595.60.01'], '6.18.60', [1, 2, 10]);
+    $result = $f->check();
+    upgrade_check($result['ok'] && $result['package']['driver'] === '595.58.03' && $result['package']['build'] === 2, 'A retargeted GitHub direct link must retain its exact driver and build even when another running version is present in the new Release');
+    upgrade_check($f->store->settings()['selected_package']['driver'] === '595.58.03' && $f->store->settings()['selected_package']['build'] === 2, 'The direct-link pin must also govern the baseline download');
 
     $f = $fixture();
     $f->settings['source'] = Store::validateSource(array_replace($f->settings['source'], [
@@ -406,6 +505,7 @@ try {
     $watch = file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/upgrade-watch.php');
     $shell = file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper');
     upgrade_check(str_contains($watch, 'LOCK_EX | LOCK_NB') && str_contains($watch, 'upgrade-check'), 'Monitor must be single-instance and use the current CLI');
+    upgrade_check(!str_contains($watch, "['driver']['enabled']") && !str_contains($shell, '["driver"]["enabled"]'), 'The monitor must depend on prefetch only, not the restoration switch');
     upgrade_check(!str_contains($watch, 'inotifywait') && !str_contains($shell, '/usr/bin/plugin_update_helper'), 'Monitor must not replace or match the global helper');
     upgrade_check(str_contains($shell, 'nohup') && str_contains($shell, '</dev/null'), 'Monitor must detach its input and use its own log');
     upgrade_check(!preg_match('/\bkill(?:all)?\b/', $watch . $shell), 'Helper lifecycle must not kill other processes');

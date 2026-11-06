@@ -82,7 +82,10 @@ class PublishTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         (self.root / "scripts/build-plugin.py").write_bytes((ROOT / "scripts/build-plugin.py").read_bytes())
         source = self.root / "source/usr/local/emhttp/plugins/unraid-vgpu-manager"
-        for name in ["unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page", "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page", "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php", "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]:
+        configuration = source / "include/InstallConfiguration.php"
+        configuration.parent.mkdir(parents=True)
+        configuration.write_text("passive packaging fixture\n")
+        for name in ["unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page", "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page", "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php", "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/PackageIdentity.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]:
             path = source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("passive packaging fixture\n")

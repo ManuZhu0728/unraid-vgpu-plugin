@@ -16,7 +16,7 @@ https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgp
 
 | 页面 | 功能 |
 | --- | --- |
-| 驱动管理 | 在线下载、本地上传、驱动缓存和 Unraid 升级准备 |
+| 驱动管理 | 在线下载、本地上传、驱动缓存、开机恢复和升级预下载 |
 | vGPU 管理 | 开机管理、设备配置与操作、VM XML、UnlockRS |
 | 状态与日志 | 模块与服务状态、启动入口、驱动任务、分类日志 |
 
@@ -25,6 +25,7 @@ https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgp
 3. 点击“查找驱动”，选择版本后下载到缓存。
 
 平台和内核会自动识别。默认优先选择当前已安装的驱动版本，没有相同版本时选择匹配内核的最高版本。
+从 Releases 选择同一驱动时，优先最高构建号；版本列表也可单独选择旧构建。
 模板、项目 ID 等选项放在“高级设置”，旧版保存的配置仍可使用。
 
 支持以下地址：
@@ -35,8 +36,9 @@ https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgp
 - GitLab Generic Package API 下载链接，以及直接指向驱动 TXZ 的 HTTPS 链接。
 
 私有 GitLab 的 API Token 可以读取版本列表。只读 Deploy Token 使用 `read_package_registry`：
-对于本项目的 `build/v{kernel}-{driver}` 格式，插件可按当前驱动版本定位包；
-要下载其他版本，可以粘贴该包的下载链接或在高级设置中指定版本。
+插件可按已知驱动版本定位 Generic 包：构建 1 使用 `build/v{kernel}-{driver}`，
+后续构建使用 `build/v{kernel}-{driver}-buildN`。
+Deploy Token 不枚举 Releases；要下载其他构建，可粘贴包链接，或在高级设置固定驱动版本和构建号。
 
 ## 本地导入
 
@@ -47,9 +49,12 @@ https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgp
 
 ```text
 nvidia-595.58.03-6.18.58-Unraid-1.txz
+nvidia-595.58.03-6.18.58-Unraid-2.txz
 ```
 
-下载或导入完成后，可由插件在下次开机安装匹配的缓存包。
+最后的数字是打包构建号，不是 NVIDIA 驱动版本。同一驱动重新打包后使用新构建号，旧包继续保留。
+下载或导入完成后，开启“开机恢复驱动”，插件会在下次开机安装匹配的缓存包。
+本地上传不需要配置仓库或开启预下载。
 
 ## vGPU 管理
 
@@ -59,7 +64,7 @@ nvidia-595.58.03-6.18.58-Unraid-1.txz
 
 在“vGPU 管理”中展开“添加设备”，选择显卡和配置，并将设备 UUID 写入虚拟机 XML。
 UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置与 vGPU 启动设置分别保存。
-使用原插件或 User Scripts 的用户，先完成启动入口迁移，再开启“开机管理 vGPU”。
+使用原插件或 User Scripts 的用户，先完成启动入口迁移，再开启“vGPU 初始化”。
 
 ## 查看状态与日志
 
@@ -68,16 +73,26 @@ UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置�
 
 ## Unraid 更新
 
-在页面开启“跟随 Unraid 更新驱动”后：
+三个设置分别负责不同工作：
 
-1. 助手先准备当前内核的驱动缓存，供普通重启恢复。
-2. 更新 Unraid 时，自动识别目标内核并下载对应驱动，完成后通知。
-3. 下次开机安装匹配包，再恢复 vGPU。后续每次开机也从缓存恢复驱动。
+| 设置 | 功能 |
+| --- | --- |
+| 开机恢复驱动 | 每次启动从缓存安装当前内核的驱动 |
+| 系统升级预下载 | 提前下载新内核对应的驱动包 |
+| vGPU 初始化 | 加载 vGPU 服务并恢复配置的虚拟 GPU |
 
-自动选择保持当前 NVIDIA 分支，例如 R595；高级设置可固定完整版本。
+前两个设置在“驱动管理”，本地上传和在线下载模式都能使用；vGPU 初始化在“vGPU 管理”。
+只使用 Docker GPU 时可以不开启 vGPU 初始化。关闭预下载后，开机恢复仍可继续使用已有缓存。
+
+开启“系统升级预下载”后，助手先准备当前内核缓存，再监听 Unraid 升级。
+更新系统后，等待“新内核驱动已准备”通知再重启。要让插件负责安装，需同时开启“开机恢复驱动”。
+
+自动选择保持当前 NVIDIA 分支，例如 R595；高级设置可固定完整版本及构建号。
+已经选好的当前内核缓存会保留，不因查找驱动而自动换包。
 目标包尚未发布时会通知等待，旧内核缓存继续保留。
 
-该功能默认关闭。首次使用需将原驱动插件或启动脚本迁移到本插件。
+新安装的三个开关默认关闭。旧版已开启“跟随 Unraid 更新驱动”的配置，会保留预下载与开机恢复两项功能。
+首次启用驱动恢复或 vGPU 初始化前，需将对应的原插件或启动脚本入口迁移到本插件。
 详见 [系统升级联动](docs/OS-UPGRADES.md)。
 
 ## 配置与开发

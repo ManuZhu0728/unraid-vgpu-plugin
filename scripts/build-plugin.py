@@ -86,7 +86,7 @@ def build(version, output, public_base=None, update_url=None):
         "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php",
         "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php",
         "include/Store.php", "include/Runtime.php", "include/Download.php",
-        "include/Source.php", "include/Upload.php", "include/Upgrade.php",
+        "include/PackageIdentity.php", "include/InstallConfiguration.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php",
         "include/Installer.php", "include/upgrade-watch.php",
     ]
     for name in required:

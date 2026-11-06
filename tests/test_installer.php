@@ -39,6 +39,8 @@ final class InstallerFixture
     public string $fail = '';
     public bool $badAfterInstall = false;
     public bool $loadAfterVerify = false;
+    public bool $overwriteConfigs = false;
+    public int $installCode = 0;
 
     public function __construct()
     {
@@ -57,6 +59,7 @@ final class InstallerFixture
             'driver' => '595.58.03', 'md5' => $md5, 'source' => 'local', 'saved_boot_id' => self::OLD_BOOT];
         $this->settings = Store::defaults();
         $this->settings['upgrade'] = ['enabled' => true, 'driver_branch' => '595', 'enabled_boot_id' => self::OLD_BOOT];
+        $this->settings['driver'] = ['enabled' => true, 'enabled_boot_id' => self::OLD_BOOT];
         $this->settings['source'] = Store::validateSource(['url' => 'https://git.example.test/owner/repo', 'mode' => 'auto']);
         $this->settings['selected_package'] = $this->package;
         $download = new Download($this->paths, $this->run(...));
@@ -85,6 +88,17 @@ final class InstallerFixture
         return array_replace($this->package, ['source' => $this->settings['source']['repository'],
             'source_id' => Store::sourceIdentity($this->settings['source']),
             'source_fingerprint' => Upgrade::sourceFingerprint($this->settings['source'])]);
+    }
+
+    public function selectBuild(int $build): void
+    {
+        $this->package['build'] = $build;
+        $this->package['filename'] = 'nvidia-' . $this->package['driver'] . '-6.18.58-Unraid-' . $build . '.txz';
+        $this->package['path'] = dirname($this->package['path']) . '/' . $this->package['filename'];
+        file_put_contents($this->package['path'], "\xfd7zXZ\x00fake driver archive build " . $build);
+        $this->package['md5'] = md5_file($this->package['path']);
+        file_put_contents($this->package['path'] . '.md5', $this->package['md5'] . '  ' . $this->package['filename'] . "\n");
+        $this->settings['selected_package'] = $this->package;
     }
 
     public function process(int $pid, string $comm, ?string $handle = null): void
@@ -120,6 +134,19 @@ final class InstallerFixture
         if ($name === 'upgradepkg') {
             installer_check($argv === ['upgradepkg', '--install-new', '--reinstall', $this->package['path']], 'Only the exact canonical package may be installed');
             $this->installed = $this->badAfterInstall ? '580.159.03' : $this->package['driver'];
+            if ($this->overwriteConfigs) {
+                $this->write('/etc/docker/daemon.json', '{"registry-mirrors":["https://overwritten.invalid"]}');
+                $this->write('/etc/vgpu_unlock/config.toml', "unlock = false\n");
+                $this->write('/etc/modprobe.d/nvidia.conf', "options nvidia cudahost=0\n");
+            }
+            if ($this->installCode !== 0) return ['code' => $this->installCode, 'stdout' => '', 'stderr' => 'fixture install failure'];
+        } elseif ($name === 'nvidia-ctk') {
+            installer_check(array_slice($argv, 0, 4) === ['nvidia-ctk', 'runtime', 'configure', '--runtime=docker'], 'Only staged Docker runtime registration is allowed');
+            $path = substr($argv[4], strlen('--config='));
+            installer_check(str_starts_with($path, $this->root . '/etc/docker/.uvm-docker-'), 'Docker registration must target a temporary root file');
+            $config = json_decode(file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
+            $config['runtimes']['nvidia'] = ['path' => '/usr/bin/nvidia-container-runtime', 'runtimeArgs' => []];
+            file_put_contents($path, json_encode($config));
         } elseif ($name === 'depmod') {
             installer_check($argv === ['depmod', '-a', '6.18.58-Unraid'], 'depmod must use the running kernel');
         } elseif ($name === 'modinfo') {
@@ -156,7 +183,7 @@ final class InstallerFixture
 
 $cases = [];
 $cases['disabled leaves the filesystem untouched'] = function (InstallerFixture $f): void {
-    $f->settings['upgrade']['enabled'] = false;
+    $f->settings['driver']['enabled'] = false;
     installer_check($f->installer->boot($f->settings)['status'] === 'disabled', 'Disabled upgrade must return immediately');
     installer_check(!$f->calls && !is_file($f->paths->configDir . '/driver-state.json'), 'Disabled startup must not write state or execute commands');
 };
@@ -167,9 +194,9 @@ $cases['invalid existing state is preserved for diagnosis'] = function (Installe
     installer_check($f->count('upgradepkg') === 0, 'No installation without a readable previous receipt');
 };
 $cases['enablement and a fresh download require a later boot'] = function (InstallerFixture $f): void {
-    $f->settings['upgrade']['enabled_boot_id'] = InstallerFixture::BOOT;
+    $f->settings['driver']['enabled_boot_id'] = InstallerFixture::BOOT;
     installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'First enable cannot install in the same boot');
-    $f->settings['upgrade']['enabled_boot_id'] = InstallerFixture::OLD_BOOT;
+    $f->settings['driver']['enabled_boot_id'] = InstallerFixture::OLD_BOOT;
     $f->settings['selected_package']['saved_boot_id'] = InstallerFixture::BOOT;
     installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'Newly selected cache cannot install in the same boot');
     installer_check($f->count('upgradepkg') === 0, 'No package install during configuration or plugin reinstall');
@@ -202,8 +229,8 @@ $cases['same boot does not reinstall and a later empty usr is restored'] = funct
 $cases['loaded matching and mismatching drivers are never replaced'] = function (InstallerFixture $f): void {
     $f->write('/sys/module/nvidia/version', "595.58.03\n");
     $f->installed = '595.58.03';
-    installer_check($f->installer->boot($f->settings)['status'] === 'already_active', 'Matching loaded driver is kept');
-    installer_check($f->installer->state()['status'] === 'already_active' && $f->installer->state()['kernel'] === '6.18.58-Unraid' && $f->installer->state()['boot_id'] === InstallerFixture::BOOT, 'The page must show this boot rather than an obsolete installation result');
+    installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'Version-only evidence cannot confirm the selected package revision');
+    installer_check($f->installer->state()['status'] === 'pending_reboot' && $f->installer->state()['kernel'] === '6.18.58-Unraid' && $f->installer->state()['boot_id'] === InstallerFixture::BOOT, 'The page must show the pending selection rather than invent an active package revision');
     $f->write('/sys/module/nvidia/version', "580.159.03\n");
     installer_check(!$f->installer->boot($f->settings)['ok'], 'Other loaded driver must block');
     installer_check($f->count('upgradepkg') === 0, 'No loaded driver replacement');
@@ -323,7 +350,9 @@ $cases['obsolete selected and prepared receipts fall back to the current last su
     $prepared['source_fingerprint'] = str_repeat('0', 64);
     $result = $f->installer->boot($f->settings, $prepared);
     installer_check($result['ok'] && $result['status'] === 'installed', 'A current last-success receipt must remain usable when higher-priority receipts are stale');
-    installer_check($f->installer->state()['last_success'] === $last, 'The installed historical receipt keeps its authenticated binding');
+    $success = $f->installer->state()['last_success'];
+    installer_check($success['source_id'] === $last['source_id'] && $success['source_fingerprint'] === $last['source_fingerprint'] &&
+        $success['package']['build'] === 1 && $success['installed_boot_id'] === InstallerFixture::BOOT, 'The installed historical receipt keeps its authenticated binding and records the restored build and boot');
     installer_check($f->count('upgradepkg') === 1, 'Historical restoration still performs a full installation on a new boot');
 };
 $cases['no current-policy receipt preserves the primary validation error'] = function (InstallerFixture $f): void {
@@ -401,6 +430,128 @@ $cases['a failed later boot preserves the last successful receipt'] = function (
     $f->fail = 'upgradepkg';
     installer_check(!$f->installer->boot($f->settings)['ok'], 'A package command failure is reported');
     installer_check($f->installer->state()['last_success'] === $success, 'Failure does not discard the reusable successful receipt');
+};
+$cases['build two is installed with an exact current-boot receipt'] = function (InstallerFixture $f): void {
+    $old = $f->package;
+    $f->selectBuild(2);
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'installed' && $result['package']['build'] === 2, 'Build two must reach the installer unchanged');
+    $success = $f->installer->state()['last_success'];
+    installer_check($success['package']['filename'] === $f->package['filename'] && $success['installed_boot_id'] === InstallerFixture::BOOT, 'Receipt must retain the exact package revision and installation boot');
+    installer_check($f->installer->boot($f->settings)['status'] === 'already_active' && $f->count('upgradepkg') === 1, 'A verified build two must be idempotent');
+    installer_check(is_file($old['path']), 'Build one remains available for rollback');
+};
+$cases['same-version build changes wait for reboot and never claim already active'] = function (InstallerFixture $f): void {
+    installer_check($f->installer->boot($f->settings)['ok'], 'Install legacy build one');
+    $success = $f->installer->state()['last_success'];
+    $f->selectBuild(2);
+    installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'Loaded build one cannot satisfy selected build two despite matching modinfo');
+    installer_check($f->installer->state()['last_success'] === $success && $f->count('upgradepkg') === 1, 'Pending selection must not replace the known installed receipt or live files');
+    $f->settings['selected_package'] = $success['package'];
+    installer_check($f->installer->boot($f->settings)['status'] === 'already_active', 'Returning to the exact current-boot installed build is recognized');
+};
+$cases['same-build changed digest or source cannot masquerade as the installed package'] = function (InstallerFixture $f): void {
+    $f->settings['selected_package'] = $f->remotePackage();
+    installer_check($f->installer->boot($f->settings)['ok'], 'Install a source-bound package');
+    $success = $f->installer->state()['last_success'];
+    $f->settings['selected_package']['md5'] = str_repeat('a', 32);
+    installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'Same filename with another digest is not active');
+    $f->settings['source'] = Store::validateSource(['url' => 'https://git.example.test/another/repo']);
+    $f->settings['selected_package'] = $f->remotePackage();
+    installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'Same filename and digest from a different source is not silently accepted as installed');
+    installer_check($f->installer->state()['last_success'] === $success && $f->count('upgradepkg') === 1, 'Mismatched selections preserve the known installation');
+};
+$cases['an old-boot receipt does not identify an externally loaded build'] = function (InstallerFixture $f): void {
+    installer_check($f->installer->boot($f->settings)['ok'], 'Record one successful boot');
+    $f->write('/proc/sys/kernel/random/boot_id', InstallerFixture::NEXT_BOOT);
+    installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'After a reboot, a matching version alone does not identify who installed its package');
+    installer_check($f->count('upgradepkg') === 1, 'Unknown current-boot revision is not hot-replaced');
+};
+$cases['legacy installed receipts are distinct from legacy version-only active status'] = function (InstallerFixture $f): void {
+    $last = ['package' => $f->package, 'saved_boot_id' => InstallerFixture::OLD_BOOT,
+        'source_id' => '', 'source_fingerprint' => '', 'local' => true];
+    $f->write('/sys/module/nvidia/version', "595.58.03\n");
+    $f->installed = '595.58.03';
+    $f->store->write($f->paths->configDir . '/driver-state.json', ['status' => 'already_active', 'boot_id' => InstallerFixture::BOOT, 'last_success' => $last]);
+    installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'Legacy already_active may retain a prior-boot receipt and does not prove its build');
+    $f->store->write($f->paths->configDir . '/driver-state.json', ['status' => 'installed', 'boot_id' => InstallerFixture::BOOT, 'last_success' => $last]);
+    installer_check($f->installer->boot($f->settings)['status'] === 'already_active', 'A legacy successful install in this boot can identify build one without a new field');
+    installer_check($f->installer->boot($f->settings)['status'] === 'already_active' &&
+        $f->installer->state()['last_success']['installed_boot_id'] === InstallerFixture::BOOT, 'A proven legacy installation must keep its boot identity after recording active status');
+    installer_check($f->count('upgradepkg') === 0, 'Legacy identity checks never reinstall a loaded driver');
+};
+$cases['unloading modules does not authorize a different build in the same boot'] = function (InstallerFixture $f): void {
+    installer_check($f->installer->boot($f->settings)['ok'], 'Install one build for the boot');
+    installer_check($f->installer->boot($f->settings)['status'] === 'already_active', 'Record its active status');
+    unlink($f->paths->path('/sys/module/nvidia/version'));
+    rmdir($f->paths->path('/sys/module/nvidia'));
+    $f->selectBuild(2);
+    installer_check($f->installer->boot($f->settings)['status'] === 'pending_reboot', 'A different build is deferred even when the previous modules are unloaded');
+    installer_check($f->count('upgradepkg') === 1, 'No second package installation in the same boot');
+};
+$cases['build two missing or conflicting metadata is rejected'] = function (InstallerFixture $f): void {
+    $f->selectBuild(2);
+    unset($f->settings['selected_package']['build']);
+    installer_check($f->installer->boot($f->settings)['status'] === 'failed', 'Only legacy build one may omit the build field');
+    $f->write('/proc/sys/kernel/random/boot_id', InstallerFixture::NEXT_BOOT);
+    $f->settings['selected_package']['build'] = 10;
+    installer_check($f->installer->boot($f->settings)['status'] === 'failed', 'Filename and build metadata must agree');
+    installer_check($f->count('upgradepkg') === 0, 'Ambiguous build metadata never reaches the installer');
+};
+$cases['explicit build pin rejects another same-version package'] = function (InstallerFixture $f): void {
+    $f->selectBuild(2);
+    $f->settings['source']['driver'] = '595.58.03';
+    $f->settings['source']['build'] = '1';
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'failed' && str_contains($result['message'], 'selected package build'), 'Build rollback pin must not install build two');
+    installer_check($f->count('upgradepkg') === 0, 'Build pin mismatch prevents installation');
+};
+
+$cases['boot restoration is independent of upgrade prefetch'] = function (InstallerFixture $f): void {
+    $f->settings['upgrade']['enabled'] = false;
+    installer_check($f->installer->boot($f->settings)['status'] === 'installed', 'Disabled prefetch must not disable current-kernel restoration');
+};
+$cases['package overwrites do not replace existing settings'] = function (InstallerFixture $f): void {
+    $f->write('/etc/docker/daemon.json', '{"registry-mirrors":["https://keep.invalid"],"runtimes":{"custom":{"path":"/bin/custom"}},"debug":true}');
+    $f->write('/etc/vgpu_unlock/config.toml', "unlock = true\n");
+    $f->write('/etc/modprobe.d/nvidia.conf', "options nvidia cudahost=1\n");
+    $f->overwriteConfigs = true;
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'installed', 'Install completes after settings recovery');
+    $docker = json_decode(file_get_contents($f->paths->path('/etc/docker/daemon.json')), true);
+    installer_check($docker['registry-mirrors'] === ['https://keep.invalid'] && $docker['debug'] === true && isset($docker['runtimes']['custom'], $docker['runtimes']['nvidia']), 'Preserve Docker settings and add only NVIDIA runtime');
+    installer_check(file_get_contents($f->paths->path('/etc/vgpu_unlock/config.toml')) === "unlock = true\n", 'Unlock setting retained');
+    installer_check(file_get_contents($f->paths->path('/etc/modprobe.d/nvidia.conf')) === "options nvidia cudahost=1\n", 'Host CUDA module setting retained');
+};
+$cases['failed package installation restores settings before returning'] = function (InstallerFixture $f): void {
+    $original = '{"registry-mirrors":["https://keep.invalid"]}';
+    $f->write('/etc/docker/daemon.json', $original);
+    $f->write('/etc/vgpu_unlock/config.toml', "unlock = true\n");
+    $f->overwriteConfigs = true;
+    $f->installCode = 1;
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'failed' && str_contains($result['message'], 'Original configurations restored'), 'Failure explains configuration recovery');
+    installer_check(file_get_contents($f->paths->path('/etc/docker/daemon.json')) === $original, 'Failed pkgtools restores exact Docker bytes');
+    installer_check($f->count('nvidia-ctk') === 0 && $f->count('nvidia-modprobe') === 0, 'Failed installation does not register or activate');
+};
+$cases['late post-install failure restores original Docker bytes'] = function (InstallerFixture $f): void {
+    $original = '{"debug":true}';
+    $f->write('/etc/docker/daemon.json', $original);
+    $f->badAfterInstall = true;
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'failed' && $f->count('nvidia-ctk') === 1, 'Post-install mismatch follows Docker staging');
+    installer_check(file_get_contents($f->paths->path('/etc/docker/daemon.json')) === $original, 'Later verification failure restores pre-install settings');
+};
+$cases['installation timeout retains backups without racing the child'] = function (InstallerFixture $f): void {
+    $f->write('/etc/docker/daemon.json', '{"debug":true}');
+    $f->overwriteConfigs = true;
+    $f->installCode = 124;
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'failed' && str_contains($result['message'], 'completion is unknown'), 'Unknown child completion requests manual recovery');
+    installer_check(str_contains(file_get_contents($f->paths->path('/etc/docker/daemon.json')), 'overwritten.invalid'), 'Do not race a possibly running installer with configuration writes');
+    $journal = glob($f->paths->runtimeDir . '/install-transactions/*/transaction.json');
+    installer_check(count($journal) === 1 && json_decode(file_get_contents($journal[0]), true)['status'] === 'completion_unknown', 'Recovery transaction records uncertain completion');
+    installer_check($f->count('nvidia-ctk') === 0 && $f->count('nvidia-modprobe') === 0, 'Timeout blocks subsequent commands');
 };
 
 foreach ($cases as $name => $case) {

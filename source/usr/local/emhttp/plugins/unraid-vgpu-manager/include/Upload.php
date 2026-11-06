@@ -13,7 +13,10 @@ final class Upload
 
     public function filename(mixed $filename, string $kernel): string
     {
-        if (!is_string($filename) || !preg_match('/^nvidia-[0-9]+\.[0-9]+\.[0-9]+-' . preg_quote($kernel, '/') . '-Unraid-1\.txz$/D', $filename)) {
+        try {
+            if (!is_string($filename)) throw new \InvalidArgumentException('Invalid filename');
+            PackageIdentity::parse($filename, $kernel);
+        } catch (\InvalidArgumentException $error) {
             throw new \InvalidArgumentException('Choose an NVIDIA TXZ package for the current kernel');
         }
         return $filename;

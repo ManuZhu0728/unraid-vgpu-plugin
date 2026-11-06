@@ -16,15 +16,13 @@
         <label class="uvm-field"><span>下载地址</span><input name="source_url" id="uvm-source-url" type="url" maxlength="1024" placeholder="GitHub / GitLab 仓库、Release 或驱动包链接" value="<?=uvm_h($uvm_source['url'] ?: $uvm_source['repository'])?>"><small>自动识别来源，并匹配 <?=uvm_h(php_uname('r'))?>。</small></label>
         <label class="uvm-field"><span>Token（私有仓库）</span><input name="credential_token" id="uvm-credential-token" type="password" maxlength="4096" value="" autocomplete="new-password" spellcheck="false"><small><?=!empty($uvm_status['credential_configured']) ? '已保存。留空保留，输入新 Token 可替换。' : '公开仓库留空。'?></small></label>
       </div>
-      <div class="uvm-grid" style="margin-top:14px">
-        <label class="uvm-field"><span>跟随 Unraid 更新驱动</span><select name="upgrade_enabled"><option value="0" <?=empty($uvm_settings['upgrade']['enabled']) ? 'selected' : ''?>>关闭</option><option value="1" <?=!empty($uvm_settings['upgrade']['enabled']) ? 'selected' : ''?>>开启</option></select><small>提前下载目标内核包，下次开机安装。首次启用请迁移原驱动启动入口。</small></label>
-      </div>
       <input type="hidden" name="source_repository" value="<?=uvm_h($uvm_source['repository'])?>">
       <details class="uvm-advanced"><summary>高级设置</summary>
         <div class="uvm-grid">
           <label class="uvm-field"><span>平台</span><select name="source_provider" id="uvm-source-provider"><?php foreach (['auto'=>'自动识别','github'=>'GitHub','gitlab'=>'GitLab','direct'=>'文件直链'] as $key=>$label): ?><option value="<?=uvm_h($key)?>" <?=($uvm_source['mode'] === 'auto' ? $key === 'auto' : $uvm_source['provider'] === $key) ? 'selected' : ''?>><?=uvm_h($label)?></option><?php endforeach; ?></select></label>
           <label class="uvm-field"><span>下载方式</span><select name="source_mode" id="uvm-source-mode"><?php foreach (['auto'=>'自动','releases'=>'Releases','generic'=>'GitLab Generic Packages'] as $key=>$label): ?><option value="<?=uvm_h($key)?>" <?=$uvm_source['mode'] === $key ? 'selected' : ''?>><?=uvm_h($label)?></option><?php endforeach; ?></select></label>
           <label class="uvm-field"><span>固定驱动版本</span><input name="source_driver" type="text" maxlength="32" placeholder="自动（优先当前版本）" value="<?=uvm_h($uvm_source['driver'])?>"></label>
+          <label class="uvm-field"><span>固定构建号</span><input name="source_build" type="text" inputmode="numeric" pattern="[1-9][0-9]*" maxlength="19" placeholder="自动" value="<?=uvm_h($uvm_source['build'])?>"><small>配合固定驱动版本使用。Releases 留空取同版本最新构建；已固定构建时，回退需同步修改此处。</small></label>
           <label class="uvm-field"><span>认证方式</span><select name="credential_type" id="uvm-credential-type"><?php foreach (['auto'=>'自动','private-token'=>'GitLab PRIVATE-TOKEN','deploy-token'=>'GitLab Deploy Token','bearer'=>'Bearer Token'] as $key=>$label): ?><option value="<?=uvm_h($key)?>"><?=uvm_h($label)?></option><?php endforeach; ?></select></label>
           <label class="uvm-field"><span>已保存 Token</span><select name="credential_change" id="uvm-credential-change"><option value="auto">保留；输入新值时替换</option><option value="remove">删除</option></select></label>
           <label class="uvm-field"><span>用户名</span><input name="credential_username" id="uvm-credential-username" type="text" maxlength="256" value="" autocomplete="off"></label>
@@ -43,16 +41,16 @@
     </form>
 
     <?php if ($uvm_versions): ?>
-    <div class="uvm-scroll"><table><thead><tr><th>驱动版本</th><th>内核</th><th>文件</th></tr></thead><tbody>
-    <?php foreach ($uvm_versions as $version): if (!is_array($version)) continue; ?><tr><td><?=uvm_h($version['driver'] ?? '')?></td><td><?=uvm_h($version['kernel'] ?? '')?></td><td><?=uvm_h($version['filename'] ?? '')?></td></tr><?php endforeach; ?>
+    <div class="uvm-scroll"><table><thead><tr><th>驱动版本</th><th>构建号</th><th>内核</th><th>文件</th></tr></thead><tbody>
+    <?php foreach ($uvm_versions as $version): if (!is_array($version)) continue; ?><tr><td><?=uvm_h($version['driver'] ?? '')?></td><td><?=uvm_h($version['build'] ?? '未记录')?></td><td><?=uvm_h($version['kernel'] ?? '')?></td><td><?=uvm_h($version['filename'] ?? '')?></td></tr><?php endforeach; ?>
     </tbody></table></div>
     <?php endif; ?>
     <form method="post" class="uvm-submit-form uvm-inline-form">
       <?php uvm_form_hidden('source-download', $uvm_csrf); ?>
       <div class="uvm-actions">
-        <select name="download_driver" aria-label="下载版本">
-          <option value="">自动选择<?=($uvm_source['driver'] !== '' ? '（' . uvm_h($uvm_source['driver']) . '）' : '（优先当前版本）')?></option>
-          <?php foreach ($uvm_versions as $version): if (!is_array($version)) continue; ?><option value="<?=uvm_h($version['driver'] ?? '')?>"><?=uvm_h($version['driver'] ?? '')?></option><?php endforeach; ?>
+        <select name="download_package" aria-label="下载版本与构建">
+          <option value="">自动选择<?=($uvm_source['driver'] !== '' ? '（' . uvm_h($uvm_source['driver']) . ($uvm_source['build'] !== '' ? ' · 构建 ' . uvm_h($uvm_source['build']) : '') . '）' : '（优先当前版本）')?></option>
+          <?php foreach ($uvm_versions as $version): if (!is_array($version)) continue; ?><option value="<?=uvm_h($version['filename'] ?? '')?>"><?=uvm_h($version['driver'] ?? '')?> · 构建 <?=uvm_h($version['build'] ?? '未记录')?></option><?php endforeach; ?>
         </select>
         <button type="submit" <?=!$uvm_controls || ($uvm_source['url'] === '' && $uvm_source['repository'] === '') ? 'disabled' : ''?>>下载到缓存</button>
       </div>
@@ -71,27 +69,40 @@
       <progress id="uvm-upload-meter" max="100" value="0" hidden></progress>
       </fieldset>
     </form>
-    <p class="uvm-muted">上传后自动校验。开启“跟随 Unraid 更新驱动”后，匹配的缓存将在下次开机安装。</p>
+    <p class="uvm-muted">上传后自动校验。开启“开机恢复驱动”后，匹配的缓存将在下次开机安装。</p>
   </section>
 
+<section class="uvm-panel" id="uvm-driver-policy-panel">
+  <h2>驱动启动与升级</h2>
+  <form method="post" class="uvm-submit-form" id="uvm-driver-policy-form">
+    <?php uvm_form_hidden('config-save', $uvm_csrf, ['config_section' => 'driver']); ?>
+    <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
+    <div class="uvm-grid">
+      <label class="uvm-field"><span>开机恢复驱动</span><select name="driver_enabled"><option value="0" <?=empty($uvm_settings['driver']['enabled']) ? 'selected' : ''?>>关闭</option><option value="1" <?=!empty($uvm_settings['driver']['enabled']) ? 'selected' : ''?>>开启</option></select><small>每次开机从缓存安装匹配的驱动。本地导入也适用；首次启用请停用原驱动安装入口。</small></label>
+      <label class="uvm-field"><span>系统升级预下载</span><select name="upgrade_enabled"><option value="0" <?=empty($uvm_settings['upgrade']['enabled']) ? 'selected' : ''?>>关闭</option><option value="1" <?=!empty($uvm_settings['upgrade']['enabled']) ? 'selected' : ''?>>开启</option></select><small>从已配置的下载源提前准备新内核驱动。关闭后仍可从现有缓存开机恢复。</small></label>
+    </div>
+    <p class="uvm-muted">vGPU 初始化在“vGPU 管理”页单独设置。</p>
+    <div class="uvm-actions"><button type="submit">保存启动与升级设置</button></div>
+    </fieldset>
+  </form>
+  <p>开机恢复：<?=!empty($uvm_settings['driver']['enabled']) ? '开启' : '关闭'?><?php if ($uvm_installation): ?> · 安装状态：<?=uvm_h(['installed'=>'已完成','already_active'=>'驱动已加载','installing'=>'正在安装','pending_reboot'=>'等待重启安装所选构建','failed'=>'失败','blocked'=>'等待迁移启动入口','missing_package'=>'缺少匹配包','disabled'=>'未启用'][$uvm_installation['status'] ?? ''] ?? ($uvm_installation['status'] ?? ''))?> · <code><?=uvm_h($uvm_installation['kernel'] ?? '')?></code><?php endif; ?></p>
+  <?php if (in_array($uvm_installation['status'] ?? '', ['failed','blocked','missing_package','pending_reboot'], true)): ?><p class="uvm-muted"><?=uvm_h(uvm_redact($uvm_installation['message'] ?? ''))?></p><?php endif; ?>
+</section>
 
 <section class="uvm-panel">
   <h2>驱动缓存</h2>
   <?php if ($uvm_selected_package): ?>
-  <p>NVIDIA <?=uvm_h($uvm_selected_package['driver'] ?? '')?> · <code><?=uvm_h($uvm_selected_package['kernel'] ?? '')?></code> · <?=($uvm_selected_package['source'] ?? '') === 'local' ? '本地导入' : '在线下载'?></p>
+  <p>NVIDIA <?=uvm_h($uvm_selected_package['driver'] ?? '')?> · 构建 <?=uvm_h($uvm_selected_package['build'] ?? '未记录')?> · <code><?=uvm_h($uvm_selected_package['kernel'] ?? '')?></code> · <?=($uvm_selected_package['source'] ?? '') === 'local' ? '本地导入' : '在线下载'?></p>
   <p class="uvm-muted"><?=uvm_h($uvm_selected_package['filename'] ?? basename($uvm_selected_package['path'] ?? ''))?></p>
   <details><summary>文件信息</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_selected_package), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
   <?php else: ?><p class="uvm-muted">尚无缓存，下载或上传一个匹配内核的驱动包。</p><?php endif; ?>
 </section>
   <section class="uvm-panel">
-    <h2>系统升级</h2>
-    <?php $uvm_upgrade_label = ['idle'=>'尚无升级任务','current'=>'当前内核缓存已就绪','disabled'=>'自动更新已关闭','downloading'=>'正在下载驱动','ready'=>'驱动已准备好','missing'=>'目标内核驱动尚未发布','error'=>'准备失败','blocked'=>'等待处理启动入口冲突']; ?>
-    <p><?=uvm_h($uvm_upgrade_label[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?><?php if (!empty($uvm_upgrade['target_kernel'])): ?> · <code><?=uvm_h($uvm_upgrade['target_kernel'])?></code><?php endif; ?><?php if (!empty($uvm_upgrade['package']['driver'])): ?> · NVIDIA <?=uvm_h($uvm_upgrade['package']['driver'])?><?php endif; ?></p>
+    <h2>升级准备</h2>
+    <p>系统升级预下载：<?=!empty($uvm_settings['upgrade']['enabled']) ? '开启' : '关闭'?></p>
+    <?php $uvm_upgrade_label = ['idle'=>'尚无升级任务','current'=>'当前内核缓存已就绪','disabled'=>'升级预下载已关闭','downloading'=>'正在下载驱动','ready'=>'驱动已准备好','missing'=>'目标内核驱动尚未发布','error'=>'准备失败','blocked'=>'等待处理启动入口冲突']; ?>
+    <p><?=uvm_h($uvm_upgrade_label[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?><?php if (!empty($uvm_upgrade['target_kernel'])): ?> · <code><?=uvm_h($uvm_upgrade['target_kernel'])?></code><?php endif; ?><?php if (!empty($uvm_upgrade['package']['driver'])): ?> · NVIDIA <?=uvm_h($uvm_upgrade['package']['driver'])?> · 构建 <?=uvm_h($uvm_upgrade['package']['build'] ?? '未记录')?><?php endif; ?></p>
     <?php if (in_array($uvm_upgrade['status'] ?? '', ['error','missing','blocked'], true) && !empty($uvm_upgrade['message'])): ?><p class="uvm-muted"><?=uvm_h(uvm_redact($uvm_upgrade['message']))?></p><?php endif; ?>
-    <?php if ($uvm_installation): ?>
-    <p>开机安装：<?=uvm_h(['installed'=>'已完成','already_active'=>'驱动已加载','installing'=>'正在安装','failed'=>'失败','blocked'=>'等待迁移启动入口','missing_package'=>'缺少匹配包'][$uvm_installation['status'] ?? ''] ?? ($uvm_installation['status'] ?? ''))?> · <code><?=uvm_h($uvm_installation['kernel'] ?? '')?></code></p>
-    <?php if (in_array($uvm_installation['status'] ?? '', ['failed','blocked','missing_package'], true)): ?><p class="uvm-muted"><?=uvm_h(uvm_redact($uvm_installation['message'] ?? ''))?></p><?php endif; ?>
-    <?php endif; ?>
     <form method="post" class="uvm-submit-form"><?php uvm_form_hidden('upgrade-check', $uvm_csrf); ?><button type="submit" <?=!$uvm_controls || empty($uvm_settings['upgrade']['enabled']) ? 'disabled' : ''?>>检查升级准备</button></form>
   </section>
 

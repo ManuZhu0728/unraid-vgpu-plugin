@@ -11,13 +11,22 @@
 - `Application.php` 是统一事务入口，页面不得直接调用 mdevctl 或写配置。
 - Store 使用 close-on-exec 锁句柄，所有写操作共用锁，后台 daemon 不继承锁。
 - `Source.php` 解析下载链接；`Download.php` 处理版本匹配和归档校验。
+- `PackageIdentity.php` 统一包名、构建号及缓存回执的解析，供下载、上传、升级与安装器共用。
+  回执中的内核带 `-Unraid`，构建号规范化为正整数；旧版缺失构建号只兼容 `-1.txz`。
+  `source.build` 是可选字符串设置，留空为自动选择；空值不参与源策略指纹，兼容既有回执。
 - `Upload.php` 处理本地分块上传，完成后复用下载器的校验和缓存逻辑。
 - `Upgrade.php` 准备当前/目标内核缓存；独立 PHP 助手监听系统升级。
 - `Installer.php` 在后续启动安装已验证缓存；`Runtime.php` 随后恢复 vGPU。
+- `InstallConfiguration.php` 在包安装前建立配置事务，安装后恢复已有配置并仅合并 Docker 的 NVIDIA runtime。
+  事务位于运行目录，备份不进入 JSON 状态或日志；失败回执提供事务路径。
+- 设置 schema 2 独立保存 `driver.enabled`、`upgrade.enabled`、`runtime.enabled`。
+  `Store::settings()` 仅在读取旧配置时映射旧开关及 boot ID，不自动落盘；明确的 driver 设置优先。
 - WebUI 使用原生 `xmenu` + `Tabs`：主 `.page` 定义菜单，三个子 `.page` 分别显示驱动、vGPU、状态与日志。
   `include/ui-page.php` 负责公共状态栏，`include/ui/` 保存公共函数、请求处理和各页内容。
   Unraid 在同一请求内渲染全部子页；`state.php` 只处理一次提交和状态读取，各页使用独立 DOM 标识。
-  表单用 `uvm_tab` 标记目标标签，按页面限制操作；驱动页只保存 source/credential/upgrade，vGPU 页只保存 runtime/override。
+  表单用 `uvm_tab` 标记目标标签，按页面限制操作；驱动页分开保存 source/credential 和 driver/upgrade，vGPU 页只保存 runtime/override。
+  driver 表单遗漏的开关保持原值，提交值只接受 `0`/`1`；旧 source 表单的 `upgrade_enabled` 仅修改预下载，不修改驱动恢复。
+  状态页的已安装构建取 `last_success.package`，等待重启或失败的目标取 `attempted_package`，不把所选缓存当作已安装包。
   PHP 分页入口使用完整的 `<?php ... ?>`，并设置 `Markdown="false"`；普通被包含的 `.php` 文件不经过 Markdown。
 - `Logs.php` 从固定日志文件读取最近记录，按类别筛选并过滤凭据。
 - `Inventory.php` 合并运行时 sysfs 设备、`/etc/mdevctl.d/<PCI>/<UUID>` 系统定义与插件配置，
@@ -84,7 +93,8 @@ status/logs/plan 只读，其余加锁。
 页面日志通过 GET 刷新，不改变设置。
 
 `upgrade-check` 读取系统目标内核并准备缓存。CLI 可通过 stdin 显式提供 `target_kernel`，
-页面只能使用系统升级元数据。`boot` 在更新开关启用时先运行安装器，成功后才调用 Runtime。
+页面只能使用系统升级元数据。`boot` 在 driver.enabled 启用时先运行安装器，成功后才调用 Runtime。
+`ensure` 不安装驱动；`upgrade-check` 与后台助手只受 upgrade.enabled 控制；Runtime 使用 runtime.enabled。
 `force: true` 跳过失败后的重试等待；页面“检查升级准备”使用此选项。
 助手不持有事务锁，子 CLI 使用同一把锁，忙时重试。
 

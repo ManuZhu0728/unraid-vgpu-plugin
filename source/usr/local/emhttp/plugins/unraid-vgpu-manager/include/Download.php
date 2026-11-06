@@ -30,7 +30,7 @@ final class Download
             ? $this->automaticCandidates($context)
             : ($context['mode'] === 'generic' ? $this->candidates($context) : $this->releaseList($context));
         return ['ok' => true, 'versions' => array_map(static function (array $item): array {
-            return array_intersect_key($item, array_flip(['driver', 'kernel', 'tag', 'filename', 'discovery']));
+            return array_intersect_key($item, array_flip(['driver', 'kernel', 'build', 'tag', 'filename', 'discovery']));
         }, $candidates)];
     }
 
@@ -39,6 +39,10 @@ final class Download
         $context = $this->context($source, $credentials, $kernel);
         $candidates = $context['mode'] === 'auto' || $context['link']['kind'] !== 'repository'
             ? $this->automaticCandidates($context) : $this->candidates($context);
+        if ($context['build'] !== null) {
+            $candidates = array_values(array_filter($candidates, static fn(array $candidate): bool => $candidate['build'] === $context['build']));
+        }
+        usort($candidates, self::compareCandidates(...));
         $selected = null;
         $driver = $context['driver'];
         if ($driver === '') {
@@ -51,6 +55,7 @@ final class Download
         }
         if ($selected === null) throw new \RuntimeException('The selected driver is unavailable; no fallback was attempted');
         $context['driver'] = $selected['driver'];
+        $context['build'] = $selected['build'];
         $md5 = $this->checksum($context, $selected);
         $directory = $this->paths->cacheDir . '/' . $context['kernel'];
         $this->directory($directory);
@@ -81,7 +86,7 @@ final class Download
         $temporary = $this->temporary($directory);
         try {
             if (!copy($path, $temporary)) throw new \RuntimeException('Cannot copy the uploaded package');
-            $result = $this->cacheFile($temporary, $filename, ['kernel' => $kernel, 'driver' => $identity['driver']], $md5, $verified);
+            $result = $this->cacheFile($temporary, $filename, ['kernel' => $kernel, 'driver' => $identity['driver'], 'build' => $identity['build']], $md5, $verified);
             $result['package']['source'] = 'local';
             $result['message'] = 'Local package imported';
             return $result;
@@ -92,6 +97,7 @@ final class Download
     public function verifyCached(array $package, string $kernel): array
     {
         $kernel = $this->kernel($kernel);
+        $package = PackageIdentity::receipt($package);
         $filename = $package['filename'] ?? '';
         if (!is_string($filename)) throw new \InvalidArgumentException('Invalid cached package filename');
         $identity = $this->filename($filename, $kernel);
@@ -122,6 +128,10 @@ final class Download
 
     private function cacheFile(string $temporary, string $filename, array $context, string $md5, bool $checksumVerified): array
     {
+        $identity = $this->filename($filename, $context['kernel']);
+        if ($identity['driver'] !== $context['driver'] || $identity['build'] !== ($context['build'] ?? 1)) {
+            throw new \RuntimeException('Downloaded package identity differs from the selection');
+        }
         $directory = $this->paths->cacheDir . '/' . $context['kernel'];
         $this->directory($directory);
         $destination = $directory . '/' . $filename;
@@ -150,7 +160,8 @@ final class Download
             } finally { @unlink($temporary); }
         }
         return ['ok' => true, 'package' => ['path' => $destination, 'filename' => $filename,
-            'kernel' => $context['kernel'] . '-Unraid', 'driver' => $context['driver'], 'md5' => $md5, 'checksum_verified' => $checksumVerified]];
+            'kernel' => $context['kernel'] . '-Unraid', 'driver' => $context['driver'], 'build' => $identity['build'],
+            'md5' => $md5, 'checksum_verified' => $checksumVerified]];
     }
 
     private function context(array $source, array $credentials, string $kernel, bool $requireDriver = true): array
@@ -158,6 +169,8 @@ final class Download
         $kernel = $this->kernel($kernel);
         $driver = (string)($source['driver'] ?? '');
         $link = Source::parse((string)(($source['url'] ?? '') !== '' ? $source['url'] : ($source['repository'] ?? '')), (string)($source['provider'] ?? 'auto'));
+        $build = ($source['build'] ?? '') === '' ? null : PackageIdentity::build($source['build']);
+        if ($build !== null && $driver === '' && $link['kind'] !== 'direct') throw new \InvalidArgumentException('A pinned package build requires an explicit driver version');
         $provider = $link['provider'];
         $mode = $source['mode'] ?? 'releases';
         if (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/D', $kernel)) throw new \InvalidArgumentException('Explicit X.Y.Z kernel version is required');
@@ -196,11 +209,11 @@ final class Download
         if ($type === 'deploy-token' && $mode !== 'generic' && $link['kind'] !== 'direct' && !($mode === 'auto' && $link['kind'] === 'repository')) throw new \InvalidArgumentException('A deploy token cannot list releases. Paste the TXZ package link or use an API token.');
         $token = $type === 'none' ? '' : (string)($credentials['token'] ?? '');
         if ($type !== 'none' && ($token === '' || strlen($token) > 4096 || preg_match('/[\x00-\x20\x7f]/', $token))) throw new \InvalidArgumentException('Missing or invalid authentication token');
-        $tag = $this->template((string)($source['tag_template'] ?? 'v{kernel}-{driver}'), $kernel, $driver);
+        $tag = $this->template((string)($source['tag_template'] ?? 'v{kernel}-{driver}'), $kernel, $driver, $build ?? 1);
         if (isset($link['api'])) $api = $link['api'];
         $autoAuth = $type === 'auto';
         if ($autoAuth) $type = $provider === 'github' || $provider === 'direct' ? 'bearer' : 'private-token';
-        return compact('source', 'provider', 'mode', 'kernel', 'driver', 'api', 'authOrigin', 'type', 'token', 'tag', 'link', 'autoAuth');
+        return compact('source', 'provider', 'mode', 'kernel', 'driver', 'build', 'api', 'authOrigin', 'type', 'token', 'tag', 'link', 'autoAuth');
     }
 
     private function candidates(array $context): array
@@ -208,10 +221,14 @@ final class Download
         if ($context['mode'] === 'generic') {
             $name = (string)($context['source']['package_name'] ?? 'build');
             if (!preg_match('/^[A-Za-z0-9_.+-]+$/D', $name) || $name === '.' || $name === '..') throw new \InvalidArgumentException('Invalid Generic package name');
-            $version = $this->template((string)($context['source']['package_version_template'] ?? 'v{kernel}-{driver}'), $context['kernel'], $context['driver']);
-            $filename = 'nvidia-' . $context['driver'] . '-' . $context['kernel'] . '-Unraid-1.txz';
+            $build = $context['build'] ?? 1;
+            $versionTemplate = (string)($context['source']['package_version_template'] ?? 'v{kernel}-{driver}');
+            $version = $versionTemplate === 'v{kernel}-{driver}'
+                ? PackageIdentity::genericVersion($context['kernel'], $context['driver'], $build)
+                : $this->template($versionTemplate, $context['kernel'], $context['driver'], $build);
+            $filename = PackageIdentity::filename($context['driver'], $context['kernel'], $build);
             $base = $context['api'] . '/packages/generic/' . rawurlencode($name) . '/' . rawurlencode($version) . '/';
-            $candidate = ['driver' => $context['driver'], 'kernel' => $context['kernel'] . '-Unraid', 'tag' => $version,
+            $candidate = ['driver' => $context['driver'], 'kernel' => $context['kernel'] . '-Unraid', 'build' => $build, 'tag' => $version,
                 'filename' => $filename, 'url' => $base . rawurlencode($filename), 'md5_url' => $base . rawurlencode($filename . '.md5'), 'accept' => 'application/octet-stream'];
             // A deploy token may read an explicit file, not enumerate Releases.
             $candidate['md5'] = $this->checksum($context, $candidate);
@@ -235,6 +252,7 @@ final class Download
         if ($link['kind'] === 'direct') {
             $identity = $this->filename($link['filename'], $context['kernel']);
             if ($context['driver'] !== '' && $context['driver'] !== $identity['driver']) throw new \RuntimeException('The package link has a different driver version');
+            if ($context['build'] !== null && $context['build'] !== $identity['build']) throw new \RuntimeException('The package link has a different package build');
             if ($context['provider'] === 'github' && $link['tag'] !== '') {
                 $data = $this->json($context['api'] . '/releases/tags/' . rawurlencode($link['tag']), $context);
                 foreach ($this->releaseAssets($data, $context, $link['tag']) as $candidate) {
@@ -242,7 +260,7 @@ final class Download
                 }
                 throw new \RuntimeException('The linked package is not in this release');
             }
-            $candidate = ['driver' => $identity['driver'], 'kernel' => $context['kernel'] . '-Unraid', 'tag' => $link['tag'] ?: 'direct',
+            $candidate = ['driver' => $identity['driver'], 'kernel' => $context['kernel'] . '-Unraid', 'build' => $identity['build'], 'tag' => $link['tag'] ?: 'direct',
                 'filename' => $link['filename'], 'url' => $link['url'], 'md5_url' => $link['url'] . '.md5', 'accept' => 'application/octet-stream'];
             $candidate['md5'] = $this->checksum($context, $candidate);
             return [$candidate];
@@ -298,11 +316,11 @@ final class Download
             foreach ($releases as $release) {
                 if (!is_array($release) || !is_string($release['tag_name'] ?? null) || !empty($release['draft'])) continue;
                 foreach ($this->releaseAssets($release, $context, $release['tag_name']) as $candidate) {
-                    $expectedTag = $this->template((string)($context['source']['tag_template'] ?? 'v{kernel}-{driver}'), $context['kernel'], $candidate['driver']);
+                    $expectedTag = $this->template((string)($context['source']['tag_template'] ?? 'v{kernel}-{driver}'), $context['kernel'], $candidate['driver'], $candidate['build']);
                     $matches = $candidate['tag'] === $expectedTag;
                     if ($automatic) $matches = $matches || $candidate['tag'] === $context['kernel'] . '-Unraid' ||
                         $candidate['tag'] === 'v' . $context['kernel'] . '-' . $candidate['driver'];
-                    if ($matches) $result[$candidate['driver']] = $candidate;
+                    if ($matches) $result[$candidate['driver'] . ':' . $candidate['build']] = $candidate;
                 }
             }
             if (count($releases) < 100) break;
@@ -310,7 +328,7 @@ final class Download
         }
         if (!$result) throw new \RuntimeException('No canonical driver/MD5 pair matches the running kernel');
         $result = array_values($result);
-        usort($result, static fn(array $a, array $b): int => version_compare($a['driver'], $b['driver']));
+        usort($result, self::compareCandidates(...));
         return $result;
     }
 
@@ -322,7 +340,9 @@ final class Download
         foreach ($assets as $asset) {
             if (!is_array($asset) || !isset($asset['name']) || !is_string($asset['name'])) continue;
             $name = $asset['name'];
-            if (!preg_match('/^nvidia-[0-9]+\.[0-9]+\.[0-9]+-' . preg_quote($context['kernel'], '/') . '-Unraid-1\.txz(?:\.md5)?$/D', $name)) continue;
+            $filename = str_ends_with($name, '.md5') ? substr($name, 0, -4) : $name;
+            try { $this->filename($filename, $context['kernel']); }
+            catch (\InvalidArgumentException $error) { continue; }
             if (isset($byName[$name])) throw new \RuntimeException('Release contains duplicate matching assets');
             if ($context['provider'] === 'github') {
                 $id = $asset['id'] ?? null;
@@ -337,12 +357,17 @@ final class Download
         foreach ($byName as $name => $url) {
             if (str_ends_with($name, '.md5')) continue;
             if (!isset($byName[$name . '.md5'])) throw new \RuntimeException('Matching driver asset has no MD5 attachment');
-            preg_match('/^nvidia-([0-9]+\.[0-9]+\.[0-9]+)-/', $name, $match);
-            $result[] = ['driver' => $match[1], 'kernel' => $context['kernel'] . '-Unraid', 'tag' => $tag,
+            $identity = $this->filename($name, $context['kernel']);
+            $result[] = ['driver' => $identity['driver'], 'kernel' => $identity['kernel'], 'build' => $identity['build'], 'tag' => $tag,
                 'filename' => $name, 'url' => $url, 'md5_url' => $byName[$name . '.md5'], 'accept' => 'application/octet-stream'];
         }
-        usort($result, static fn(array $a, array $b): int => version_compare($a['driver'], $b['driver']));
+        usort($result, self::compareCandidates(...));
         return $result;
+    }
+
+    private static function compareCandidates(array $a, array $b): int
+    {
+        return version_compare($a['driver'], $b['driver']) ?: $a['build'] <=> $b['build'];
     }
 
     private function checksum(array $context, array $candidate): string
@@ -538,9 +563,9 @@ final class Download
         return implode('/', $parts);
     }
 
-    private function template(string $value, string $kernel, string $driver): string
+    private function template(string $value, string $kernel, string $driver, int $build = 1): string
     {
-        $value = str_replace(['{kernel}', '{driver}'], [$kernel, $driver], $value);
+        $value = str_replace(['{kernel}', '{driver}', '{build}'], [$kernel, $driver, (string)$build], $value);
         if ($value === '' || strlen($value) > 200 || !preg_match('#^[A-Za-z0-9._+/-]+$#D', $value) || in_array('..', explode('/', $value), true)) throw new \InvalidArgumentException('Invalid source version/tag template');
         return $value;
     }
@@ -554,9 +579,7 @@ final class Download
 
     private function filename(string $filename, string $kernel): array
     {
-        if (!preg_match('/^nvidia-([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)-Unraid-1\.txz$/D', $filename, $match)) throw new \InvalidArgumentException('Invalid driver TXZ filename');
-        if ($match[2] !== $kernel) throw new \InvalidArgumentException('The package targets a different kernel');
-        return ['driver' => $match[1], 'kernel' => $match[2]];
+        return PackageIdentity::parse($filename, $kernel);
     }
 
     private function url(string $url): string

@@ -33,9 +33,11 @@ final class LifecycleFixture
     public array $routes = [];
     public string $installed = '595.58.03';
     public string $installedKernel = '6.18.58-Unraid';
+    public int $installedBuild = 1;
     public string $archiveDriver = '';
     public string $archiveKernel = '';
     public bool $failInstall = false;
+    public bool $overwriteConfiguration = false;
 
     public function __construct()
     {
@@ -66,12 +68,12 @@ final class LifecycleFixture
         return count(array_filter($this->calls, static fn(array $call): bool => basename($call['argv'][0]) === $name));
     }
 
-    private function release(string $kernel, array $drivers): void
+    public function release(string $kernel, array $drivers, array $builds = [1]): void
     {
         $links = [];
-        foreach ($drivers as $driver) {
-            $name = 'nvidia-' . $driver . '-' . $kernel . '-Unraid-1.txz';
-            $url = 'https://git.example.test/api/v4/projects/42/packages/generic/build/v' . $kernel . '-' . $driver . '/' . $name;
+        foreach ($drivers as $driver) foreach ($builds as $build) {
+            $name = 'nvidia-' . $driver . '-' . $kernel . '-Unraid-' . $build . '.txz';
+            $url = 'https://git.example.test/api/v4/projects/42/packages/generic/build/v' . $kernel . '-' . $driver . ($build === 1 ? '' : '-build' . $build) . '/' . $name;
             $body = "\xfd7zXZ\x00fixture package " . $name;
             $this->routes[$url] = ['body' => $body];
             $this->routes[$url . '.md5'] = ['body' => md5($body) . '  ' . $name . "\n"];
@@ -89,11 +91,11 @@ final class LifecycleFixture
         $result = $this->application->dispatch('config-save', [
             'source' => ['url' => 'https://git.example.test/owner/repo', 'mode' => 'auto', 'project_id' => '42'],
             'credential' => ['type' => 'private-token', 'token' => self::TOKEN, 'username' => ''],
-            'upgrade' => ['enabled' => true], 'runtime' => ['enabled' => false],
+            'driver' => ['enabled' => true], 'upgrade' => ['enabled' => true], 'runtime' => ['enabled' => false],
         ]);
         lifecycle_check(($result['upgrade_helper']['ok'] ?? false) === true, 'Config-save must request the independent helper through the mock runner');
         $settings = $this->store->settings();
-        lifecycle_check($settings['upgrade']['driver_branch'] === '595' && $settings['upgrade']['enabled_boot_id'] === self::OLD_BOOT, 'Enablement must capture current branch and boot identity');
+        lifecycle_check($settings['upgrade']['driver_branch'] === '595' && $settings['driver']['enabled_boot_id'] === self::OLD_BOOT, 'Driver enablement must capture current branch and boot identity');
         lifecycle_check($this->store->credentials()['source_id'] === Store::sourceIdentity($settings['source']), 'Saved fake private credentials must be bound to the normalized source');
         if (!$select) return [];
         $download = $this->application->dispatch('source-download');
@@ -108,6 +110,14 @@ final class LifecycleFixture
         return $this->application->dispatch('upgrade-check');
     }
 
+    public function importLocalCurrent(string $driver = '595.58.03'): array
+    {
+        $filename = 'nvidia-' . $driver . '-6.18.58-Unraid-2.txz';
+        $temporary = sys_get_temp_dir() . '/php' . bin2hex(random_bytes(8));
+        $this->write($temporary, "\xfd7zXZ\x00fixture package " . $filename);
+        return $this->application->dispatch('source-import', ['filename' => $filename, 'path' => $this->paths->path($temporary)])['package'];
+    }
+
     public function reboot(string $boot = self::NEW_BOOT): void
     {
         $this->write('/proc/sys/kernel/osrelease', '6.18.60-Unraid');
@@ -118,6 +128,7 @@ final class LifecycleFixture
         // /usr is volatile on Unraid. Keep only the persistent cache/receipts.
         $this->installed = '';
         $this->installedKernel = '';
+        $this->installedBuild = 0;
     }
 
     private function listing(): string
@@ -155,7 +166,7 @@ final class LifecycleFixture
         } elseif ($name === 'tar' && in_array('--list', $argv, true)) {
             $archive = $argv[array_search('--file', $argv, true) + 1];
             $body = (string)file_get_contents($archive);
-            if (!preg_match('/nvidia-([0-9.]+)-([0-9.]+-Unraid)-1\.txz/', $body, $identity)) throw new RuntimeException('Unknown fake archive identity');
+            if (!preg_match('/nvidia-([0-9.]+)-([0-9.]+-Unraid)-([1-9][0-9]*)\.txz/', $body, $identity)) throw new RuntimeException('Unknown fake archive identity');
             $this->archiveDriver = $identity[1];
             $this->archiveKernel = $identity[2];
             $output = $this->listing();
@@ -175,10 +186,25 @@ final class LifecycleFixture
             }
         } elseif ($name === 'upgradepkg') {
             lifecycle_check(array_slice($argv, 0, 3) === ['upgradepkg', '--install-new', '--reinstall'], 'Only a cold package installation is permitted');
+            if ($this->overwriteConfiguration) {
+                foreach (['/etc/docker/daemon.json', '/etc/vgpu_unlock/config.toml', '/etc/modprobe.d/nvidia.conf', '/etc/nvidia/ClientConfigToken/client.tok'] as $path) {
+                    $this->write($path, $path === '/etc/docker/daemon.json' ? '{}' : 'package replacement');
+                }
+            }
             if ($this->failInstall) return ['code' => 1, 'stdout' => '', 'stderr' => 'mock package failure'];
-            if (!preg_match('/^nvidia-([0-9.]+)-([0-9.]+-Unraid)-1\.txz$/D', basename($argv[3]), $identity)) throw new RuntimeException('Wrong installation filename');
+            if (!preg_match('/^nvidia-([0-9.]+)-([0-9.]+-Unraid)-([1-9][0-9]*)\.txz$/D', basename($argv[3]), $identity)) throw new RuntimeException('Wrong installation filename');
             $this->installed = $identity[1];
             $this->installedKernel = $identity[2];
+            $this->installedBuild = (int)$identity[3];
+        } elseif ($name === 'nvidia-ctk') {
+            lifecycle_check(array_slice($argv, 1, 3) === ['runtime', 'configure', '--runtime=docker'], 'Docker configuration uses only the runtime registration operation');
+            $configuration = array_values(array_filter($argv, static fn(string $arg): bool => str_starts_with($arg, '--config=')));
+            lifecycle_check(count($configuration) === 1, 'Docker registration requires an explicit staging file');
+            $path = substr($configuration[0], strlen('--config='));
+            lifecycle_check(str_starts_with($path, $this->root . '/') && is_file($path), 'Mock registration never accesses the host configuration');
+            $json = json_decode((string)file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
+            $json['runtimes']['nvidia'] = ['path' => '/usr/bin/nvidia-container-runtime', 'runtimeArgs' => []];
+            file_put_contents($path, json_encode($json, JSON_THROW_ON_ERROR));
         } elseif ($name === 'depmod') {
             $runningKernel = trim((string)file_get_contents($this->paths->path('/proc/sys/kernel/osrelease')));
             lifecycle_check($argv === ['depmod', '-a', $runningKernel], 'Dependency update must target the running kernel');
@@ -202,7 +228,7 @@ $fixture = new LifecycleFixture();
 try {
     $selected = $fixture->enableAndSelectCurrent();
     $currentBoot = $fixture->application->dispatch('boot');
-    lifecycle_check($currentBoot['ok'] && $currentBoot['driver_installation']['status'] === 'already_active', 'Enabling the feature keeps the live installed driver');
+    lifecycle_check(!$currentBoot['ok'] && $currentBoot['status'] === 'pending_reboot', 'Enabling preserves the live driver without claiming its unknown package revision');
     lifecycle_check($fixture->count('upgradepkg') === 0, 'The current boot must not install while enabling the feature');
     $prepared = $fixture->prepareTarget();
     lifecycle_check($prepared['ok'] && $prepared['status'] === 'ready' && $prepared['target_kernel'] === '6.18.60-Unraid', 'Changes file must drive target-kernel preparation');
@@ -277,4 +303,121 @@ try {
     echo "PASS lifecycle: first enable -> automatic current cache -> ordinary same-kernel reboot\n";
 } finally { $fixture->close(); }
 
-echo 'Application upgrade lifecycle: 4 scenarios / ' . $lifecycleChecks . " checks passed (fake filesystem/HTTP/installer; no real services)\n";
+$fixture = new LifecycleFixture();
+try {
+    $fixture->release('6.18.58', ['595.58.03'], [2, 10, 1]);
+    $fixture->release('6.18.60', ['595.58.03', '610.1.2'], [2, 10, 1]);
+    $fixture->enableAndSelectCurrent(false);
+    $versions = $fixture->application->dispatch('source-versions');
+    lifecycle_check(array_column($versions['versions'], 'build') === [1, 2, 10], 'Application must expose all revisions in numeric order');
+    $selected = $fixture->application->dispatch('source-download', ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-2.txz'])['package'];
+    lifecycle_check($selected['build'] === 2 && $fixture->store->settings()['source']['build'] === '', 'Exact selection preserves automatic source settings');
+    $fixture->write('/boot/changes.txt', "# Version 7.3.4\n## Linux kernel\n* version: 6.18.58\n");
+    $baseline = $fixture->application->dispatch('upgrade-check');
+    lifecycle_check($baseline['ok'] && $baseline['package']['build'] === 2 && !$baseline['baseline_prepared'], 'A saved current-kernel build2 must not be replaced by build10');
+    $fixture->reboot();
+    $fixture->write('/proc/sys/kernel/osrelease', '6.18.58-Unraid');
+    $boot = $fixture->application->dispatch('boot');
+    lifecycle_check($boot['ok'] && $fixture->installedBuild === 2 && $boot['driver_installation']['package']['build'] === 2, 'Actual selected filename must reach the mock cold installer');
+    $again = $fixture->application->dispatch('boot');
+    lifecycle_check($again['ok'] && $again['driver_installation']['status'] === 'already_active' && $fixture->count('upgradepkg') === 1, 'Matching current-boot build2 is idempotent');
+    $rollback = $fixture->application->dispatch('source-download', ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz'])['package'];
+    lifecycle_check($rollback['build'] === 1 && is_file($selected['path']), 'Rollback selection retains build2 cache');
+    $pending = $fixture->application->dispatch('boot');
+    lifecycle_check(!$pending['ok'] && $pending['status'] === 'pending_reboot' && $fixture->installedBuild === 2 && $fixture->count('upgradepkg') === 1, 'Rollback must not replace the live same-version build');
+    $fixture->reboot(LifecycleFixture::THIRD_BOOT);
+    $fixture->write('/proc/sys/kernel/osrelease', '6.18.58-Unraid');
+    $boot = $fixture->application->dispatch('boot');
+    lifecycle_check($boot['ok'] && $fixture->installedBuild === 1 && $fixture->count('upgradepkg') === 2, 'Next boot installs the explicitly chosen rollback');
+    $prepared = $fixture->prepareTarget();
+    lifecycle_check($prepared['ok'] && $prepared['package']['driver'] === '595.58.03' && $prepared['package']['build'] === 10, 'New kernel uses highest build within saved R595 branch');
+    lifecycle_check($fixture->store->settings()['selected_package']['build'] === 1 && is_file($selected['path']), 'Target preparation retains chosen current-kernel build and previous cache');
+    echo "PASS lifecycle: revision selection -> cache -> cold install -> live rollback deferred -> next boot rollback -> target revision\n";
+} finally { $fixture->close(); }
+
+$fixture = new LifecycleFixture();
+try {
+    $fixture->application->dispatch('config-save', [
+        'source' => ['url' => 'https://git.example.test/owner/repo', 'project_id' => '42'],
+        'credential' => ['type' => 'private-token', 'token' => LifecycleFixture::TOKEN],
+        'upgrade' => ['enabled' => true],
+    ]);
+    lifecycle_check(!$fixture->store->settings()['driver']['enabled'], 'Enabling prefetch alone never enables installation');
+    lifecycle_check($fixture->prepareTarget()['status'] === 'ready', 'Prefetch alone can prepare the next kernel');
+    $fixture->reboot();
+    $boot = $fixture->application->dispatch('boot');
+    lifecycle_check($boot['ok'] && !isset($boot['driver_installation']), 'Prepared package is not installed without driver restore enablement');
+    lifecycle_check($fixture->count('upgradepkg') === 0 && $fixture->count('nvidia-modprobe') === 0, 'Prefetch-only mode leaves the driver stack untouched at boot');
+    echo "PASS lifecycle: prefetch without driver restoration never installs at boot\n";
+} finally { $fixture->close(); }
+
+$fixture = new LifecycleFixture();
+try {
+    $selected = $fixture->importLocalCurrent();
+    $fixture->application->dispatch('config-save', ['driver' => ['enabled' => true]]);
+    $settings = $fixture->store->settings();
+    lifecycle_check($settings['driver']['enabled'] && !$settings['upgrade']['enabled'] && !$settings['runtime']['enabled'], 'Offline native restore is independent of prefetch and vGPU');
+    lifecycle_check($settings['source']['url'] === '' && $fixture->count('bash') === 0 && $fixture->count('curl') === 0, 'Local restore requires neither a repository nor the network helper');
+    $docker = ['registry-mirrors' => ['https://mirror.example.test'], 'log-driver' => 'json-file', 'runtimes' => ['custom' => ['path' => '/usr/bin/custom-runtime']]];
+    $fixture->write('/etc/docker/daemon.json', json_encode($docker));
+    chmod($fixture->paths->path('/etc/docker/daemon.json'), 0640);
+    $protected = ['/etc/vgpu_unlock/config.toml' => "unlock = true\n", '/etc/modprobe.d/nvidia.conf' => "options nvidia cudahost=1\n", '/etc/nvidia/ClientConfigToken/client.tok' => 'fixture-license-do-not-display'];
+    foreach ($protected as $path => $contents) $fixture->write($path, $contents);
+    $fixture->overwriteConfiguration = true;
+    $fixture->reboot();
+    $fixture->write('/proc/sys/kernel/osrelease', '6.18.58-Unraid');
+    $boot = $fixture->application->dispatch('boot');
+    lifecycle_check($boot['ok'] && $fixture->installedBuild === 2, 'A local-only cold boot installs the chosen build: ' . json_encode($boot));
+    foreach ($protected as $path => $contents) lifecycle_check(file_get_contents($fixture->paths->path($path)) === $contents, 'Package replacement must preserve existing ' . $path);
+    $actual = json_decode(file_get_contents($fixture->paths->path('/etc/docker/daemon.json')), true);
+    lifecycle_check($actual['runtimes']['nvidia']['path'] === '/usr/bin/nvidia-container-runtime', 'Docker NVIDIA runtime is registered after recovery');
+    unset($actual['runtimes']['nvidia']);
+    lifecycle_check($actual === $docker && (fileperms($fixture->paths->path('/etc/docker/daemon.json')) & 0777) === 0640, 'Docker mirrors, other runtimes, logging and permissions survive');
+    lifecycle_check(!str_contains(json_encode($boot), 'fixture-license-do-not-display'), 'Install result never contains license contents');
+    $fixture->reboot(LifecycleFixture::THIRD_BOOT);
+    $fixture->write('/proc/sys/kernel/osrelease', '6.18.58-Unraid');
+    lifecycle_check($fixture->application->dispatch('boot')['ok'], 'Ordinary reboot restores the same local cache with prefetch still off');
+    lifecycle_check($fixture->count('upgradepkg') === 2 && $fixture->count('curl') === 0 && $fixture->count('bash') === 0 && is_file($selected['path']), 'Offline restore retains cache and never starts networking');
+    echo "PASS lifecycle: offline import -> restore-only boots -> package config recovery -> Docker merge\n";
+} finally { $fixture->close(); }
+
+$fixture = new LifecycleFixture();
+try {
+    $fixture->enableAndSelectCurrent();
+    $prepared = $fixture->prepareTarget();
+    $fixture->application->dispatch('config-save', ['upgrade' => ['enabled' => false]]);
+    lifecycle_check($fixture->store->settings()['driver']['enabled'], 'Disabling prefetch must retain restoration');
+    $requests = $fixture->count('curl');
+    lifecycle_check($fixture->application->dispatch('upgrade-check')['status'] === 'disabled' && $fixture->count('curl') === $requests, 'Disabled prefetch issues no request');
+    $fixture->reboot();
+    lifecycle_check($fixture->application->dispatch('boot')['ok'] && $fixture->count('upgradepkg') === 1, 'Already prepared target package still installs with prefetch off');
+    lifecycle_check(is_file($prepared['package']['path']), 'Switching controls retains the target cache');
+    echo "PASS lifecycle: turning off prefetch preserves target-kernel cold restoration\n";
+} finally { $fixture->close(); }
+
+$fixture = new LifecycleFixture();
+try {
+    $fixture->application->dispatch('config-save', ['runtime' => ['enabled' => true]]);
+    $fixture->write('/boot/config/plugins/novidio-vgpu-driver.plg', 'fixture legacy owner');
+    $boot = $fixture->application->dispatch('boot');
+    lifecycle_check(!$boot['ok'] && $boot['code'] === 'migration_required', 'Runtime-only boot still checks existing startup ownership');
+    lifecycle_check(!$fixture->store->settings()['driver']['enabled'] && !$fixture->store->settings()['upgrade']['enabled'], 'Runtime enablement never changes the other controls');
+    lifecycle_check($fixture->count('upgradepkg') === 0 && $fixture->count('curl') === 0 && $fixture->count('nvidia-ctk') === 0, 'Runtime-only mode neither downloads nor installs drivers');
+    echo "PASS lifecycle: vGPU-only control keeps existing driver and migration checks\n";
+} finally { $fixture->close(); }
+
+$fixture = new LifecycleFixture();
+try {
+    $fixture->importLocalCurrent('580.159.03');
+    $fixture->application->dispatch('config-save', ['driver' => ['enabled' => true]]);
+    lifecycle_check($fixture->store->settings()['upgrade']['driver_branch'] === '580', 'Explicit local selection takes precedence over the currently loaded R595 branch when enabling restore');
+    lifecycle_check($fixture->count('upgradepkg') === 0 && $fixture->installed === '595.58.03', 'Selecting another branch leaves the live driver untouched');
+    $fixture->reboot();
+    $fixture->write('/proc/sys/kernel/osrelease', '6.18.58-Unraid');
+    $boot = $fixture->application->dispatch('boot');
+    lifecycle_check($boot['ok'] && $fixture->installed === '580.159.03' && $fixture->installedBuild === 2, 'Cold boot installs the explicitly authorized local branch');
+    lifecycle_check($fixture->count('curl') === 0 && $fixture->count('upgradepkg') === 1, 'Branch selection remains offline and installs only once');
+    echo "PASS lifecycle: explicit local branch -> restore enablement -> cold installation\n";
+} finally { $fixture->close(); }
+
+echo 'Application upgrade lifecycle: 10 scenarios / ' . $lifecycleChecks . " checks passed (fake filesystem/HTTP/installer; no real services)\n";

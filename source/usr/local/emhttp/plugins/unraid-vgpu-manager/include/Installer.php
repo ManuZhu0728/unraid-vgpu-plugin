@@ -15,7 +15,7 @@ final class Installer
 
     public function boot(array $settings, ?array $prepared = null): array
     {
-        if (($settings['upgrade']['enabled'] ?? false) !== true) return $this->result(true, 'disabled', 'Driver auto-update is off');
+        if (($settings['driver']['enabled'] ?? false) !== true) return $this->result(true, 'disabled', 'Driver boot restoration is off');
         $kernel = $this->read('/proc/sys/kernel/osrelease');
         $boot = $this->read('/proc/sys/kernel/random/boot_id');
         $previous = [];
@@ -30,6 +30,7 @@ final class Installer
             $candidate = $this->candidate($settings, $prepared, $previous, $kernel);
             if ($candidate === null) return $this->record(false, 'missing_package', 'No prepared driver package matches this kernel', $boot, $kernel, null, $previous);
             $this->identity($candidate, $settings, $kernel);
+            $candidate['package'] = PackageIdentity::receipt($candidate['package']);
             if (($previous['boot_id'] ?? '') === $boot && in_array($previous['status'] ?? '', ['installing', 'failed'], true)) {
                 return $this->result(false, 'already_attempted', 'Driver installation already failed or was interrupted during this boot', ['package' => $candidate['package']]);
             }
@@ -37,18 +38,18 @@ final class Installer
             $state = $preflight['runtime'] ?? [];
             if (($preflight['code'] ?? '') === 'driver_loaded') {
                 if (($state['loaded_driver'] ?? '') === $candidate['package']['driver'] && $this->installedMatches($candidate['package'], $kernel)) {
-                    if (($previous['boot_id'] ?? '') === $boot && ($previous['status'] ?? '') === 'installed') {
-                        return $this->result(true, 'already_active', 'The matching NVIDIA driver is already active', ['package' => $candidate['package']]);
+                    if ($this->installedReceiptMatches($candidate, $previous, $boot)) {
+                        return $this->record(true, 'already_active', 'The selected NVIDIA driver package is already active', $boot, $kernel, $candidate, $previous, false);
                     }
-                    return $this->record(true, 'already_active', 'The matching NVIDIA driver is already active', $boot, $kernel, $candidate, $previous, false);
+                    return $this->record(false, 'pending_reboot', 'NVIDIA ' . $candidate['package']['driver'] . ' is active; the selected package build is not confirmed for this boot. Restart to install it', $boot, $kernel, $candidate, $previous);
                 }
                 return $this->record(false, 'blocked', 'A different NVIDIA driver is active; restart is required', $boot, $kernel, $candidate, $previous);
             }
             if (!($preflight['ok'] ?? false)) {
                 return $this->record(false, 'blocked', (string)($preflight['message'] ?? 'GPU stack is in use'), $boot, $kernel, $candidate, $previous);
             }
-            if (($previous['boot_id'] ?? '') === $boot && ($previous['status'] ?? '') === 'installed') {
-                $same = ($previous['last_success']['package']['md5'] ?? '') === $candidate['package']['md5'];
+            if ($this->installedDuringBoot($previous, $boot)) {
+                $same = $this->installedReceiptMatches($candidate, $previous, $boot);
                 if ($same && $this->installedMatches($candidate['package'], $kernel)) {
                     $this->activateNative($settings, $candidate['package']);
                     return $this->result(true, 'already_installed', 'The matching driver is installed for this boot', ['package' => $candidate['package']]);
@@ -56,7 +57,7 @@ final class Installer
                 return $this->result(false, 'pending_reboot', 'The selected driver will be installed after restart', ['package' => $candidate['package']]);
             }
             if (!self::bootId($candidate['saved_boot_id'] ?? '') || $candidate['saved_boot_id'] === $boot ||
-                !self::bootId($settings['upgrade']['enabled_boot_id'] ?? '') || $settings['upgrade']['enabled_boot_id'] === $boot) {
+                !self::bootId($settings['driver']['enabled_boot_id'] ?? '') || $settings['driver']['enabled_boot_id'] === $boot) {
                 return $this->result(false, 'pending_reboot', 'The prepared driver will be installed after restart', ['package' => $candidate['package']]);
             }
             $verified = $this->download->verifyCached($candidate['package'], $kernel);
@@ -68,12 +69,24 @@ final class Installer
                 return $this->record(false, 'blocked', (string)($again['message'] ?? 'GPU usage changed during verification'), $boot, $kernel, $candidate, $previous);
             }
             if (hash_file('md5', $verified['path']) !== $verified['md5']) throw new \RuntimeException('Cached package changed after verification');
-            $this->record(false, 'installing', 'Installing the prepared driver', $boot, $kernel, $candidate, $previous, false);
-            $installed = $this->command(['upgradepkg', '--install-new', '--reinstall', $verified['path']], 300);
-            if ($installed['code'] !== 0) throw new \RuntimeException('Driver package installation failed');
-            if ($this->command(['depmod', '-a', $kernel], 60)['code'] !== 0) throw new \RuntimeException('Driver module dependency update failed');
-            if (!$this->installedMatches($verified, $kernel)) throw new \RuntimeException('Installed module version or kernel does not match the prepared package');
-            $this->activateNative($settings, $verified);
+            $configuration = new InstallConfiguration($this->store->paths, $this->runner);
+            $configuration->begin($verified);
+            $completionUnknown = false;
+            try {
+                $this->record(false, 'installing', 'Installing the prepared driver', $boot, $kernel, $candidate, $previous, false);
+                $installed = $this->command(['upgradepkg', '--install-new', '--reinstall', $verified['path']], 300);
+                $completionUnknown = $installed['code'] === 124;
+                if ($installed['code'] !== 0) throw new \RuntimeException('Driver package installation failed');
+                $configuration->restore();
+                $configuration->registerDocker();
+                if ($this->command(['depmod', '-a', $kernel], 60)['code'] !== 0) throw new \RuntimeException('Driver module dependency update failed');
+                if (!$this->installedMatches($verified, $kernel)) throw new \RuntimeException('Installed module version or kernel does not match the prepared package');
+                $this->activateNative($settings, $verified);
+                $configuration->complete();
+            } catch (\Throwable $error) {
+                $recovery = $configuration->fail($completionUnknown);
+                throw new \RuntimeException($error->getMessage() . '. ' . $recovery, 0, $error);
+            }
             return $this->record(true, 'installed', 'Driver installed for ' . $kernel, $boot, $kernel, $candidate, $previous, true, true);
         } catch (\Throwable $error) {
             if (!$stateKnown || !self::bootId($boot) || !preg_match('/^[0-9]+\.[0-9]+\.[0-9]+-Unraid$/D', $kernel)) {
@@ -127,16 +140,16 @@ final class Installer
 
     private function identity(array $candidate, array $settings, string $kernel): void
     {
-        $package = $candidate['package'] ?? [];
+        $package = PackageIdentity::receipt($candidate['package'] ?? []);
         $driver = $package['driver'] ?? '';
         if (!is_string($driver) || !preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/D', $driver) ||
             ($package['kernel'] ?? '') !== $kernel || !preg_match('/^[a-f0-9]{32}$/D', (string)($package['md5'] ?? ''))) {
             throw new \RuntimeException('Prepared driver metadata is invalid');
         }
-        if (($package['filename'] ?? '') !== 'nvidia-' . $driver . '-' . $kernel . '-1.txz') throw new \RuntimeException('Prepared driver filename does not match its metadata');
         $branch = (string)($settings['upgrade']['driver_branch'] ?? '');
         if ($branch !== '' && (!preg_match('/^[0-9]+$/D', $branch) || explode('.', $driver)[0] !== $branch)) throw new \RuntimeException('Prepared driver belongs to another NVIDIA branch');
         if (($settings['source']['driver'] ?? '') !== '' && $driver !== $settings['source']['driver']) throw new \RuntimeException('Prepared driver differs from the selected version');
+        if (($settings['source']['build'] ?? '') !== '' && $package['build'] !== PackageIdentity::build($settings['source']['build'])) throw new \RuntimeException('Prepared driver differs from the selected package build');
         if (!($candidate['local'] ?? false)) {
             if (($candidate['source_id'] ?? '') !== Store::sourceIdentity($settings['source']) ||
                 ($candidate['source_fingerprint'] ?? '') !== Upgrade::sourceFingerprint($settings['source'])) {
@@ -153,6 +166,32 @@ final class Installer
             str_starts_with(trim($magic['stdout']), $kernel . ' ');
     }
 
+    private function installedReceiptMatches(array $candidate, array $state, string $boot): bool
+    {
+        $last = $state['last_success'] ?? null;
+        if (!$this->installedDuringBoot($state, $boot)) return false;
+        try {
+            $selected = PackageIdentity::receipt($candidate['package']);
+            $installed = PackageIdentity::receipt($last['package'] ?? []);
+        } catch (\InvalidArgumentException) { return false; }
+        foreach (['filename', 'driver', 'kernel', 'build', 'md5', 'source'] as $field) {
+            if (($selected[$field] ?? '') !== ($installed[$field] ?? '')) return false;
+        }
+        if (($candidate['local'] ?? false) !== ($last['local'] ?? false)) return false;
+        return ($candidate['local'] ?? false) || ($candidate['source_id'] ?? '') === ($last['source_id'] ?? '');
+    }
+
+    private function installedDuringBoot(array $state, string $boot): bool
+    {
+        $last = $state['last_success'] ?? null;
+        if (!is_array($last)) return false;
+        $installedBoot = $last['installed_boot_id'] ?? '';
+        // Legacy "installed" records prove an installation; "already_active"
+        // used to be inferred from modinfo alone and cannot prove its revision.
+        if ($installedBoot === '' && ($state['status'] ?? '') === 'installed') $installedBoot = $state['boot_id'] ?? '';
+        return $installedBoot === $boot;
+    }
+
     private function activateNative(array $settings, array $package): void
     {
         // vGPU initialization owns the first module load when enabled. Native
@@ -167,9 +206,14 @@ final class Installer
     private function record(bool $ok, string $status, string $message, string $boot, string $kernel, ?array $candidate, array $previous, bool $notify = true, bool $changed = false): array
     {
         $state = ['status' => $status, 'boot_id' => $boot, 'kernel' => $kernel, 'message' => $message, 'updated_at' => time()];
-        if (is_array($previous['last_success'] ?? null)) $state['last_success'] = $previous['last_success'];
+        if (is_array($previous['last_success'] ?? null)) {
+            $state['last_success'] = $previous['last_success'];
+            if (!isset($state['last_success']['installed_boot_id']) && ($previous['status'] ?? '') === 'installed' && self::bootId($previous['boot_id'] ?? '')) {
+                $state['last_success']['installed_boot_id'] = $previous['boot_id'];
+            }
+        }
         if ($candidate !== null) $state['attempted_package'] = $candidate['package'];
-        if ($status === 'installed' && $candidate !== null) $state['last_success'] = $candidate;
+        if ($status === 'installed' && $candidate !== null) $state['last_success'] = array_replace($candidate, ['installed_boot_id' => $boot]);
         $key = hash('sha256', $boot . '\0' . $status . '\0' . $kernel . '\0' . $message);
         $state['notification_key'] = $notify ? $key : ($previous['notification_key'] ?? '');
         $this->store->write($this->store->paths->configDir . '/driver-state.json', $state);

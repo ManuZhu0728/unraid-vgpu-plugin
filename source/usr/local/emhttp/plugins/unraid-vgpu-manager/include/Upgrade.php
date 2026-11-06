@@ -16,7 +16,10 @@ final class Upgrade
 
     public static function sourceFingerprint(array $source): string
     {
-        return hash('sha256', json_encode(Store::validateSource($source), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        $source = Store::validateSource($source);
+        // Preserve receipts created before build selection was introduced.
+        if (($source['build'] ?? '') === '') unset($source['build']);
+        return hash('sha256', json_encode($source, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
     }
 
     public function status(): array
@@ -103,6 +106,7 @@ final class Upgrade
                 if ($same && ($previous['status'] ?? '') === 'ready' &&
                     is_string($readyDriver) && explode('.', $readyDriver)[0] === $branch &&
                     ($source['driver'] === '' || $readyDriver === $source['driver']) &&
+                    $this->matchesBuild($previous['package'] ?? [], $source) &&
                     $this->cached($previous['package'] ?? [], $current)) {
                     if ($baseline['changed']) {
                         $previous['notifications'] = $record['notifications'];
@@ -120,7 +124,7 @@ final class Upgrade
                     'target_kernel' => $current, 'baseline_prepared' => $baseline['changed'],
                     'package' => $baseline['package'], 'message' => '当前内核驱动缓存已就绪。'];
             }
-            if ($same && ($previous['status'] ?? '') === 'ready' && $this->cached($previous['package'] ?? [], $target['kernel'])) {
+            if ($same && ($previous['status'] ?? '') === 'ready' && $this->matchesBuild($previous['package'] ?? [], $source) && $this->cached($previous['package'] ?? [], $target['kernel'])) {
                 if ($baseline['changed']) {
                     $previous['notifications'] = $record['notifications'];
                     $previous['baseline_package'] = $baseline['package'];
@@ -179,7 +183,7 @@ final class Upgrade
         foreach ($candidates as $package) {
             $driver = $package['driver'] ?? '';
             if (!is_string($driver) || explode('.', $driver)[0] !== $branch ||
-                ($source['driver'] !== '' && $driver !== $source['driver']) || !$this->cached($package, $current)) continue;
+                ($source['driver'] !== '' && $driver !== $source['driver']) || !$this->matchesBuild($package, $source) || !$this->cached($package, $current)) continue;
             $local = ($package['source'] ?? '') === 'local';
             if (!$local && (($package['source_id'] ?? '') !== $record['source_id'] || ($package['source_fingerprint'] ?? '') !== $record['source_fingerprint'])) continue;
             if (!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/D', (string)($package['saved_boot_id'] ?? ''))) {
@@ -217,21 +221,32 @@ final class Upgrade
 
     private function fetchKernelPackage(array $source, array $credentials, string $kernel, string $branch, string $reference, string $pin): array
     {
+        // targetSource may derive an exact version from a direct package link.
+        // That pin remains authoritative after the link is retargeted to a Release.
+        if (($source['driver'] ?? '') !== '') $pin = $source['driver'];
         $versions = $this->download->versions($source, $credentials, $kernel);
         $matches = [];
         foreach ($versions['versions'] ?? [] as $candidate) {
             $driver = $candidate['driver'] ?? '';
             if (!is_string($driver) || !preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/D', $driver) || explode('.', $driver)[0] !== $branch) continue;
             if ($pin !== '' && $driver !== $pin) continue;
-            $matches[$driver] = $candidate;
+            try { $identity = PackageIdentity::receipt($candidate); }
+            catch (\InvalidArgumentException) { continue; }
+            if ($identity['kernel'] !== $kernel || !$this->matchesBuild($identity, $source)) continue;
+            $matches[$driver . '/' . $identity['build']] = $identity;
         }
         if (!$matches) throw new \RuntimeException('未找到 ' . $kernel . ' 对应的 R' . $branch . ' 驱动包。');
-        uksort($matches, 'version_compare');
-        $source['driver'] = isset($matches[$reference]) ? $reference : array_key_last($matches);
+        usort($matches, static fn(array $left, array $right): int =>
+            version_compare($left['driver'], $right['driver']) ?: $left['build'] <=> $right['build']);
+        $preferred = array_values(array_filter($matches, static fn(array $candidate): bool => $candidate['driver'] === $reference));
+        $selected = $preferred ? $preferred[array_key_last($preferred)] : $matches[array_key_last($matches)];
+        $source['driver'] = $selected['driver'];
+        $source['build'] = (string)$selected['build'];
         $downloaded = $this->download->fetch($source, $credentials, $kernel);
         $package = $downloaded['package'] ?? null;
         if (($downloaded['ok'] ?? false) !== true || !is_array($package) ||
-            ($package['kernel'] ?? '') !== $kernel || ($package['driver'] ?? '') !== $source['driver'] || !$this->cached($package, $kernel)) {
+            ($package['kernel'] ?? '') !== $kernel || ($package['driver'] ?? '') !== $source['driver'] ||
+            !$this->matchesBuild($package, $source) || !$this->cached($package, $kernel)) {
             throw new \RuntimeException('内核驱动包的校验结果不完整。');
         }
         return $package;
@@ -239,6 +254,7 @@ final class Upgrade
 
     private function receipt(array $package, array $source, string $boot): array
     {
+        $package = PackageIdentity::receipt($package);
         $package['source'] = ($package['source'] ?? '') === 'local' ? 'local' : $source['repository'];
         $package['provider'] = $package['source'] === 'local' ? 'local' : $source['provider'];
         $package['source_id'] = Store::sourceIdentity($source);
@@ -277,20 +293,28 @@ final class Upgrade
     private function targetSource(array $source, string $kernel, string $reference): array
     {
         $link = Source::parse($source['url'], $source['provider']);
-        if ($link['kind'] === 'direct' && preg_match('/^nvidia-[0-9]+\.[0-9]+\.[0-9]+-([0-9]+\.[0-9]+\.[0-9]+)-Unraid-1\.txz$/D', $link['filename'], $identity) &&
-            $identity[1] . '-Unraid' === $kernel) return $source;
+        $identity = $link['kind'] === 'direct' ? PackageIdentity::parse($link['filename']) : null;
+        if ($identity !== null) {
+            if (($source['driver'] !== '' && $source['driver'] !== $identity['driver']) ||
+                (($source['build'] ?? '') !== '' && PackageIdentity::build($source['build']) !== $identity['build'])) {
+                throw new \RuntimeException('固定文件链接与所选驱动版本或构建号不一致。');
+            }
+            $source['driver'] = $identity['driver'];
+            $source['build'] = (string)$identity['build'];
+            if ($identity['kernel'] === $kernel) return $source;
+        }
         if ($link['kind'] === 'release' || ($link['kind'] === 'direct' && $link['provider'] === 'github')) {
             $source['url'] = $source['repository'];
             $source['mode'] = 'auto';
         } elseif ($link['kind'] === 'direct') {
-            $pattern = '~^(.*/packages/generic/[^/]+/)(v?)([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)/(nvidia-\4-\3-Unraid-1\.txz)$~D';
+            $pattern = '~^(.*/packages/generic/[^/]+/)(v?)([^/]+)/[^/]+$~D';
             if ($link['provider'] !== 'gitlab' || !preg_match($pattern, $source['url'], $match)) {
                 throw new \RuntimeException('固定文件链接无法自动更新，请使用仓库地址。');
             }
-            $digits = preg_replace('/-Unraid$/', '', $kernel);
-            $driver = $source['driver'] !== '' ? $source['driver'] : $match[4];
-            $source['url'] = $match[1] . $match[2] . $digits . '-' . $driver . '/nvidia-' . $driver . '-' . $digits . '-Unraid-1.txz';
-            $source['driver'] = $driver;
+            $oldVersion = PackageIdentity::genericVersion($identity['kernel'], $identity['driver'], $identity['build']);
+            if ($match[3] !== substr($oldVersion, 1)) throw new \RuntimeException('固定文件链接无法自动更新，请使用仓库地址。');
+            $version = PackageIdentity::genericVersion($kernel, $identity['driver'], $identity['build']);
+            $source['url'] = $match[1] . $match[2] . substr($version, 1) . '/' . PackageIdentity::filename($identity['driver'], $kernel, $identity['build']);
         }
         if ($source['mode'] === 'generic' && $source['driver'] === '') $source['driver'] = $reference;
         return Store::validateSource($source);
@@ -298,14 +322,22 @@ final class Upgrade
 
     private function cached(array $package, string $kernel): bool
     {
-        $driver = $package['driver'] ?? '';
-        if (!is_string($driver) || !preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/D', $driver)) return false;
-        $filename = 'nvidia-' . $driver . '-' . preg_replace('/-Unraid$/', '', $kernel) . '-Unraid-1.txz';
+        try { $identity = PackageIdentity::receipt($package); }
+        catch (\InvalidArgumentException) { return false; }
+        $filename = $identity['filename'];
         $expected = $this->store->paths->cacheDir . '/' . preg_replace('/-Unraid$/', '', $kernel) . '/' . $filename;
         $md5 = $package['md5'] ?? '';
         return ($package['kernel'] ?? '') === $kernel && ($package['filename'] ?? '') === $filename &&
             ($package['path'] ?? '') === $expected && !is_link($expected) && is_file($expected) &&
             is_string($md5) && preg_match('/^[a-f0-9]{32}$/D', $md5) && hash_file('md5', $expected) === $md5;
+    }
+
+    private function matchesBuild(array $package, array $source): bool
+    {
+        try {
+            $identity = PackageIdentity::receipt($package);
+            return ($source['build'] ?? '') === '' || PackageIdentity::build($source['build']) === $identity['build'];
+        } catch (\InvalidArgumentException) { return false; }
     }
 
     private function saveAndNotify(array $record, string $phase, string $title, string $message): array

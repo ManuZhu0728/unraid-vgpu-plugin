@@ -81,6 +81,30 @@ final class DownloadFixture
         $this->routes[$this->md5Url] = ['body' => md5($this->package) . '  ' . $this->filename . "\n"];
     }
 
+    /** Return deliberately unsorted builds under one release. */
+    public function builds(array $builds = [10, 1, 2], string $provider = 'gitlab'): void
+    {
+        $assets = [];
+        foreach ($builds as $index => $build) {
+            $filename = 'nvidia-595.58.03-6.18.58-Unraid-' . $build . '.txz';
+            $version = 'v6.18.58-595.58.03' . ($build > 1 ? '-build' . $build : '');
+            $id = 200 + 2 * $index;
+            $packageUrl = $provider === 'github'
+                ? 'https://api.github.com/repos/owner/repo/releases/assets/' . $id
+                : 'https://git.example.test/api/v4/projects/42/packages/generic/build/' . $version . '/' . $filename;
+            $md5Url = $provider === 'github'
+                ? 'https://api.github.com/repos/owner/repo/releases/assets/' . ($id + 1)
+                : $packageUrl . '.md5';
+            $assets[] = $provider === 'github' ? ['name' => $filename, 'id' => $id] : ['name' => $filename, 'url' => $packageUrl];
+            $assets[] = $provider === 'github' ? ['name' => $filename . '.md5', 'id' => $id + 1] : ['name' => $filename . '.md5', 'url' => $md5Url];
+            $this->routes[$packageUrl] = ['body' => $this->package];
+            $this->routes[$md5Url] = ['body' => md5($this->package) . '  ' . $filename . "\n"];
+        }
+        $release = $provider === 'github' ? ['assets' => $assets] : ['assets' => ['links' => $assets]];
+        $release['tag_name'] = 'v6.18.58-595.58.03';
+        $this->routes[$this->releaseUrl] = ['body' => json_encode($release), 'type' => 'application/json'];
+    }
+
     public function normalListing(): string
     {
         $files = [];
@@ -464,7 +488,7 @@ try {
         $f = $fixture(); $path = $f->root . '/uploaded.txz'; $md5 = $f->root . '/uploaded.md5'; file_put_contents($path, $f->package);
         file_put_contents($md5, md5($f->package) . "\n");
         download_check($f->download->importLocal($path, $f->filename, $md5, '6.18.58')['package']['checksum_verified'] === true, 'Optional MD5 not verified');
-        download_fails(fn() => $f->download->importLocal($path, $f->filename, null, '6.18.54'), 'different kernel');
+        download_fails(fn() => $f->download->importLocal($path, $f->filename, null, '6.18.54'), 'another kernel');
         file_put_contents($md5, str_repeat('0', 32));
         download_fails(fn() => $f->download->importLocal($path, $f->filename, $md5, '6.18.58'), 'MD5 mismatch');
         file_put_contents($path, 'broken XZ');
@@ -488,6 +512,111 @@ try {
             return in_array($argv[0], ['curl', 'modinfo'], true) ? $f->run($argv, $timeout, $stdin) : $real($argv, $timeout, $stdin);
         });
         $download->fetch($f->source, $f->credentials, '6.18.58');
+    });
+    $case('Release discovery preserves numeric build identities on both platforms', function () use ($fixture): void {
+        foreach (['github', 'gitlab'] as $provider) {
+            foreach ([false, true] as $automatic) {
+                $f = $fixture($provider); $f->builds(provider: $provider);
+                if ($automatic) $f->automatic();
+                $versions = $f->download->versions($f->source, $f->credentials, '6.18.58')['versions'];
+                download_check(array_column($versions, 'build') === [1, 2, 10], 'Builds were collapsed or sorted lexically');
+                download_check(count(array_unique(array_column($versions, 'filename'))) === 3, 'Package identities are not distinct');
+                $package = $f->download->fetch($f->source, $f->credentials, '6.18.58')['package'];
+                download_check($package['build'] === 10 && str_ends_with($package['filename'], '-10.txz'), 'Highest same-driver build was not selected');
+            }
+        }
+    });
+    $case('Explicit build rollback preserves other cached builds and unavailable pin never falls back', function () use ($fixture): void {
+        $f = $fixture(); $f->builds();
+        $latest = $f->download->fetch($f->source, $f->credentials, '6.18.58')['package'];
+        foreach (['2', '1'] as $build) {
+            $f->source['build'] = $build;
+            $package = $f->download->fetch($f->source, $f->credentials, '6.18.58')['package'];
+            download_check($package['build'] === (int)$build, 'Explicit build pin was ignored');
+            download_check(is_file($latest['path']) && file_get_contents($latest['path']) === $f->package, 'Latest cached build was replaced during rollback selection');
+        }
+        $f->source['build'] = '3';
+        download_fails(fn() => $f->download->fetch($f->source, $f->credentials, '6.18.58'), 'no fallback');
+        $f->source['driver'] = ''; $f->source['mode'] = 'auto'; $f->calls = [];
+        download_fails(fn() => $f->download->versions($f->source, $f->credentials, '6.18.58'), 'explicit driver');
+        download_check($f->calls === [], 'Build-only pin caused a network lookup');
+    });
+    $case('Installed driver preference keeps its branch when another driver has newer builds', function () use ($fixture): void {
+        $f = $fixture(); $f->builds(); $kernelUrl = $f->automatic();
+        $data = json_decode($f->routes[$kernelUrl]['body'], true);
+        $old = json_decode(str_replace('595.58.03', '580.159.03', json_encode($data['assets']['links'])), true);
+        $data['assets']['links'] = array_merge($data['assets']['links'], $old);
+        $f->routes[$kernelUrl]['body'] = json_encode($data);
+        foreach ($f->routes as $url => $route) {
+            if (str_contains($url, '/packages/generic/')) $f->routes[str_replace('595.58.03', '580.159.03', $url)] =
+                ['body' => str_replace('595.58.03', '580.159.03', $route['body'])];
+        }
+        mkdir($f->root . '/sys/module/nvidia', 0700, true);
+        file_put_contents($f->root . '/sys/module/nvidia/version', '580.159.03');
+        $f->moduleVersion = '580.159.03';
+        $package = $f->download->fetch($f->source, $f->credentials, '6.18.58')['package'];
+        download_check($package['driver'] === '580.159.03' && $package['build'] === 10, 'Automatic build selection jumped driver branches');
+    });
+    $case('New Generic builds use immutable buildN versions and legacy build1 remains compatible', function () use ($fixture): void {
+        foreach (['', '1', '2', '10'] as $build) {
+            $f = $fixture('gitlab', 'generic'); $f->builds(); $f->source['build'] = $build;
+            $package = $f->download->fetch($f->source, $f->credentials, '6.18.58')['package'];
+            $expected = $build === '' ? 1 : (int)$build;
+            download_check($package['build'] === $expected, 'Generic build was not retained');
+            foreach ($f->calls as $call) if ($call['argv'][0] === 'curl') {
+                download_check(str_contains($call['stdin'], '/v6.18.58-595.58.03' . ($expected > 1 ? '-build' . $expected : '') . '/'), 'Generic package version mismatch');
+                download_check(str_contains($call['stdin'], 'DEPLOY-TOKEN: fixture-secret'), 'Generic build request lost token');
+            }
+        }
+        $f = $fixture('gitlab', 'generic'); $f->builds(); $f->source['build'] = '2';
+        $f->source['package_version_template'] = 'v{kernel}-{driver}-build{build}';
+        download_check($f->download->fetch($f->source, $f->credentials, '6.18.58')['package']['build'] === 2, 'Explicit build template failed');
+    });
+    $case('Known Generic fallback requests only the explicitly selected revision', function () use ($fixture): void {
+        $f = $fixture(); $f->builds(); $kernelUrl = $f->automatic();
+        $f->source['driver'] = '595.58.03'; $f->source['build'] = '2';
+        $f->routes[$kernelUrl] = ['status' => 401];
+        $package = $f->download->fetch($f->source, $f->credentials, '6.18.58')['package'];
+        download_check($package['build'] === 2 && $package['discovery'] === 'current-driver', 'Generic fallback changed the revision');
+        foreach ($f->calls as $call) if ($call['argv'][0] === 'curl' && str_contains($call['stdin'], '/packages/generic/')) {
+            download_check(str_contains($call['stdin'], '/v6.18.58-595.58.03-build2/'), 'Fallback guessed another build');
+        }
+    });
+    $case('Direct private build2 links preserve the build and reject conflicting pins before network', function () use ($fixture): void {
+        foreach (['github', 'gitlab'] as $provider) {
+            $f = $fixture($provider); $f->builds(provider: $provider); $f->source['mode'] = 'auto'; $f->source['driver'] = '';
+            $name = 'nvidia-595.58.03-6.18.58-Unraid-2.txz';
+            $f->source['url'] = $provider === 'github'
+                ? 'https://github.com/owner/repo/releases/download/v6.18.58-595.58.03/' . $name
+                : 'https://git.example.test/api/v4/projects/42/packages/generic/build/v6.18.58-595.58.03-build2/' . $name;
+            $package = $f->download->fetch($f->source, $f->credentials, '6.18.58')['package'];
+            download_check($package['build'] === 2 && $package['filename'] === $name, 'Direct link selected another build');
+            $f->source['driver'] = '595.58.03'; $f->source['build'] = '1'; $f->calls = [];
+            download_fails(fn() => $f->download->fetch($f->source, $f->credentials, '6.18.58'), 'different package build');
+            download_check($f->calls === [], 'Conflicting direct build pin used the network');
+        }
+    });
+    $case('Incomplete new build is not silently replaced with an old complete build', function () use ($fixture): void {
+        $f = $fixture(); $f->builds([1, 2]);
+        $data = json_decode($f->routes[$f->releaseUrl]['body'], true); array_pop($data['assets']['links']);
+        $f->routes[$f->releaseUrl]['body'] = json_encode($data);
+        download_fails(fn() => $f->download->fetch($f->source, $f->credentials, '6.18.58'), 'MD5 attachment');
+        download_check(!is_dir($f->paths->cacheDir), 'Incomplete release unexpectedly populated cache');
+    });
+    $case('Local revision receipts are verified and legacy receipt compatibility is build1-only', function () use ($fixture): void {
+        foreach ([1, 2, 10] as $build) {
+            $f = $fixture(); $path = $f->root . '/uploaded.txz'; file_put_contents($path, $f->package);
+            $name = 'nvidia-595.58.03-6.18.58-Unraid-' . $build . '.txz';
+            $package = $f->download->importLocal($path, $name, null, '6.18.58')['package'];
+            download_check($package['build'] === $build && $package['source'] === 'local', 'Local build identity lost');
+            download_check($f->download->verifyCached($package, '6.18.58')['build'] === $build, 'Valid cache receipt rejected');
+            $tampered = $package; $tampered['build'] = $build + 1;
+            download_fails(fn() => $f->download->verifyCached($tampered, '6.18.58'), 'build differs');
+            $legacy = $package; unset($legacy['build']);
+            if ($build === 1) download_check($f->download->verifyCached($legacy, '6.18.58')['build'] === 1, 'Legacy build1 receipt was not normalized');
+            else download_fails(fn() => $f->download->verifyCached($legacy, '6.18.58'), 'build is missing');
+            foreach ($f->calls as $call) download_check(in_array($call['argv'][0], ['tar', 'xz', 'modinfo'], true), 'Local revision validation performed external work');
+        }
     });
     echo 'Download: ' . $passed . " cases passed; no network, installer, service, or GPU command executed.\n";
 } finally {
