@@ -1,5 +1,34 @@
 # 本地验证记录
 
+## 真实插件安装入口（2026-11-15，未发布）
+
+生产代码基线为 `1756d8d`，通过实际 `Download::importLocal()`、
+`Runtime::installationPreflight()`、`Installer::boot()` 和配置事务运行真实包测试。
+使用原版 Slackware pkgtools 42，以及实际安装的 nvidia-ctk、真实 modinfo、
+指定私有根的 depmod 和指定私有缓存的 ldconfig；没有加载驱动或调用 Runtime.ensure。
+
+| 场景 | 结果 | `plugin-cases/` 下的证据目录 |
+| --- | --- | --- |
+| build 2 首次安装 | 通过 | `plugin-fresh-1794719581120166188` |
+| build 2 重复安装 | 通过 | `plugin-reinstall-1794719655987097490` |
+| R580 → R595 build 2 | 通过 | `plugin-upgrade-1794719915973821148` |
+| 原始 experimental R595 build 1 → 标准名 build 2 | 通过 | `plugin-upgrade-1794720027495162693` |
+
+证据根目录：相邻驱动仓库的 `work/pkgtools-lifecycle.l683q5ax/`。
+每个目录保留 `summary.json`、命令输出、配置快照与安装回执。
+首轮首次安装因测试断言误把数组作为严格 bool 参数传入而失败，该现场保留在
+`plugin-fresh-1794719494531357414`；修正测试后完整重跑通过，不把首轮记为验收成功。
+
+每轮核验六个模块的完整内容、87 个库链接和 12 项配置对象；重复安装额外验证已有
+runtime `.new`，共 13 项。Docker 只新增 NVIDIA runtime，其他 JSON 设置及权限保留。
+两种旧包升级均确认真实 pkgtools 删除旧包登记的裸 Docker 配置和旧包记录，随后恢复用户
+配置，并只留下目标包记录。原始 experimental 包未改名、未复制成标准包名。
+
+还用真实 `ldconfig -n` 对私有库目录检查兼容别名，三个重点别名的目标、内容、inode 和
+硬链接数未改变。这不等于完整 Unraid 动态链接环境已验证：测试的 ROOT 非空，
+proc/sys 和 boot ID 是测试夹具，宿主目录只读且不可访问真实 GPU。
+真实包的失败/超时注入、实际 Unraid 冷启动及运行功能仍分别验收。
+
 ## 安装契约与失败门禁（2026-11-15，未发布）
 
 插件使用本次归档校验产生的安装计划，恢复配置后补齐包内 `.new` 并保留管理员原有
@@ -34,7 +63,8 @@
 - 未创建设置、凭据或驱动安装状态；没有联网、安装包或访问 GPU。
 
 可复现入口：`tests/integration/verify-driver-cache.php`。
-本地证据：`work/vgpu-cache-integration.jAO7fXsq/result.json`。
+初次证据：`work/vgpu-cache-integration.jAO7fXsq/result.json`；
+安装计划改动后的复验：`work/vgpu-cache-integration.zSTwhy2H/result.json`，同样通过。
 此结果仅证明真实包能够进入插件缓存；安装流程、启动时序及实机功能另行验收。
 
 ## 开机配置保留与独立控制（2026-11-06，未发布）

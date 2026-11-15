@@ -97,6 +97,26 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin \
 输入包旁需有同名 `.md5`。测试在独立目录保留缓存副本及 `result.json`；检查导入、
 三元身份、重复导入及错误回执拒绝，不安装驱动、不修改真实插件配置。
 
+### 真实包管理器集成
+
+先在相邻驱动仓库按照其 README 运行 `tests/integration/real_pkgtools_lifecycle.py`，
+取得一个保留的 `work/pkgtools-lifecycle.*` 私有根目录，再运行插件入口：
+
+```bash
+PHP_BIN=.tools/php/root/usr/bin/php8.4 \
+  python3 tests/integration/real-pkgtools-install.py \
+  --work /absolute/path/unraid-vgpu/work/pkgtools-lifecycle.具体目录 \
+  --new-package /absolute/path/nvidia-595.58.03-6.18.58-Unraid-2.txz \
+  --old-package /absolute/path/nvidia-580.159.03-6.18.58-Unraid-1.txz \
+  --scenario upgrade
+```
+
+也支持 `--scenario fresh` 和 `--scenario reinstall`（两者省略 `--old-package`）；
+reinstall 要求私有根已经装有目标包。不同场景顺序运行，不能并发使用同一个私有根。
+脚本复用真实 pkgtools 隔离环境，要求至少 4 GiB 可用空间，保留输入包与各轮证据。
+它在插件生产安装入口中执行真实工具，但 proc/sys、boot ID 和安装根为夹具，
+不验证 GPU 加载、守护进程或 Unraid 启动顺序。结果及范围见 [验证记录](VALIDATION.md)。
+
 ## 离线预览包
 
 ```bash
