@@ -330,6 +330,73 @@ try {
     application_check($selectionFixture->store->settings()['source']['url'] === $legacySource['repository'], 'Legacy full snapshots may still update repository without editing url');
     application_check($selectionFixture->store->credentials()['token'] === '', 'A legacy repository update must clear the old source token');
 
+    $createFixture = $fixtures[] = new ApplicationFixture();
+    $createApp = $createFixture->application;
+    $createSettings = $createFixture->store->settings();
+    $createSettings['runtime']['enabled'] = true;
+    $createFixture->store->saveSettings($createSettings);
+    $createSettingsBytes = file_get_contents($createFixture->paths->settingsFile);
+    $createDevice = $createFixture->device();
+    $created = $createApp->dispatch('device-create', array_replace($createDevice, [
+        'uuid' => ' ' . strtoupper($createDevice['uuid']) . ' ', 'pci' => strtoupper($createDevice['pci']),
+        'draft' => true, 'enabled' => false,
+    ]));
+    application_check(($created['ok'] ?? true) && $created['changed'] && $createFixture->store->devices() === [$createDevice], 'Create must validate and append a new UUID using the existing four-field device schema');
+    application_check($createFixture->calls === [] && !$createFixture->defined && !is_link($createFixture->paths->path('/sys/bus/mdev/devices/' . $createDevice['uuid'])), 'Create must only save configuration even when runtime management is enabled');
+    $createBytes = file_get_contents($createFixture->paths->devicesFile);
+    $createInode = lstat($createFixture->paths->devicesFile)['ino'];
+    foreach ([
+        $createDevice,
+        array_replace($createDevice, ['pci' => '0000:02:00.0']),
+        array_replace($createDevice, ['profile' => 'NVIDIA RTXA5500-2Q', 'type' => 'nvidia-763']),
+        array_replace($createDevice, ['uuid' => ' ' . strtoupper($createDevice['uuid']) . ' ']),
+        ['uuid' => $createDevice['uuid']],
+    ] as $duplicate) {
+        $refused = $createApp->dispatch('device-create', $duplicate);
+        application_check($refused === ['ok' => false, 'code' => 'device_exists', 'message' => '该 UUID 已存在，请查看已有设备详情。', 'changed' => false], 'Create must reject an existing normalized UUID instead of editing or treating it as an idempotent save');
+        clearstatcache(true, $createFixture->paths->devicesFile);
+        application_check(file_get_contents($createFixture->paths->devicesFile) === $createBytes && lstat($createFixture->paths->devicesFile)['ino'] === $createInode, 'Duplicate create must not rewrite or replace the saved device file');
+    }
+    $legacyAgain = $createApp->dispatch('device-save', $createDevice);
+    application_check($legacyAgain === ['message' => 'Device already configured; no changes', 'changed' => false], 'Legacy save must retain its exact idempotent response for a device created through the new action');
+    application_rejects(fn() => $createApp->dispatch('device-save', array_replace($createDevice, ['profile' => 'different-profile'])), 'UUID already configured');
+    application_rejects(fn() => $createApp->dispatch('device-create', array_replace($createDevice, ['uuid' => 'invalid-uuid'])), 'Invalid mdev UUID');
+    $secondCreateDevice = array_replace($createDevice, ['uuid' => '868bfe06-47c1-40a3-82df-ffd518be72d3']);
+    application_rejects(fn() => $createApp->dispatch('device-create', array_replace($secondCreateDevice, ['profile' => ''])), 'valid profile');
+    application_check(file_get_contents($createFixture->paths->devicesFile) === $createBytes && $createFixture->calls === [], 'Validation and legacy identity conflicts must preserve the saved device without runtime commands');
+    $createFixture->store->locked(function () use ($createApp, $createDevice, $secondCreateDevice): void {
+        application_rejects(fn() => $createApp->dispatch('device-create', $createDevice), 'Another plugin operation');
+        application_rejects(fn() => $createApp->dispatch('device-create', $secondCreateDevice), 'Another plugin operation');
+    });
+    application_check(file_get_contents($createFixture->paths->devicesFile) === $createBytes, 'A locked create must not write before duplicate checking or append');
+    application_check($createApp->dispatch('device-create', $secondCreateDevice)['changed'] && $createFixture->store->devices() === [$createDevice, $secondCreateDevice], 'Create must append without replacing earlier identities once the transaction lock is released');
+    application_check(file_get_contents($createFixture->paths->settingsFile) === $createSettingsBytes && $createFixture->calls === [] && !$createFixture->defined, 'Create and duplicate checks must not alter settings or invoke runtime/network commands');
+
+    $writeFailureFixture = $fixtures[] = new ApplicationFixture();
+    // A same-named directory forces atomic rename to fail even under root.
+    mkdir($writeFailureFixture->paths->devicesFile, 0700, true);
+    set_error_handler(static function (int $severity, string $message): bool {
+        return $severity === E_WARNING && str_starts_with($message, 'rename(');
+    });
+    try {
+        application_rejects(fn() => $writeFailureFixture->application->dispatch('device-create', $writeFailureFixture->device()), 'Unable to atomically save configuration');
+    } finally {
+        restore_error_handler();
+    }
+    application_check(is_dir($writeFailureFixture->paths->devicesFile) && $writeFailureFixture->store->devices() === [], 'A create write failure must not claim or partially publish a saved device');
+    application_check(glob($writeFailureFixture->paths->configDir . '/.pending-*') === [] && $writeFailureFixture->calls === [], 'Failed create must clean its temporary file without runtime commands');
+    rmdir($writeFailureFixture->paths->devicesFile);
+    application_check($writeFailureFixture->application->dispatch('device-create', $writeFailureFixture->device())['changed'], 'A create write failure must release the lock for a later successful save');
+
+    // Execute the production stdin parser only, before its real Paths/Application
+    // construction. The actual CLI's Unraid/root guards remain untouched.
+    $cliSource = (string)file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/cli.php');
+    application_check(preg_match('/    \$payloadActions = .*?(?=    \$paths = new Paths\(\);)/s', $cliSource, $cliPayload) === 1, 'The production CLI payload parsing boundary must be available');
+    foreach (['device-create', 'device-save'] as $payloadAction) {
+        $parsed = (new Process())([PHP_BINARY, '-n', '-r', '$action = $argv[1];' . $cliPayload[0] . 'echo json_encode($input, JSON_THROW_ON_ERROR);', $payloadAction], 5, json_encode($createDevice, JSON_THROW_ON_ERROR));
+        application_check($parsed['code'] === 0 && $parsed['stderr'] === '' && json_decode($parsed['stdout'], true, 32, JSON_THROW_ON_ERROR) === $createDevice, 'The CLI must read ' . $payloadAction . ' payload from stdin without constructing a real backend');
+    }
+
     $device = $fixture->device();
     $app->dispatch('device-save', $device);
     $again = $app->dispatch('device-save', $device);

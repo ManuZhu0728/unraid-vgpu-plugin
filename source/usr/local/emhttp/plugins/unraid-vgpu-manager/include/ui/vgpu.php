@@ -22,7 +22,6 @@ if (!$uvm_inventory) {
 ?>
 <section class="uvm-panel">
   <h2>已有 vGPU 设备</h2>
-  <div class="uvm-actions" style="margin-top:0"><button type="button" id="uvm-add-device" <?=!$uvm_controls ? 'disabled' : ''?>>添加设备</button></div>
   <?php if (!$uvm_inventory_rows): ?>
   <p class="uvm-muted"><?=!empty($uvm_inventory_checks['active_known']) && !empty($uvm_inventory_checks['defined_known']) ? '未发现 vGPU 设备。' : '设备列表暂不完整。'?></p>
   <?php else: ?>
@@ -52,25 +51,45 @@ if (!$uvm_inventory) {
       <td><code><?=uvm_h($pci)?></code><?php if (($device['iommu_group'] ?? null) !== null): ?><br><span class="uvm-muted">IOMMU <?=uvm_h($device['iommu_group'])?></span><?php endif; ?></td>
       <td><?=$statusLabel?><?php if ($defined === true): ?><br><span class="uvm-muted">系统定义 · <?=($device['definition_start'] ?? '') === 'auto' ? '自动启动' : (($device['definition_start'] ?? '') === 'manual' ? '手动启动' : '启动方式未知')?></span><?php elseif ($defined === null): ?><br><span class="uvm-muted">系统定义未知</span><?php endif; ?></td>
       <td><?=$managed ? '插件配置' : '系统设备'?></td>
-      <td><?php if ($managed): ?><div class="uvm-actions" style="margin-top:0">
-        <button type="button" class="uvm-edit-device" data-device="<?=uvm_h(uvm_json($configuration))?>" <?=!$uvm_controls ? 'disabled' : ''?>>编辑</button>
+      <td><div class="uvm-actions" style="margin-top:0">
+        <details class="uvm-device-details" data-device-key="<?=uvm_h($pci . '|' . $uuid)?>"><summary>详情</summary>
+          <div class="uvm-device-detail-content">
+            <p>UUID：<code><?=uvm_h($uuid)?></code><br>来源：<?=$managed ? '插件配置' : '系统设备'?></p>
+            <p>插件保存：<?php if ($configuration !== null): ?><code><?=uvm_h($configuration['pci'] ?? '')?></code> · <?=uvm_h($configuration['profile'] ?? '')?> · <code><?=uvm_h(($configuration['type'] ?? '') ?: '未记录')?></code><?php else: ?>未保存<?php endif; ?></p>
+            <p>系统定义：<code><?=uvm_h($definedTypeLabel)?></code><?php if ($defined === true): ?> · <code><?=uvm_h($pci)?></code> · <?=($device['definition_start'] ?? '') === 'auto' ? '自动启动' : (($device['definition_start'] ?? '') === 'manual' ? '手动启动' : '启动方式未知')?><?php endif; ?></p>
+            <p>当前运行：<?=$statusLabel?> · <code><?=uvm_h($activeTypeLabel)?></code><?php if ($active === true): ?> · <code><?=uvm_h($pci)?></code><?php endif; ?></p>
+            <p class="uvm-muted"><?=$identityDiffers ? '保存、定义或运行身份存在差异；查看详情不会修改或修复设备。' : '此处仅供查看，不会保存、启动或重新配置设备。'?></p>
+            <?php if ($validUuid): ?><p>VM XML</p><pre class="uvm-detail-xml"><?=uvm_h($xml)?></pre><?php endif; ?>
+          </div>
+        </details>
+        <?php if ($managed): ?>
         <?php foreach (['device-start' => '启动', 'device-stop' => '停止', 'device-remove' => '移除'] as $action => $label): ?>
         <form method="post" class="uvm-submit-form" <?=in_array($action, ['device-stop', 'device-remove'], true) ? 'data-confirm="请确认使用此设备的虚拟机已关闭。继续？"' : ''?>><?php uvm_form_hidden($action, $uvm_csrf, ['uuid' => $uuid]); ?><button type="submit" <?=!$uvm_controls || !$validUuid || $active === null || ($action === 'device-start' && ($active === true || empty($uvm_runtime_settings['enabled']))) || ($action === 'device-stop' && $active !== true) ? 'disabled' : ''?>><?=uvm_h($label)?></button></form>
         <?php endforeach; ?>
-      </div><?php else: ?><span class="uvm-muted">—</span><?php endif; ?></td>
+        <?php endif; ?>
+      </div></td>
     </tr>
   <?php endforeach; ?>
   </tbody></table></div>
   <?php endif; ?>
   <?php foreach ($uvm_inventory_messages as $inventoryMessage): if (is_string($inventoryMessage) && $inventoryMessage !== ''): ?><p class="uvm-muted"><?=uvm_h($inventoryMessage)?></p><?php endif; endforeach; ?>
 
-  <details class="uvm-advanced" id="uvm-device-editor" data-mode="add" <?=$uvm_action === 'device-save' ? 'open' : ''?>>
-    <summary id="uvm-device-editor-title">添加设备</summary>
-    <form method="post" class="uvm-submit-form" id="uvm-device-form">
-      <?php uvm_form_hidden('device-save', $uvm_csrf); ?>
-      <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
-      <p class="uvm-muted" id="uvm-edit-device-note" hidden>编辑时保留原 UUID；已有设备的 GPU 和配置身份不能直接覆盖。添加另一台设备请点击“添加设备”。保存配置不会启动设备。</p>
-      <button type="button" id="uvm-cancel-edit" hidden>取消编辑</button>
+</section>
+
+<style>
+.uvm-device-details > summary { box-sizing: border-box; min-width: 86px; padding: 8px; border: var(--button-border); border-radius: 4px; color: var(--button-text-color); background: var(--button-background); background-size: var(--button-background-size); font-family: clear-sans, sans-serif; font-size: 1.1rem; font-weight: bold; letter-spacing: 1.8px; line-height: normal; text-align: center; list-style: none; }
+.uvm-device-details > summary::-webkit-details-marker { display: none; }
+.uvm-device-detail-content { max-width: 380px; min-width: 220px; }
+.uvm-actions:has(> .uvm-device-details[open]) { align-items: flex-start; }
+</style>
+
+<section class="uvm-panel" id="uvm-device-create">
+    <h2>添加设备</h2>
+    <p class="uvm-muted">保存新的设备配置，不会启动设备或自动接管现有运行时。可填写虚拟机 XML 中已有的 UUID；已保存的 UUID 不会被覆盖。</p>
+    <form method="post" class="uvm-device-create-form" id="uvm-device-form">
+      <?php uvm_form_hidden('device-create', $uvm_csrf); ?>
+      <div id="uvm-device-create-message" class="uvm-note" role="status" aria-live="polite" hidden></div>
+      <fieldset id="uvm-device-fields" <?=!$uvm_controls ? 'disabled' : ''?>>
       <div class="uvm-grid" style="margin-top:14px">
         <label class="uvm-field"><span>mdev UUID</span><input name="uuid" id="uvm-device-uuid" type="text" maxlength="36" required pattern="[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" value="<?=uvm_h($uvm_new_uuid)?>"><small>使用虚拟机 XML 中的 UUID，或生成新的 UUID。</small></label>
         <label class="uvm-field"><span>物理 GPU</span><select name="pci" id="uvm-device-pci" required><option value="">选择 GPU</option><?php foreach ($uvm_gpus as $pci => $gpu): ?><option value="<?=uvm_h($pci)?>"><?=uvm_h($pci . ' · NVIDIA ' . $gpu['device'])?></option><?php endforeach; ?></select></label>
@@ -83,7 +102,6 @@ if (!$uvm_inventory) {
       <div class="uvm-actions"><button type="submit" id="uvm-save-device">保存新设备</button><button type="button" id="uvm-new-device">生成 UUID</button></div>
       </fieldset>
     </form>
-  </details>
 </section>
 
 <section class="uvm-panel">
@@ -121,29 +139,31 @@ if (!$uvm_inventory) {
   replaceOverride.addEventListener('change', overrideOptions);
   overrideOptions();
 
-  const editor = document.getElementById('uvm-device-editor');
-  const editorTitle = document.getElementById('uvm-device-editor-title');
   const form = document.getElementById('uvm-device-form');
   const pci = document.getElementById('uvm-device-pci');
   const profile = document.getElementById('uvm-device-profile');
   const type = document.getElementById('uvm-device-type');
   const uuid = document.getElementById('uvm-device-uuid');
   const body = document.getElementById('uvm-profile-body');
-  const addDevice = document.getElementById('uvm-add-device');
   const generateUuid = document.getElementById('uvm-new-device');
-  const cancelEdit = document.getElementById('uvm-cancel-edit');
-  const saveDevice = document.getElementById('uvm-save-device');
-  const editNote = document.getElementById('uvm-edit-device-note');
-  const initialUuid = uuid.value;
-  function setEditorMode(editing) {
-    editor.dataset.mode = editing ? 'edit' : 'add';
-    editorTitle.textContent = editing ? '编辑设备' : '添加设备';
-    saveDevice.textContent = editing ? '保存当前配置' : '保存新设备';
-    uuid.readOnly = editing;
-    generateUuid.hidden = editing;
-    cancelEdit.hidden = !editing;
-    editNote.hidden = !editing;
+  const fields = document.getElementById('uvm-device-fields');
+  const notice = document.getElementById('uvm-device-create-message');
+  const successMessage = '设备配置已保存，本次保存未启动设备。';
+  const flashKey = 'uvm-device-create-success';
+  let completed = false;
+  function message(text, error) {
+    notice.textContent = text;
+    notice.className = error ? 'uvm-note uvm-error' : 'uvm-note uvm-success';
+    notice.hidden = false;
   }
+  try {
+    const savedUuid = window.sessionStorage.getItem(flashKey);
+    window.sessionStorage.removeItem(flashKey);
+    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(savedUuid || '')) {
+      const savedRow = root.querySelector('#uvm-inventory-table tr[data-device-source="plugin"][data-uuid="' + savedUuid + '"]');
+      message(savedRow ? successMessage : '保存请求已确认，但当前设备列表不可核验；请刷新状态，不要重复提交。', !savedRow);
+    }
+  } catch (_) { /* Storage may be unavailable; the authoritative list still refreshes. */ }
   function newUuid() {
     if (!window.crypto || !window.crypto.getRandomValues) return null;
     const bytes = window.crypto.getRandomValues(new Uint8Array(16));
@@ -152,23 +172,6 @@ if (!$uvm_inventory) {
     const hex = Array.from(bytes, function (value) { return value.toString(16).padStart(2, '0'); }).join('');
     return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
   }
-  function resetEditor(open) {
-    if (ui.isBusy()) return;
-    // The server-rendered UUID remains a safe add-mode fallback even when
-    // browser crypto is unavailable. Never reuse the edited device's UUID.
-    uuid.value = newUuid() || initialUuid;
-    pci.querySelectorAll('[data-uvm-editor-temporary]').forEach(function (option) { option.remove(); });
-    pci.value = '';
-    profile.value = '';
-    type.value = '';
-    setEditorMode(false);
-    renderProfiles('');
-    editor.open = open;
-    if (open) form.scrollIntoView({behavior: 'smooth', block: 'center'});
-    else addDevice.focus();
-  }
-  addDevice.addEventListener('click', function () { resetEditor(true); });
-  cancelEdit.addEventListener('click', function () { resetEditor(false); });
   function cell(row, text) {
     const node = document.createElement('td');
     node.textContent = text;
@@ -213,37 +216,11 @@ if (!$uvm_inventory) {
     type.value = '';
     renderProfiles('');
   });
-  root.querySelectorAll('.uvm-edit-device').forEach(function (button) {
-    button.addEventListener('click', function () {
-      if (ui.isBusy()) return;
-      try {
-        const device = JSON.parse(button.dataset.device);
-        uuid.value = device.uuid;
-        if (!gpus[device.pci]) {
-          const existing = Array.from(pci.options).find(function (option) { return option.value === device.pci; });
-          if (!existing) {
-            const option = document.createElement('option');
-            option.value = device.pci;
-            option.textContent = device.pci + '（当前未发现）';
-            option.dataset.uvmEditorTemporary = '1';
-            pci.appendChild(option);
-          }
-        }
-        pci.value = device.pci;
-        profile.value = device.profile;
-        type.value = device.type;
-        renderProfiles(device.profile);
-        editor.open = true;
-        setEditorMode(true);
-        form.scrollIntoView({behavior: 'smooth', block: 'center'});
-      } catch (_) { ui.message('无法读取设备配置，请刷新后重试。', true); }
-    });
-  });
   generateUuid.addEventListener('click', function () {
-    if (ui.isBusy() || editor.dataset.mode !== 'add') return;
+    if (ui.isBusy() || fields.disabled || completed) return;
     const value = newUuid();
     if (!value) {
-      ui.message('浏览器无法生成 UUID，请刷新页面获取新的 UUID。', true);
+      message('浏览器无法生成 UUID；当前 UUID 已保留，也可手动填写。', true);
       return;
     }
     uuid.value = value;
@@ -265,10 +242,52 @@ if (!$uvm_inventory) {
       }
     });
   });
-  form.addEventListener('submit', function (event) {
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    if (ui.isBusy() || fields.disabled || completed) return;
+    if (!form.reportValidity()) return;
     if (!profile.value || !type.value) {
-      event.preventDefault();
-      ui.message('请先选择 GPU 配置。', true);
+      message('请先选择 GPU 配置。', true);
+      return;
+    }
+    const data = new FormData(form);
+    const submittedUuid = uuid.value.trim().toLowerCase();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(function () { controller.abort(); }, 30000);
+    ui.setBusy(true);
+    fields.disabled = true;
+    form.classList.add('uvm-form-busy');
+    message('正在保存设备配置…', false);
+    try {
+      const response = await window.fetch(window.location.href, {method: 'POST', body: data, credentials: 'same-origin', signal: controller.signal});
+      const html = await response.text();
+      if (html.length > 1048576) throw new Error('unknown response');
+      const document = new DOMParser().parseFromString(html, 'text/html');
+      const results = document.querySelectorAll('script#uvm-device-create-result[type="application/json"]');
+      if (results.length !== 1) throw new Error('unknown response');
+      const result = JSON.parse(results[0].textContent);
+      if (result && result.ok === false && typeof result.error === 'string' && result.error !== '') {
+        message(result.error, true);
+        return;
+      }
+      if (!response.ok || !result || result.ok !== true || !result.data || result.data.changed !== true || result.data.uuid !== submittedUuid) throw new Error('unknown response');
+      completed = true;
+      try { window.sessionStorage.setItem(flashKey, submittedUuid); } catch (_) { /* Refresh does not depend on storage. */ }
+      const target = new URL(window.location.href);
+      target.searchParams.set('uvm_view', 'vgpu');
+      target.searchParams.delete('csrf_token');
+      target.searchParams.delete('uvm_csrf_token');
+      target.hash = '';
+      window.location.replace(target.toString());
+    } catch (_) {
+      message(completed ? '设备配置保存已确认，但列表刷新未完成；请手动刷新页面，不要重复提交。' : '未能确认保存结果，配置草稿已保留。请求可能已完成，请先刷新并检查设备列表，确认后再重试。', true);
+    } finally {
+      window.clearTimeout(timeout);
+      if (!completed) {
+        fields.disabled = false;
+        ui.setBusy(false);
+        form.classList.remove('uvm-form-busy');
+      }
     }
   });
   renderProfiles('');

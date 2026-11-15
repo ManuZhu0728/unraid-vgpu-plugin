@@ -11,6 +11,7 @@ $uvm_request_initialized = true;
 $uvm_request_tab = 'driver';
 $uvm_preferred_tab = is_string($_GET['uvm_view'] ?? null) && in_array($_GET['uvm_view'], ['driver', 'vgpu', 'status'], true) ? $_GET['uvm_view'] : '';
 $uvm_upload_request = is_string($_POST['uvm_action'] ?? null) && in_array($_POST['uvm_action'], ['source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel'], true);
+$uvm_device_create_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['uvm_action'] ?? null) === 'device-create';
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     try {
         uvm_check_post($uvm_csrf);
@@ -21,7 +22,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $uvm_preferred_tab = $targetTab;
         $allowedActions = [
             'driver' => ['config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check'],
-            'vgpu' => ['config-save', 'device-save', 'device-start', 'device-stop', 'device-remove'],
+            'vgpu' => ['config-save', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'],
             'status' => [],
         ];
         if (!in_array($uvm_action, $allowedActions[$uvm_request_tab], true)) throw new InvalidArgumentException('此操作不属于当前页面。');
@@ -131,6 +132,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'source-upload-cancel':
                 $uvm_action_data = uvm_cli($uvm_action, ['upload_id' => uvm_post('upload_id')]);
                 break;
+            case 'device-create':
+                foreach (['uuid', 'pci', 'profile', 'type'] as $key) $payload[$key] = trim(uvm_post($key));
+                $uvm_action_data = uvm_cli($uvm_action, $payload);
+                if (($uvm_action_data['ok'] ?? true) === false) {
+                    throw new RuntimeException((string)($uvm_action_data['message'] ?? '新增设备失败，请查看设备列表。'));
+                }
+                if (($uvm_action_data['changed'] ?? null) !== true) {
+                    throw new RuntimeException('未确认新增设备，请核对设备列表后再试。');
+                }
+                $uvm_message = '设备配置已保存，本次保存未启动设备。';
+                break;
             case 'device-save':
                 foreach (['uuid', 'pci', 'profile', 'type'] as $key) $payload[$key] = trim(uvm_post($key));
                 $uvm_action_data = uvm_cli($uvm_action, $payload);
@@ -155,6 +167,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 // with that wrapper without a second public endpoint or filesystem writer.
 if ($uvm_upload_request) {
     echo '<script type="application/json" id="uvm-upload-result">' . uvm_json($uvm_error === '' ? ['ok' => true, 'data' => $uvm_action_data] : ['ok' => false, 'error' => $uvm_error]) . '</script>';
+    return;
+}
+if ($uvm_device_create_request) {
+    // Mode-specific AJAX response: no POST navigation, UUID regeneration or
+    // repeated dispatch when native Unraid renders the remaining child tabs.
+    $result = $uvm_error === ''
+        ? ['ok' => true, 'data' => ['uuid' => strtolower($payload['uuid']), 'changed' => true], 'message' => $uvm_message]
+        : ['ok' => false, 'error' => $uvm_error];
+    echo '<script type="application/json" id="uvm-device-create-result">' . uvm_json($result) . '</script>';
     return;
 }
 

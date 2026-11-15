@@ -32,12 +32,12 @@ function render(active) {
 }
 
 async function geometry(page) {
-    return page.locator('#uvm-inventory-table .uvm-actions').evaluate(actions => [...actions.querySelectorAll('button')].map(button => {
+    return page.locator('#uvm-inventory-table .uvm-actions').evaluate(actions => [...actions.children].map(item => item.tagName === 'DETAILS' ? item.querySelector(':scope > summary') : item.querySelector('button')).filter(Boolean).map(button => {
         const rect = button.getBoundingClientRect();
-        const item = button.closest('form') || button;
+        const item = button.closest('form') || button.closest('details') || button;
         const itemRect = item.getBoundingClientRect();
         const style = getComputedStyle(item);
-        return { text: button.textContent, disabled: button.disabled, form: item.tagName === 'FORM', top: rect.top, bottom: rect.bottom, height: rect.height,
+        return { text: button.textContent, disabled: Boolean(button.disabled), form: item.tagName === 'FORM', top: rect.top, bottom: rect.bottom, height: rect.height,
             itemTop: itemRect.top, itemLeft: itemRect.left, itemRight: itemRect.right, itemHeight: itemRect.height,
             paddingTop: parseFloat(style.paddingTop), paddingBottom: parseFloat(style.paddingBottom) };
     }));
@@ -86,7 +86,7 @@ function assertAligned(buttons, label, singleLine = false) {
             await page.evaluate(() => document.fonts.ready);
             const buttons = await geometry(page);
             const label = `${theme}, font ${fontSize}, ${width}px, active ${active}`;
-            assert.deepEqual(buttons.map(button => button.text), ['编辑', '启动', '停止', '移除'], label);
+            assert.deepEqual(buttons.map(button => button.text), ['详情', '启动', '停止', '移除'], label);
             assert.deepEqual(buttons.map(button => button.disabled), [false, active !== false, active !== true, active === null], label);
             for (const button of buttons) {
                 if (button.form) {
@@ -118,7 +118,7 @@ function assertAligned(buttons, label, singleLine = false) {
         assert.ok(Math.abs(before[1].top - before[0].top - 5) <= 0.5, 'Alpha 9 must reproduce the reported 5px start-button offset');
         assert.throws(() => assertAligned(before, 'Alpha 9 negative control', true), /edges must align/);
         if (process.env.UI_LAYOUT_ARTIFACTS) await page.locator('#uvm-inventory-table').screenshot({ path: path.join(process.env.UI_LAYOUT_ARTIFACTS, 'alpha9-native-tab-before.png') });
-        await page.locator('#uvm-inventory-table .uvm-actions button').nth(1).evaluate(button => { button.disabled = false; });
+        await page.locator('#uvm-inventory-table .uvm-actions form').first().locator('button').evaluate(button => { button.disabled = false; });
         const enabledBefore = await geometry(page);
         assert.equal(enabledBefore[1].top, before[1].top, 'The first-form offset must persist when the button is enabled');
         assert.throws(() => assertAligned(enabledBefore, 'Enabled first-form negative control', true), /edges must align/);

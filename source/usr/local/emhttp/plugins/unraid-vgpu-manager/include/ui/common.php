@@ -61,7 +61,7 @@ function uvm_redact($value)
 
 function uvm_cli(string $action, array $payload = []): array
 {
-    $allowed = ['status', 'logs', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-save', 'device-start', 'device-stop', 'device-remove'];
+    $allowed = ['status', 'logs', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'];
     if (!in_array($action, $allowed, true)) throw new InvalidArgumentException('Unsupported action');
     // Unraid may evaluate/cache .page templates outside their installed directory.
     $entrypoint = '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/cli.php';

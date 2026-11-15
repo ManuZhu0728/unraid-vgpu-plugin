@@ -21,7 +21,7 @@ final class Application
             if (!is_string($category)) throw new \InvalidArgumentException('Invalid log category');
             return (new Logs($this->store->paths, (string)($this->store->credentials()['token'] ?? '')))->read($category);
         }
-        if (!in_array($action, ['config-save', 'source-test', 'source-versions', 'source-download', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-save', 'device-start', 'device-stop', 'device-remove', 'ensure', 'boot', 'plan'], true)) {
+        if (!in_array($action, ['config-save', 'source-test', 'source-versions', 'source-download', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove', 'ensure', 'boot', 'plan'], true)) {
             throw new \InvalidArgumentException('Unknown operation');
         }
         if ($action === 'plan') {
@@ -119,7 +119,17 @@ final class Application
             }
             return $result;
         }
-        if ($action === 'device-save') {
+        if ($action === 'device-create' || $action === 'device-save') {
+            if ($action === 'device-create') {
+                // Creation never doubles as an edit or an idempotent legacy save.
+                $uuid = strtolower(trim((string)($input['uuid'] ?? '')));
+                foreach ($devices as $existing) {
+                    if ($existing['uuid'] === $uuid) {
+                        return ['ok' => false, 'code' => 'device_exists',
+                            'message' => '该 UUID 已存在，请查看已有设备详情。', 'changed' => false];
+                    }
+                }
+            }
             $device = Store::validateDevice($input);
             foreach ($devices as $existing) {
                 if ($existing['uuid'] === $device['uuid']) {

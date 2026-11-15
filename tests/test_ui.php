@@ -201,13 +201,16 @@ ui_check(ui_actions($vgpuRendered) === ['status', 'logs'], 'vGPU tab GET must no
 ui_check(str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="runtime_enabled"') && str_contains(ui_panel($vgpuRendered, 'vgpu'), 'id="uvm-device-form"'), 'vGPU tab must contain boot settings and the device editor');
 ui_check(!str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="source_url"') && !str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="credential_token"'), 'vGPU tab must not render source credentials or download settings');
 ui_check(!str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="driver_enabled"') && !str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="upgrade_enabled"'), 'vGPU initialization must not own either driver lifecycle switch');
-ui_check(preg_match('/<details[^>]*id="uvm-device-editor"[^>]*>\s*<summary[^>]*>添加设备/u', ui_panel($vgpuRendered, 'vgpu'), $editor) === 1 && preg_match('/\bopen\b/', $editor[0]) !== 1, 'Add device editor must start collapsed');
 $vgpuPanel = ui_panel($vgpuRendered, 'vgpu');
-ui_check(strpos($vgpuPanel, 'id="uvm-add-device"') < strpos($vgpuPanel, 'id="uvm-device-editor"'), 'The persistent add-device entry must remain outside the shared editor');
-ui_check(preg_match('/<button type="button" id="uvm-add-device"[^>]*>添加设备<\/button>/', $vgpuPanel) === 1, 'Entering add mode must be an explicit local-only button, never a submit');
-ui_check(preg_match('/<button type="button" id="uvm-cancel-edit" hidden>取消编辑<\/button>/', $vgpuPanel) === 1, 'Editing must have a local cancel button, initially hidden');
+ui_check(preg_match('/<section[^>]*id="uvm-device-create"[^>]*>\s*<h2>添加设备<\/h2>/', $vgpuPanel) === 1, 'Add device must be a permanent independent section');
+foreach (['uvm-device-editor', 'uvm-edit-device', 'uvm-cancel-edit', 'setEditorMode', 'resetEditor'] as $removed) {
+    ui_check(!str_contains($vgpuPanel, $removed), 'Read-only details must not retain the shared editing implementation: ' . $removed);
+}
 ui_check(str_contains($vgpuPanel, 'id="uvm-save-device">保存新设备</button>'), 'The initial save button must clearly identify a new device');
-ui_check(str_contains($vgpuPanel, 'id="uvm-edit-device-note" hidden') && str_contains($vgpuPanel, '保存配置不会启动设备'), 'Edit mode must retain a configuration-only explanation');
+$createForm = ui_form($vgpuRendered, 'uvm-device-form');
+ui_check(str_contains($createForm, 'name="uvm_action" value="device-create"'), 'New-device submission must use the strictly create-only backend action');
+ui_check(!str_contains($createForm, 'class="uvm-submit-form"'), 'Create AJAX must own its busy state without the ordinary POST handler');
+ui_check(str_contains($vgpuPanel, '不会启动设备或自动接管现有运行时'), 'New configuration must not imply runtime adoption or activation');
 $statusRendered = ui_render($base + ['tab' => 'status']);
 ui_check(ui_actions($statusRendered) === ['status', 'logs'], 'Status tab GET must only read local status and whitelisted logs');
 ui_check(!str_contains(ui_panel($statusRendered, 'status'), 'name="runtime_enabled"') && !str_contains(ui_panel($statusRendered, 'status'), 'name="source_url"'), 'Status tab must not render settings forms');
@@ -435,9 +438,13 @@ $rendered = ui_render($managedFixture);
 $row = ui_inventory_row(ui_inventory_table($rendered), $managedRow['uuid'], $managedRow['pci']);
 ui_check(str_contains($row, 'nvidia-999') && str_contains($row, 'nvidia-762'), 'Inventory must expose actual and configured identities when their types differ');
 ui_check(str_contains($row, 'data-device-source="plugin"') && str_contains($row, '插件配置'), 'Plugin-saved rows must retain their managed source label');
-ui_check(preg_match('/\bdata-device="([^"]+)"/', $row, $encodedDevice) === 1, 'Managed rows must retain an explicit edit payload');
-$editDevice = json_decode(html_entity_decode($encodedDevice[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'), true, 32, JSON_THROW_ON_ERROR);
-ui_check($editDevice === $deviceInput, 'Editing a managed row must use the original saved configuration, not overwrite it with observed host identity');
+ui_check(preg_match('~<details class="uvm-device-details"[^>]*>(.*?)</details>~s', $row, $readOnlyDetail) === 1, 'Managed rows must offer independent read-only details');
+foreach (['插件保存', '系统定义', '当前运行', $deviceInput['profile'], 'nvidia-762', 'nvidia-999'] as $value) {
+    ui_check(str_contains($readOnlyDetail[1], $value), 'Details must distinguish stored, defined and actual identity: ' . $value);
+}
+ui_check(!preg_match('/<(?:form|input|select|textarea|button)\b/i', $readOnlyDetail[1]), 'Device details must contain no writable form or save action');
+ui_check(str_contains($row, 'data-device-key="' . $deviceInput['pci'] . '|' . $deviceInput['uuid'] . '"'), 'Details must identify the exact PCI/UUID pair');
+ui_check(!str_contains($row, 'data-device=') && !str_contains($row, 'uvm-edit-device'), 'Details must not export an editable draft or switch the create form');
 foreach (['device-start', 'device-stop', 'device-remove'] as $action) ui_check(str_contains($row, 'value="' . $action . '"'), 'Managed rows must retain the existing ' . $action . ' action');
 ui_check(ui_actions($rendered) === ['status', 'logs'], 'Rendering a managed inventory discrepancy must not repair or rewrite it');
 foreach ([true, false, null] as $active) foreach ([true, false] as $runtimeEnabled) {
@@ -479,6 +486,32 @@ foreach (['device-save', 'device-start', 'device-stop', 'device-remove'] as $act
     ui_check($rendered['calls'][0]['payload'] === ($action === 'device-save' ? $deviceInput : ['uuid' => $deviceInput['uuid']]), 'Device operations must not forward unrelated source/runtime fields');
     ui_check(str_contains($rendered['html'], 'data-tab="vgpu"'), 'Device result must remain on the vGPU tab');
 }
+
+$createPost = array_replace($config, $deviceInput, ['uvm_tab' => 'vgpu', 'uvm_action' => 'device-create']);
+foreach ([false, true] as $gatewayStrip) {
+    $created = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $createPost,
+        'gateway_strip_csrf' => $gatewayStrip, 'responses' => ['device-create' => ['changed' => true]]]);
+    ui_check(ui_actions($created) === ['device-create'], 'Native multi-tab creation must dispatch exactly once without status/remote/GPU work');
+    ui_check($created['calls'][0]['payload'] === $deviceInput && $created['profile_scans'] === 0, 'Creation must pass only device fields and avoid a new form/UUID render');
+    ui_check(substr_count($created['html'], 'id="uvm-device-create-result"') === 1, 'Native tabs must emit one tagged creation response');
+    ui_check(preg_match('~id="uvm-device-create-result">(.*?)</script>~s', $created['html'], $tagged) === 1, 'Creation result must survive the Unraid HTML wrapper');
+    $result = json_decode($tagged[1], true, 32, JSON_THROW_ON_ERROR);
+    ui_check($result['ok'] && $result['data'] === ['uuid' => $deviceInput['uuid'], 'changed' => true], 'Only confirmed creation may be reported as success');
+    ui_check(str_contains($result['message'], '未启动') && !str_contains($created['html'], 'id="uvm-device-form"'), 'Create success must not claim activation or render another POST form');
+}
+foreach ([['changed' => false], ['ok' => false, 'message' => 'UUID 已存在']] as $unconfirmed) {
+    $created = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $createPost,
+        'responses' => ['device-create' => $unconfirmed]]);
+    ui_check(ui_actions($created) === ['device-create'] && str_contains($created['html'], '"ok":false'), 'Duplicate or unconfirmed creation must not become a success response');
+}
+foreach ([['csrf_token' => 'bad'], ['uvm_csrf_token' => 'bad'], ['uvm_tab' => 'driver'], ['uuid' => ['bad']]] as $invalid) {
+    $created = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => array_replace($createPost, $invalid)]);
+    ui_check(ui_actions($created) === [] && str_contains($created['html'], '"ok":false'), 'Rejected create requests must return one failure before backend dispatch');
+    ui_check(substr_count($created['html'], 'id="uvm-device-create-result"') === 1, 'Rejected native multi-tab creation must not repeat its response');
+}
+$created = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $createPost,
+    'errors' => ['device-create' => '</script><script>alert(9)</script>']]);
+ui_check(!str_contains($created['html'], '<script>alert(9)') && str_contains($created['html'], '"ok":false'), 'Create failure text must stay escaped inside tagged JSON');
 
 foreach ([
     ['post' => array_replace($config, ['csrf_token' => 'wrong'])],
