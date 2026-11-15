@@ -40,13 +40,13 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-Show existing vGPU devices, persistent definitions and saved configurations together.
-Fix native tab PHP entrypoints being displayed as text.
-Automatic GitHub/GitLab source detection and kernel-matched driver downloads.
-Local TXZ import with chunked uploads and optional MD5 verification.
-Native Unraid tabs for drivers, vGPU management, status and logs.
-Unraid upgrade preparation and verified boot-time driver installation.
-Fix form and upload validation after Unraid consumes the native CSRF field.
+Select driver packages by kernel, NVIDIA version and package build.
+Separate boot-time driver restoration, OS upgrade preparation and vGPU initialization.
+Preserve user configuration during driver migration and verify installed modules.
+Retain per-kernel package history for offline OS rollback.
+Inspect scheduled scripts and go references for conflicting startup owners.
+Gate same-boot installation retries after failures or timeouts.
+Use the maintenance migration steps when replacing an existing driver plugin.
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -135,7 +135,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.03.2")
+    parser.add_argument("--version", default="2026.11.15.1")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

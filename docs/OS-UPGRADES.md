@@ -130,7 +130,13 @@ UnlockRS 和 `/etc/modprobe.d/nvidia.conf` 配置，包括已有 `.new`、许可
 当时测试机仍运行 novidio `2025.01.22a`，自有插件为 `2026.11.03.2`，
 启用的 vGPU User Script 是 `vgpu-580`（boot）；另三个相关任务禁用。
 虽安装了 User Scripts 和 Enhanced，两者不能据此算作两条 vGPU 自动启动链。
-该快照未完整审查 go 内容及全部间接引用，不作为迁移完成证明。
+随后只读核对 go：没有 vGPU 服务或 mdev 初始化，但第 25 行完整写入
+`/etc/docker/daemon.json`，其中包含 NVIDIA runtime。迁移时保留或整合这份 Docker 配置，
+并核验启动后的最终值，不能为了消除启动冲突而清空 go。
+
+实际旧版 novidio PLG 的卸载段会移除插件包、更新检查 cron 和插件配置/缓存目录，
+没有直接停止 vGPU 或卸载 NVIDIA 驱动的命令。首次迁移优先保留旧配置、缓存与 PLG，
+仅停用其下一次开机入口；不要套用新版上游插件的卸载行为。
 
 运行 `bash tests/run-tests.sh`。测试使用临时文件、模拟下载源和安装命令，覆盖准备、
 新内核重启、后续普通重启、重复启动、缺包、占用和安装失败。实机升级测试需在发布后
