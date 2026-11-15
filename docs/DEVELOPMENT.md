@@ -3,7 +3,20 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
-## 当前集成目标（2026-11-15）
+## Alpha 9 发布范围（2026-11-15）
+
+版本 `2026.11.15.2` / `v2026.11.15.2-alpha.9` 仅修复已有 vGPU 设备操作按钮的布局。
+按钮外层表单使用 flex，不再参与表格单元格的 inline 行盒计算；独立 POST、禁用条件、
+CSRF 和确认提示保持不变。页面宽度、profile 可用性、安装器及启动流程没有变化。
+
+本次先在 Unraid 7.3.4 验收新插件接管，保留原 UUID 和 1GiB Q 配置，再单独测试 7.4
+升级预下载与冷启动恢复。6.18.60 驱动在独立 GitLab Release 发布，不打入插件包。
+发布授权不包含 NAS 部署、服务停启或重启。
+
+下面保留 Alpha 8 开发阶段的历史记录；其中“候选”“未发布”描述的是当时状态，
+不代表当前公开发布状态。实际版本以 GitHub Releases 为准。
+
+## Alpha 8 集成阶段记录（2026-11-15）
 
 由本插件接替 novidio + User Scripts，统一驱动获取、缓存、冷启动安装、vGPU 初始化和
 Unraid 升级预下载。公开插件与私有驱动源继续分开发布，保留原有 UUID 和 1GiB Q 配置。

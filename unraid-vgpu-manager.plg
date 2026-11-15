@@ -1,17 +1,14 @@
 <?xml version="1.0" standalone="yes"?>
-<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.15.1" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
+<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.15.2" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
 <CHANGES>
-Select driver packages by kernel, NVIDIA version and package build.
-Separate boot-time driver restoration, OS upgrade preparation and vGPU initialization.
-Preserve user configuration during driver migration and verify installed modules.
-Retain per-kernel package history for offline OS rollback.
-Inspect scheduled scripts and go references for conflicting startup owners.
-Gate same-boot installation retries after failures or timeouts.
+Align vGPU device action buttons by using consistent flex layout for their forms.
+Preserve disabled states, independent POST forms, CSRF checks and confirmations.
+Keep page width, profile availability and driver startup behavior unchanged.
 Use the maintenance migration steps when replacing an existing driver plugin.
 </CHANGES>
-<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.15.1-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
-<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.15.1-alpha.8/unraid-vgpu-manager-2026.11.15.1-noarch-1.txz</URL>
-<MD5>862f70c113926efd95daad7e872b96d3</MD5>
+<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.15.2-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
+<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.15.2-alpha.9/unraid-vgpu-manager-2026.11.15.2-noarch-1.txz</URL>
+<MD5>f050c76aa4134e80b19ec8cc1f265fae</MD5>
 </FILE>
 <FILE Run="/bin/bash"><INLINE><![CDATA[
 # Installation must succeed without a repository, token or NVIDIA package.
