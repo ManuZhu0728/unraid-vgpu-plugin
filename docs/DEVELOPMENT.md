@@ -3,6 +3,38 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
+## 当前集成目标（2026-11-15）
+
+由本插件接替 novidio + User Scripts，统一驱动获取、缓存、冷启动安装、vGPU 初始化和
+Unraid 升级预下载。公开插件与私有驱动源继续分开发布，保留原有 UUID 和 1GiB Q 配置。
+
+当前在 `codex/package-build-identity` 开发，与驱动仓库
+`codex/driver-package-lifecycle` 联调。真实候选包为
+`nvidia-595.58.03-6.18.58-Unraid-2.txz`；build 2 是打包修订，不是新 NVIDIA 版本，
+没有新增 MMIO 或 host-CUDA 补丁。
+
+推进顺序：
+
+1. 收尾驱动构建修复与证据，保留旧包和输入。
+2. 对齐两仓库的冷安装契约，验证真实 pkgtools 对旧裸配置包和新 `.new` 包的处理。
+3. 联调真实 TXZ 导入、缓存、包身份、安装回执及三个独立开关。
+4. 准备插件测试版、私有驱动附件和维护迁移步骤；确认范围后再合并、推送与发布。
+5. 新入口、驱动缓存及恢复路径就位后，经授权停用旧入口并进行实机冷启动迁移。
+6. 验收 CUDA、Emby、Windows vGPU、并发/停启、Immich 显存与普通重启。
+7. 本地验证系统升级预下载和异常路径；后续实际系统升级及回退单独记录。
+
+本地验证不代表实机验收。配置恢复不等于整个驱动包回退；驱动切换在下次冷启动完成。
+MMIO 修复另开阶段，不随安装流程改动一起交付。
+
+发布前仍需补齐的生命周期项目：
+
+- 按内核保留经过授权的包回执。目前升级准备可覆盖唯一的所选包，导致回退旧内核时
+  虽然 TXZ 仍在缓存中，却找不到可安装的授权回执；不能改成盲扫缓存自动安装。
+- 核对间接调用的 User Scripts 和 `/boot/config/go` 等启动入口；现有特征检测不等于
+  已排除所有 wrapper 脚本。
+- 在 Unraid 7.3.4 实际启动流程中验证驱动恢复早于 Docker/VM 使用 GPU。
+  PLG 内部 `boot → upgrade-helper` 的顺序不能代替这项时序证据。
+
 ## 结构
 
 - 开发机测试使用临时文件、模拟 HTTP/命令和本地 PHP HTTP 服务。
@@ -19,6 +51,15 @@
 - `Installer.php` 在后续启动安装已验证缓存；`Runtime.php` 随后恢复 vGPU。
 - `InstallConfiguration.php` 在包安装前建立配置事务，安装后恢复已有配置并仅合并 Docker 的 NVIDIA runtime。
   事务位于运行目录，备份不进入 JSON 状态或日志；失败回执提供事务路径。
+- `InstallContract.php` 定义包内配置模板与模块的安装契约。`Download::inspectCached()`
+  生成本次安装的模板内容和模块摘要，不把这些临时数据写入长期包回执。
+- `PkgtoolsMigration.php` 与驱动仓库同字节共享：根据 pkgtools 文件清单选择旧记录，
+  跨版本用 `旧记录%新包`，安装后确认唯一目标记录。两仓库联调测试检查该文件没有漂移。
+- 插件在配置恢复后补齐并处理包内 `.new`，保留管理员已有的待处理模板；显式注册 Docker、
+  执行 depmod 和 `ldconfig -X`，核验所有包内目标模块后才加载驱动。不额外重放第三方 doinst。
+  五个 vGPU 必需模块始终检查；包内存在 peermem 时也检查，因此本项目 build 2 检查六模块。
+- 安装或安装后命令超时保留事务，当前 boot 禁止再次安装及 GPU 写操作；配置保存与状态查看仍可用。
+  配置事务提交后若原生驱动激活失败，保留已验证的配置，不把它误报为整包已回滚。
 - 设置 schema 2 独立保存 `driver.enabled`、`upgrade.enabled`、`runtime.enabled`。
   `Store::settings()` 仅在读取旧配置时映射旧开关及 boot ID，不自动落盘；明确的 driver 设置优先。
 - WebUI 使用原生 `xmenu` + `Tabs`：主 `.page` 定义菜单，三个子 `.page` 分别显示驱动、vGPU、状态与日志。
@@ -41,6 +82,20 @@ bash tests/run-tests.sh
 可用 `PHP_BIN=/path/to/php` 指定 PHP CLI；也识别本地
 `.tools/php/root/usr/bin/php8.4`。本次将 Debian PHP CLI 包解压到 `.tools`，没有向宿主
 安装 PHP。测试使用临时目录和模拟命令/HTTP，不读取真实凭据。
+
+真实驱动包的被动导入与缓存核验可单独执行（需要 `tar`、`xz`、`modinfo` 和 PHP CLI）：
+
+```bash
+mkdir -p work
+vgpu_cache_test_dir=$(mktemp -d "$PWD/work/vgpu-cache-integration.XXXXXXXX")
+PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+  "${PHP_BIN:-.tools/php/root/usr/bin/php8.4}" -n \
+  tests/integration/verify-driver-cache.php \
+  /path/to/nvidia-595.58.03-6.18.58-Unraid-2.txz "$vgpu_cache_test_dir"
+```
+
+输入包旁需有同名 `.md5`。测试在独立目录保留缓存副本及 `result.json`；检查导入、
+三元身份、重复导入及错误回执拒绝，不安装驱动、不修改真实插件配置。
 
 ## 离线预览包
 

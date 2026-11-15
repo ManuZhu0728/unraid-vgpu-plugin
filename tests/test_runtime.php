@@ -124,6 +124,54 @@ $tests['disabled/status are read-only'] = function (RuntimeFixture $f): void {
     runtime_check($f->runtime->status($settings, [])['ok'], 'Status works without installed driver');
     runtime_check(!$f->commands && !is_dir($f->paths->runtimeDir) && !is_dir($f->paths->path('/etc')), 'Read-only paths must not create runtime state');
 };
+$tests['same-boot installation failure blocks every GPU mutation entrypoint'] = function (RuntimeFixture $f): void {
+    $boot = '11111111-1111-4111-8111-111111111111';
+    $f->write('/proc/sys/kernel/random/boot_id', $boot);
+    foreach (['installing', 'failed'] as $status) {
+        $state = json_encode(['status' => $status, 'boot_id' => $boot, 'message' => 'Installer completion is unknown'], JSON_THROW_ON_ERROR);
+        $f->write('/boot/config/plugins/unraid-vgpu-manager/driver-state.json', $state);
+        foreach ([false, true] as $driverEnabled) {
+            $settings = $f->settings;
+            $settings['driver']['enabled'] = $driverEnabled;
+            foreach ([
+                fn() => $f->runtime->ensure($settings, [$f->device]),
+                fn() => $f->runtime->startDevice($f->device, $settings),
+                fn() => $f->runtime->stopDevice($f->device),
+                fn() => $f->runtime->removeDevice($f->device),
+            ] as $operation) {
+                $result = $operation();
+                runtime_check(!$result['ok'] && $result['code'] === 'installation_incomplete', 'Every GPU mutation must respect the failed/unknown installation regardless of the restore switch');
+            }
+        }
+        runtime_check(!$f->commands && !is_dir($f->paths->path('/etc')), 'Installation barrier must run before commands or runtime configuration writes');
+        runtime_check($f->runtime->status($f->settings, [$f->device])['ok'], 'Failure must not block read-only runtime status');
+        $settings = $f->settings;
+        $settings['runtime']['enabled'] = false;
+        runtime_check($f->runtime->ensure($settings, [])['code'] === 'runtime_disabled', 'A disabled no-op remains usable');
+        runtime_check(file_get_contents($f->paths->configDir . '/driver-state.json') === $state, 'Runtime entrypoints must never erase installation evidence');
+    }
+};
+$tests['installation barrier expires only with a different boot identity'] = function (RuntimeFixture $f): void {
+    $f->write('/proc/sys/kernel/random/boot_id', '22222222-2222-4222-8222-222222222222');
+    $f->write('/boot/config/plugins/unraid-vgpu-manager/driver-state.json', json_encode([
+        'status' => 'failed', 'boot_id' => '11111111-1111-4111-8111-111111111111',
+    ], JSON_THROW_ON_ERROR));
+    runtime_check($f->runtime->ensure($f->settings, [])['ok'] && $f->hasCommand('env'), 'An older boot failure must not permanently disable a new cold runtime');
+};
+$tests['a pending cache selection is not a failed active driver'] = function (RuntimeFixture $f): void {
+    $f->write('/boot/config/plugins/unraid-vgpu-manager/driver-state.json', json_encode([
+        'status' => 'pending_reboot', 'boot_id' => '11111111-1111-4111-8111-111111111111',
+    ], JSON_THROW_ON_ERROR));
+    $f->settings['selected_package'] = ['driver' => '580.159.03'];
+    runtime_check($f->runtime->ensure($f->settings, [])['ok'], 'A newly cached selection must not gate the existing installed runtime');
+};
+$tests['unverifiable installation evidence fails closed without mutation'] = function (RuntimeFixture $f): void {
+    foreach (['damaged json', json_encode(['status' => 'failed', 'boot_id' => 'unknown'], JSON_THROW_ON_ERROR)] as $state) {
+        $f->write('/boot/config/plugins/unraid-vgpu-manager/driver-state.json', $state);
+        runtime_check($f->runtime->ensure($f->settings, [])['code'] === 'installation_state_unknown', 'Corrupt installation evidence cannot authorize runtime changes');
+        runtime_check(!$f->commands && !is_dir($f->paths->path('/etc')), 'Invalid state must not trigger any runtime write');
+    }
+};
 $tests['legacy plugin prevents takeover'] = function (RuntimeFixture $f): void {
     $f->write('/boot/config/plugins/novidio-vgpu-driver.plg', 'legacy');
     $f->write('/etc/vgpu_unlock/config.toml', "unlock = false\n");

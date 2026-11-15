@@ -64,6 +64,8 @@ final class Runtime
             if (($settings['runtime']['enabled'] ?? false) !== true) {
                 return $this->result(true, 'runtime_disabled', 'Runtime management is disabled; no running service was changed');
             }
+            $installation = $this->installationGate();
+            if ($installation !== null) return $installation;
             $runtime = $settings['runtime'];
             if (($runtime['xml_override'] ?? false) !== false) {
                 return $this->result(false, 'unsupported_xml_override', 'Keep vgpuConfig.xml paired with the installed driver; XML overrides are not supported');
@@ -170,6 +172,8 @@ final class Runtime
     public function stopDevice(array $device): array
     {
         try {
+            $installation = $this->installationGate();
+            if ($installation !== null) return $installation;
             $this->identity($device);
             $active = $this->activeDevices();
             if ($active === null) return $this->result(false, 'state_unknown', 'Cannot inspect active mdev devices');
@@ -186,6 +190,8 @@ final class Runtime
     public function removeDevice(array $device): array
     {
         try {
+            $installation = $this->installationGate();
+            if ($installation !== null) return $installation;
             $this->identity($device);
             $safe = $this->destructivePreflight($device);
             if (!$safe['ok']) return $safe;
@@ -318,6 +324,31 @@ final class Runtime
         if (!$holders['known']) return $this->result(false, 'usage_unknown', 'Cannot inspect VFIO/host GPU file descriptors; target was not stopped');
         if ($holders['holders']) return $this->result(false, 'gpu_busy', 'A VFIO or host GPU process still has relevant handles open', ['holders' => $holders['holders']]);
         return $this->result(true, 'unused', 'No active VM or conflicting process was found');
+    }
+
+    /** Installation failure is a boot-wide GPU mutation barrier, not a setting. */
+    private function installationGate(): ?array
+    {
+        $path = $this->paths->configDir . '/driver-state.json';
+        clearstatcache(true, $path);
+        if (!file_exists($path) && !is_link($path)) return null;
+        try {
+            if (is_link($path) || !is_file($path) || filesize($path) > 65536) throw new \RuntimeException('Invalid installation state');
+            $state = json_decode((string)file_get_contents($path), true, 32, JSON_THROW_ON_ERROR);
+            if (!is_array($state)) throw new \RuntimeException('Invalid installation state');
+            if (!in_array($state['status'] ?? '', ['installing', 'failed'], true)) return null;
+            $boot = $this->read('/proc/sys/kernel/random/boot_id');
+            $pattern = '/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/D';
+            if (!preg_match($pattern, $boot) || !is_string($state['boot_id'] ?? null) || !preg_match($pattern, $state['boot_id'])) {
+                throw new \RuntimeException('Unknown installation boot');
+            }
+            if ($state['boot_id'] !== $boot) return null;
+            // Disabling restoration, changing the selected cache or using the
+            // runtime-only entrypoint must not bypass an uncertain pkgtools child.
+            return $this->result(false, 'installation_incomplete', 'Driver installation failed or its completion is unknown during this boot; restart before changing the GPU runtime');
+        } catch (\Throwable) {
+            return $this->result(false, 'installation_state_unknown', 'Driver installation state could not be verified; no GPU runtime change was attempted');
+        }
     }
 
     private function snapshot(): array

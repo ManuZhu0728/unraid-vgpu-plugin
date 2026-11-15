@@ -397,6 +397,41 @@ try {
     application_check(!$changed['ok'] && $changed['code'] === 'maintenance_required', 'Live configuration mismatch must refuse ensure');
     application_check($sameFixture->store->settings()['pending_restart'], 'Refused ensure must retain pending maintenance');
 
+    foreach (['installing', 'failed'] as $installationStatus) {
+        $failedFixture = $fixtures[] = new ApplicationFixture();
+        $failedApp = $failedFixture->application;
+        $failedApp->dispatch('device-save', $failedFixture->device());
+        $failedFixture->managed();
+        $failedFixture->store->write($failedFixture->paths->configDir . '/driver-state.json', [
+            'status' => $installationStatus, 'boot_id' => '11111111-1111-4111-8111-111111111111',
+            'message' => 'Installer completion is unknown',
+        ]);
+        $stateBytes = file_get_contents($failedFixture->paths->configDir . '/driver-state.json');
+        $deviceBytes = file_get_contents($failedFixture->paths->devicesFile);
+        foreach ([false, true, false] as $driverEnabled) {
+            $failedApp->dispatch('config-save', ['driver' => ['enabled' => $driverEnabled], 'override_content' => '# allowed pending edit']);
+            $failedFixture->calls = [];
+            foreach (['ensure', 'boot', 'device-start', 'device-stop', 'device-remove'] as $action) {
+                $result = $failedApp->dispatch($action, ['uuid' => ApplicationFixture::UUID]);
+                $expected = $action === 'boot' && $driverEnabled ? 'already_attempted' : 'installation_incomplete';
+                application_check(!$result['ok'] && $result['code'] === $expected, 'A failed/unknown boot install must gate ' . $action . ' even after changing the restore switch');
+            }
+            $failedStatus = $failedApp->dispatch('status');
+            application_check($failedStatus['driver_installation']['status'] === $installationStatus, 'Read-only status must retain installation failure visibility');
+            $failedApp->dispatch('plan');
+            $failedApp->dispatch('device-save', $failedFixture->device());
+            application_check($failedFixture->calls === [], 'Installation gate and allowed read/configuration actions must execute no GPU commands');
+            application_check(file_get_contents($failedFixture->paths->configDir . '/driver-state.json') === $stateBytes, 'No entrypoint may erase same-boot installation evidence');
+            application_check(file_get_contents($failedFixture->paths->devicesFile) === $deviceBytes && $failedFixture->defined, 'Gated device removal must retain persistent device identity');
+        }
+        $failedApp->dispatch('config-save', ['override_content' => '']);
+        $settings = $failedFixture->store->settings();
+        $settings['pending_restart'] = true;
+        $failedFixture->store->saveSettings($settings);
+        $failedFixture->put('/proc/sys/kernel/random/boot_id', '22222222-2222-4222-8222-222222222222');
+        application_check($failedApp->dispatch('ensure')['ok'], 'A different boot identity releases the installation barrier for the installed runtime');
+    }
+
     $upgradeFixture = $fixtures[] = new ApplicationFixture();
     $upgradeApp = $upgradeFixture->application;
     $upgradeSource = $upgradeFixture->source();

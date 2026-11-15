@@ -41,6 +41,15 @@ final class InstallerFixture
     public bool $loadAfterVerify = false;
     public bool $overwriteConfigs = false;
     public int $installCode = 0;
+    public bool $peermem = false;
+    public array $templates = [];
+    public string $missingInstalledModule = '';
+    public string $corruptInstalledModule = '';
+    public string $wrongInstalledModule = '';
+    public string $timeoutCommand = '';
+    public bool $changeConfigurationAfterDepmod = false;
+    public bool $breakCompletionJournal = false;
+    public bool $skipPackageRecord = false;
 
     public function __construct()
     {
@@ -108,6 +117,13 @@ final class InstallerFixture
         if ($handle !== null) symlink($handle, $this->paths->path('/proc/' . $pid . '/fd/3'));
     }
 
+    public function packageRecord(string $name): void
+    {
+        $identity = \Vgpu\PackageIdentity::parse($name . '.txz');
+        $prefix = 'lib/modules/' . $identity['kernel'] . '/kernel/drivers/video/';
+        $this->write('/var/lib/pkgtools/packages/' . $name, "PACKAGE NAME: " . $name . "\nFILE LIST:\n" . $prefix . "nvidia.ko\n" . $prefix . "nvidia-vgpu-vfio.ko\n");
+    }
+
     public function count(string $command): int
     {
         return count(array_filter($this->calls, static fn(array $argv): bool => basename($argv[0]) === $command));
@@ -119,10 +135,13 @@ final class InstallerFixture
         foreach (['nvidia', 'nvidia-modeset', 'nvidia-drm', 'nvidia-uvm', 'nvidia-vgpu-vfio'] as $module) {
             $names[] = 'lib/modules/6.18.58-Unraid/kernel/drivers/video/' . $module . '.ko';
         }
+        if ($this->peermem) $names[] = 'lib/modules/6.18.58-Unraid/kernel/drivers/video/nvidia-peermem.ko';
         foreach (['usr/bin/nvidia-vgpud', 'usr/bin/nvidia-vgpu-mgr', 'usr/lib64/libvgpu_unlock_rs.so',
             'usr/share/nvidia/vgpu/vgpuConfig.xml', 'usr/lib64/libcuda.so.1', 'usr/lib64/libnvcuvid.so.1',
             'usr/lib64/libnvidia-encode.so.1', 'usr/lib64/libnvidia-ml.so.1'] as $name) $names[] = $name;
-        return implode("\n", array_map(static fn(string $name): string => '-rw-r--r-- 0/0 1 2026-11-02 10:00:00 ' . $name, $names)) . "\n";
+        $listing = implode("\n", array_map(static fn(string $name): string => '-rw-r--r-- 0/0 1 2026-11-02 10:00:00 ' . $name, $names)) . "\n";
+        foreach ($this->templates as $name => $contents) $listing .= '-rw-r--r-- 0/0 ' . strlen($contents) . ' 2026-11-02 10:00:00 ' . $name . "\n";
+        return $listing;
     }
 
     public function run(array $argv, int $timeout = 30, ?string $stdin = null): array
@@ -130,16 +149,37 @@ final class InstallerFixture
         $this->calls[] = $argv;
         $name = basename($argv[0]);
         if ($name === $this->fail) return ['code' => 1, 'stdout' => '', 'stderr' => 'fixture-only failure'];
+        if ($name === $this->timeoutCommand && $this->installed !== '') return ['code' => 124, 'stdout' => '', 'stderr' => 'fixture timeout'];
         $output = '';
         if ($name === 'upgradepkg') {
-            installer_check($argv === ['upgradepkg', '--install-new', '--reinstall', $this->package['path']], 'Only the exact canonical package may be installed');
+            $mapping = explode('%', $argv[3], 2);
+            installer_check(array_slice($argv, 0, 3) === ['upgradepkg', '--install-new', '--reinstall'] && end($mapping) === $this->package['path'], 'Only the exact canonical package may be installed');
             $this->installed = $this->badAfterInstall ? '580.159.03' : $this->package['driver'];
+            foreach (array_merge(\Vgpu\InstallContract::REQUIRED_MODULES, $this->peermem ? ['nvidia-peermem'] : []) as $module) {
+                if ($module === $this->missingInstalledModule) continue;
+                $this->write('/lib/modules/6.18.58-Unraid/kernel/drivers/video/' . $module . '.ko',
+                    $module === $this->corruptInstalledModule ? 'FAKE MODULE' : 'fake module');
+            }
+            // Real pkgtools removes old bare-owned configurations before its
+            // final doinst promotes .new. The outer transaction must recover
+            // both the administrator's live file and the consumed candidate.
+            foreach ($this->templates as $member => $contents) {
+                $this->write('/' . substr($member, 0, -4), $contents);
+                $candidate = $this->paths->path('/' . $member);
+                if (is_file($candidate)) unlink($candidate);
+            }
             if ($this->overwriteConfigs) {
                 $this->write('/etc/docker/daemon.json', '{"registry-mirrors":["https://overwritten.invalid"]}');
                 $this->write('/etc/vgpu_unlock/config.toml', "unlock = false\n");
                 $this->write('/etc/modprobe.d/nvidia.conf', "options nvidia cudahost=0\n");
             }
             if ($this->installCode !== 0) return ['code' => $this->installCode, 'stdout' => '', 'stderr' => 'fixture install failure'];
+            if (count($mapping) === 2) {
+                $oldRecord = $this->paths->path('/var/lib/pkgtools/packages/' . $mapping[0]);
+                installer_check(is_file($oldRecord), 'Explicit migration identifies an existing package record');
+                unlink($oldRecord);
+            }
+            if (!$this->skipPackageRecord) $this->packageRecord(basename($this->package['path'], '.txz'));
         } elseif ($name === 'nvidia-ctk') {
             installer_check(array_slice($argv, 0, 4) === ['nvidia-ctk', 'runtime', 'configure', '--runtime=docker'], 'Only staged Docker runtime registration is allowed');
             $path = substr($argv[4], strlen('--config='));
@@ -149,10 +189,21 @@ final class InstallerFixture
             file_put_contents($path, json_encode($config));
         } elseif ($name === 'depmod') {
             installer_check($argv === ['depmod', '-a', '6.18.58-Unraid'], 'depmod must use the running kernel');
+            if ($this->changeConfigurationAfterDepmod) $this->write('/etc/vgpu_unlock/config.toml', 'unexpected concurrent update');
+        } elseif ($name === 'ldconfig') {
+            installer_check($argv === ['ldconfig', '-X'], 'Refresh the cache without rewriting RM SONAME aliases');
+            if ($this->breakCompletionJournal) {
+                $journal = glob($this->paths->runtimeDir . '/install-transactions/*/transaction.json')[0];
+                unlink($journal);
+                mkdir($journal, 0700);
+            }
         } elseif ($name === 'modinfo') {
             if (end($argv) === 'nvidia') {
                 if ($this->installed === '') return ['code' => 1, 'stdout' => '', 'stderr' => 'not installed'];
                 $output = $argv[2] === 'version' ? $this->installed : $this->installedMagic;
+            } elseif (str_starts_with(end($argv), $this->root . '/lib/modules/')) {
+                $output = $argv[2] === 'version' ? $this->installed : $this->installedMagic;
+                if (basename(end($argv)) === $this->wrongInstalledModule . '.ko') $output = $argv[2] === 'version' ? '580.159.03' : '6.18.54-Unraid SMP';
             } else {
                 $output = $argv[2] === 'version' ? $this->archiveDriver : $this->archiveMagic;
                 if ($this->loadAfterVerify && $argv[2] === 'vermagic') $this->write('/sys/module/nvidia/version', "580.159.03\n");
@@ -160,6 +211,9 @@ final class InstallerFixture
         } elseif ($name === 'xz' || $name === 'notify') {
             // Only fixtures: no executable from the host is called.
         } elseif ($name === 'nvidia-modprobe') {
+            $journals = glob($this->paths->runtimeDir . '/install-transactions/*/transaction.json');
+            installer_check(count($journals) > 0, 'Activation requires a configuration transaction');
+            foreach ($journals as $journal) installer_check(json_decode(file_get_contents($journal), true)['status'] === 'complete', 'All configuration checks and the transaction commit precede module loading');
             $this->write('/sys/module/nvidia/version', $this->installed . "\n");
         } elseif ($name === 'tar' && in_array('--list', $argv, true)) {
             $output = $this->listing();
@@ -167,7 +221,7 @@ final class InstallerFixture
             $directory = $argv[array_search('--directory', $argv, true) + 1];
             foreach (array_slice($argv, array_search('--', $argv, true) + 1) as $member) {
                 if (!is_dir(dirname($directory . '/' . $member))) mkdir(dirname($directory . '/' . $member), 0700, true);
-                file_put_contents($directory . '/' . $member, 'fake module');
+                file_put_contents($directory . '/' . $member, $this->templates[$member] ?? 'fake module');
             }
         } else throw new RuntimeException('Unexpected real command refused: ' . $name);
         return ['code' => 0, 'stdout' => $output, 'stderr' => ''];
@@ -415,9 +469,14 @@ $cases['post-install mismatch blocks runtime initialization'] = function (Instal
     installer_check($f->installer->state()['status'] === 'failed' && $f->count('nvidia-modprobe') === 0, 'Invalid installation must not initialize devices');
 };
 $cases['device initialization failure retains the verified cache'] = function (InstallerFixture $f): void {
+    $f->write('/etc/docker/daemon.json', '{"debug":true}');
     $f->fail = 'nvidia-modprobe';
-    installer_check($f->installer->boot($f->settings)['status'] === 'failed', 'Native device initialization failure propagates');
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'failed' && str_contains($result['message'], 'package installed and verified; native activation failed'), 'Activation failure must not imply a package rollback');
     installer_check(is_file($f->package['path']), 'Cache survives a device initialization failure');
+    installer_check(isset(json_decode(file_get_contents($f->paths->path('/etc/docker/daemon.json')), true)['runtimes']['nvidia']), 'Committed Docker registration is retained after activation failure');
+    $journals = glob($f->paths->runtimeDir . '/install-transactions/*/transaction.json');
+    installer_check(json_decode(file_get_contents($journals[0]), true)['status'] === 'complete', 'Verified configuration transaction stays committed');
 };
 $cases['a failed later boot preserves the last successful receipt'] = function (InstallerFixture $f): void {
     installer_check($f->installer->boot($f->settings)['ok'], 'Initial successful installation');
@@ -552,6 +611,123 @@ $cases['installation timeout retains backups without racing the child'] = functi
     $journal = glob($f->paths->runtimeDir . '/install-transactions/*/transaction.json');
     installer_check(count($journal) === 1 && json_decode(file_get_contents($journal[0]), true)['status'] === 'completion_unknown', 'Recovery transaction records uncertain completion');
     installer_check($f->count('nvidia-ctk') === 0 && $f->count('nvidia-modprobe') === 0, 'Timeout blocks subsequent commands');
+};
+$cases['missing selections cannot erase a failed or timed-out boot gate'] = function (InstallerFixture $f): void {
+    $f->installCode = 124;
+    installer_check($f->installer->boot($f->settings)['status'] === 'failed', 'Timeout records a failed boot');
+    $state = $f->installer->state();
+    $f->settings['selected_package'] = null;
+    $f->settings['source']['driver'] = '580.159.03';
+    installer_check($f->installer->boot($f->settings)['status'] === 'already_attempted', 'Missing package cannot cover the failed boot with missing_package');
+    installer_check($f->installer->state() === $state, 'Failure evidence must be immutable during this boot');
+    $f->settings['source']['driver'] = '';
+    $f->settings['selected_package'] = $f->package;
+    $f->installCode = 0;
+    installer_check($f->installer->boot($f->settings)['status'] === 'already_attempted' && $f->count('upgradepkg') === 1, 'Restoring the selection never reopens installation');
+};
+$cases['bare-to-new upgrades restore live settings and rehydrate vendor templates'] = function (InstallerFixture $f): void {
+    $f->write('/etc/vgpu_unlock/config.toml', "custom = true\n");
+    $f->templates = ['etc/vgpu_unlock/config.toml.new' => "vendor = true\n", 'etc/nvidia/gridd.conf.new' => "fresh = true\n"];
+    installer_check($f->installer->boot($f->settings)['ok'], 'Explicit post-install contract handles consumed .new files');
+    installer_check(file_get_contents($f->paths->path('/etc/vgpu_unlock/config.toml')) === "custom = true\n", 'Old bare-owned settings restored');
+    installer_check(file_get_contents($f->paths->path('/etc/vgpu_unlock/config.toml.new')) === "vendor = true\n", 'Differing archive template recovered');
+    installer_check(file_get_contents($f->paths->path('/etc/nvidia/gridd.conf')) === "fresh = true\n" && !file_exists($f->paths->path('/etc/nvidia/gridd.conf.new')), 'Fresh default is retained without redundant .new');
+    installer_check($f->count('ldconfig') === 1, 'The final contract refreshes library cache once explicitly');
+    installer_check(!isset($f->installer->state()['last_success']['package']['plan']), 'Transient templates and module hashes do not become receipt data');
+};
+$cases['existing pending templates survive even when identical to the live file'] = function (InstallerFixture $f): void {
+    $f->write('/etc/vgpu_unlock/config.toml', "custom = true\n");
+    $f->write('/etc/vgpu_unlock/config.toml.new', "custom = true\n");
+    chmod($f->paths->path('/etc/vgpu_unlock/config.toml.new'), 0600);
+    $f->templates = ['etc/vgpu_unlock/config.toml.new' => "vendor = true\n"];
+    installer_check($f->installer->boot($f->settings)['ok'], 'A pending administrator candidate is supported');
+    installer_check(file_get_contents($f->paths->path('/etc/vgpu_unlock/config.toml.new')) === "custom = true\n" && (fileperms($f->paths->path('/etc/vgpu_unlock/config.toml.new')) & 0777) === 0600, 'Pending content and permissions take priority');
+};
+$cases['an included peermem is verified before native activation'] = function (InstallerFixture $f): void {
+    $f->peermem = true;
+    installer_check($f->installer->boot($f->settings)['ok'], 'A six-module package installs');
+    $reads = array_filter($f->calls, fn(array $argv): bool => basename($argv[0]) === 'modinfo' && str_starts_with(end($argv), $f->root . '/lib/modules/'));
+    installer_check(count($reads) === 12, 'Both version and vermagic are verified for all six installed files');
+};
+$cases['missing optional module fails even when pkgtools returned success'] = function (InstallerFixture $f): void {
+    $f->peermem = true;
+    $f->missingInstalledModule = 'nvidia-peermem';
+    installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('nvidia-modprobe') === 0, 'Advertised peermem may not disappear before activation');
+};
+$cases['same-size corrupted secondary module fails before activation'] = function (InstallerFixture $f): void {
+    $f->corruptInstalledModule = 'nvidia-uvm';
+    installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('nvidia-modprobe') === 0, 'Installed content hash, not only modinfo metadata, must match');
+};
+$cases['secondary module metadata must match before activation'] = function (InstallerFixture $f): void {
+    $f->wrongInstalledModule = 'nvidia-drm';
+    installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('nvidia-modprobe') === 0, 'Each installed module has an independent metadata check');
+};
+$cases['configuration commit verification failure prevents the first module load'] = function (InstallerFixture $f): void {
+    $f->write('/etc/vgpu_unlock/config.toml', 'original');
+    $f->changeConfigurationAfterDepmod = true;
+    installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('nvidia-modprobe') === 0, 'Complete must verify configuration before activation');
+    installer_check(file_get_contents($f->paths->path('/etc/vgpu_unlock/config.toml')) === 'original', 'Pre-load commit failure recovers configuration');
+};
+$cases['post-install timeout never rolls back or starts a later command'] = function (InstallerFixture $f): void {
+    $f->write('/etc/docker/daemon.json', '{"debug":true}');
+    $f->timeoutCommand = 'depmod';
+    $result = $f->installer->boot($f->settings);
+    installer_check(!$result['ok'] && str_contains($result['message'], 'completion is unknown'), 'Post-install timeout is an unknown completion, not a safe rollback');
+    installer_check(isset(json_decode(file_get_contents($f->paths->path('/etc/docker/daemon.json')), true)['runtimes']['nvidia']), 'Do not undo configuration while a post-install child may run');
+    installer_check($f->count('ldconfig') === 0 && $f->count('nvidia-modprobe') === 0, 'No later command follows timeout');
+    $journal = glob($f->paths->runtimeDir . '/install-transactions/*/transaction.json');
+    installer_check(json_decode(file_get_contents($journal[0]), true)['status'] === 'completion_unknown', 'Unknown post-install completion is journaled');
+};
+$cases['completion journal failure still records a failed boot before any load'] = function (InstallerFixture $f): void {
+    $f->write('/etc/vgpu_unlock/config.toml', 'original');
+    $f->breakCompletionJournal = true;
+    set_error_handler(static fn(): bool => true); // The deliberately broken journal emits an expected rename warning.
+    try { $result = $f->installer->boot($f->settings); }
+    finally { restore_error_handler(); }
+    installer_check(!$result['ok'] && $f->installer->state()['status'] === 'failed' && $f->count('nvidia-modprobe') === 0, 'Journal commit failure cannot permit activation or lose the boot barrier');
+    installer_check(str_contains($result['message'], 'journal could not be updated') && file_get_contents($f->paths->path('/etc/vgpu_unlock/config.toml')) === 'original', 'Configuration recovery succeeds even if its journal is unwritable');
+};
+foreach (['nvidia-ctk', 'ldconfig', 'modinfo'] as $timedCommand) {
+    $cases[$timedCommand . ' timeout stops the post-install contract without recovery writes'] = function (InstallerFixture $f) use ($timedCommand): void {
+        $f->write('/etc/docker/daemon.json', '{"debug":true}');
+        $f->timeoutCommand = $timedCommand;
+        $result = $f->installer->boot($f->settings);
+        installer_check(!$result['ok'] && str_contains($result['message'], 'completion is unknown'), 'Every timed-out post-install command preserves unknown completion');
+        $journal = glob($f->paths->runtimeDir . '/install-transactions/*/transaction.json');
+        installer_check(json_decode(file_get_contents($journal[0]), true)['status'] === 'completion_unknown' && $f->count('nvidia-modprobe') === 0, 'No rollback or activation follows an unknown child');
+        if ($timedCommand === 'nvidia-ctk') installer_check($f->count('depmod') === 0, 'Docker timeout stops before dependency updates');
+    };
+}
+$cases['native activation timeout retains committed configuration and blocks retry'] = function (InstallerFixture $f): void {
+    $f->timeoutCommand = 'nvidia-modprobe';
+    $result = $f->installer->boot($f->settings);
+    installer_check(!$result['ok'] && str_contains($result['message'], 'package installed and verified; native activation failed') && str_contains($result['message'], 'completion is unknown'), 'A late activation timeout is distinct from package rollback');
+    installer_check($f->count('nvidia-modprobe') === 1 && $f->installer->boot($f->settings)['status'] === 'already_attempted', 'Neither UVM setup nor a retry follows an activation timeout');
+};
+$cases['driver version migrations explicitly replace the previous pkgtools record'] = function (InstallerFixture $f): void {
+    $old = 'nvidia-580.159.03-6.18.58-Unraid-1';
+    $f->packageRecord($old);
+    installer_check($f->installer->boot($f->settings)['ok'], 'A single known legacy driver package can migrate');
+    $calls = array_values(array_filter($f->calls, fn(array $argv): bool => $argv[0] === 'upgradepkg'));
+    installer_check($calls[0][3] === $old . '%' . $f->package['path'], 'Cross-version migration uses explicit old-record%new-path');
+    installer_check(!file_exists($f->paths->path('/var/lib/pkgtools/packages/' . $old)), 'Successful migration does not retain the old package owner');
+};
+$cases['ambiguous installed NVIDIA ownership fails before pkgtools'] = function (InstallerFixture $f): void {
+    $f->packageRecord('nvidia-580.159.03-6.18.58-Unraid-1');
+    $f->packageRecord('nvidia-595.58.03-6.18.58-Unraid-1');
+    installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('upgradepkg') === 0, 'Multiple driver records require explicit maintenance, not guessed removal');
+};
+$cases['pkgtools success without the target record cannot activate'] = function (InstallerFixture $f): void {
+    $f->skipPackageRecord = true;
+    installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('nvidia-modprobe') === 0, 'Both installed files and pkgtools ownership must be verified');
+};
+$cases['same-boot native reactivation rechecks every module before loading'] = function (InstallerFixture $f): void {
+    installer_check($f->installer->boot($f->settings)['ok'], 'Initial installation is verified');
+    unlink($f->paths->path('/sys/module/nvidia/version'));
+    rmdir($f->paths->path('/sys/module/nvidia'));
+    unlink($f->paths->path('/lib/modules/6.18.58-Unraid/kernel/drivers/video/nvidia-uvm.ko'));
+    $loads = $f->count('nvidia-modprobe');
+    installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('nvidia-modprobe') === $loads && $f->count('upgradepkg') === 1, 'A stale successful receipt cannot authorize loading damaged secondary modules');
 };
 
 foreach ($cases as $name => $case) {

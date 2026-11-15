@@ -186,16 +186,25 @@ final class LifecycleFixture
             }
         } elseif ($name === 'upgradepkg') {
             lifecycle_check(array_slice($argv, 0, 3) === ['upgradepkg', '--install-new', '--reinstall'], 'Only a cold package installation is permitted');
+            $mapping = explode('%', $argv[3], 2);
+            $packagePath = end($mapping);
             if ($this->overwriteConfiguration) {
                 foreach (['/etc/docker/daemon.json', '/etc/vgpu_unlock/config.toml', '/etc/modprobe.d/nvidia.conf', '/etc/nvidia/ClientConfigToken/client.tok'] as $path) {
                     $this->write($path, $path === '/etc/docker/daemon.json' ? '{}' : 'package replacement');
                 }
             }
             if ($this->failInstall) return ['code' => 1, 'stdout' => '', 'stderr' => 'mock package failure'];
-            if (!preg_match('/^nvidia-([0-9.]+)-([0-9.]+-Unraid)-([1-9][0-9]*)\.txz$/D', basename($argv[3]), $identity)) throw new RuntimeException('Wrong installation filename');
+            if (!preg_match('/^nvidia-([0-9.]+)-([0-9.]+-Unraid)-([1-9][0-9]*)\.txz$/D', basename($packagePath), $identity)) throw new RuntimeException('Wrong installation filename');
             $this->installed = $identity[1];
             $this->installedKernel = $identity[2];
             $this->installedBuild = (int)$identity[3];
+            if (count($mapping) === 2) unlink($this->paths->path('/var/lib/pkgtools/packages/' . $mapping[0]));
+            $prefix = 'lib/modules/' . $this->installedKernel . '/kernel/drivers/video/';
+            $this->write('/var/lib/pkgtools/packages/' . basename($packagePath, '.txz'), "FILE LIST:\n" . $prefix . "nvidia.ko\n" . $prefix . "nvidia-vgpu-vfio.ko\n");
+            foreach (\Vgpu\InstallContract::REQUIRED_MODULES as $module) {
+                $this->write('/lib/modules/' . $this->installedKernel . '/kernel/drivers/video/' . $module . '.ko',
+                    json_encode(['driver' => $this->installed, 'kernel' => $this->installedKernel]));
+            }
         } elseif ($name === 'nvidia-ctk') {
             lifecycle_check(array_slice($argv, 1, 3) === ['runtime', 'configure', '--runtime=docker'], 'Docker configuration uses only the runtime registration operation');
             $configuration = array_values(array_filter($argv, static fn(string $arg): bool => str_starts_with($arg, '--config=')));
@@ -208,6 +217,8 @@ final class LifecycleFixture
         } elseif ($name === 'depmod') {
             $runningKernel = trim((string)file_get_contents($this->paths->path('/proc/sys/kernel/osrelease')));
             lifecycle_check($argv === ['depmod', '-a', $runningKernel], 'Dependency update must target the running kernel');
+        } elseif ($name === 'ldconfig') {
+            lifecycle_check($argv === ['ldconfig', '-X'], 'Cache refresh must retain the package SONAME aliases');
         } elseif ($name === 'nvidia-modprobe') {
             $this->write('/sys/module/nvidia/version', $this->installed);
         } else {

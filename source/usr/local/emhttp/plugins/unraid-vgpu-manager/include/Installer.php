@@ -27,13 +27,16 @@ final class Installer
             }
             $previous = $this->state();
             $stateKnown = true;
+            // A missing or changed selection must not overwrite the only
+            // evidence of an interrupted installation and reopen this boot.
+            if (($previous['boot_id'] ?? '') === $boot && in_array($previous['status'] ?? '', ['installing', 'failed'], true)) {
+                return $this->result(false, 'already_attempted', 'Driver installation already failed or was interrupted during this boot',
+                    isset($previous['attempted_package']) ? ['package' => $previous['attempted_package']] : []);
+            }
             $candidate = $this->candidate($settings, $prepared, $previous, $kernel);
             if ($candidate === null) return $this->record(false, 'missing_package', 'No prepared driver package matches this kernel', $boot, $kernel, null, $previous);
             $this->identity($candidate, $settings, $kernel);
             $candidate['package'] = PackageIdentity::receipt($candidate['package']);
-            if (($previous['boot_id'] ?? '') === $boot && in_array($previous['status'] ?? '', ['installing', 'failed'], true)) {
-                return $this->result(false, 'already_attempted', 'Driver installation already failed or was interrupted during this boot', ['package' => $candidate['package']]);
-            }
             $preflight = $this->runtime->installationPreflight();
             $state = $preflight['runtime'] ?? [];
             if (($preflight['code'] ?? '') === 'driver_loaded') {
@@ -51,6 +54,9 @@ final class Installer
             if ($this->installedDuringBoot($previous, $boot)) {
                 $same = $this->installedReceiptMatches($candidate, $previous, $boot);
                 if ($same && $this->installedMatches($candidate['package'], $kernel)) {
+                    $inspection = $this->download->inspectCached($candidate['package'], $kernel);
+                    $this->verifyInstalledPlan($inspection['plan'], $inspection['package'], $kernel);
+                    PkgtoolsMigration::verify($this->store->paths->root, ['expected' => basename($inspection['package']['path'], '.txz')]);
                     $this->activateNative($settings, $candidate['package']);
                     return $this->result(true, 'already_installed', 'The matching driver is installed for this boot', ['package' => $candidate['package']]);
                 }
@@ -60,7 +66,8 @@ final class Installer
                 !self::bootId($settings['driver']['enabled_boot_id'] ?? '') || $settings['driver']['enabled_boot_id'] === $boot) {
                 return $this->result(false, 'pending_reboot', 'The prepared driver will be installed after restart', ['package' => $candidate['package']]);
             }
-            $verified = $this->download->verifyCached($candidate['package'], $kernel);
+            $inspection = $this->download->inspectCached($candidate['package'], $kernel);
+            $verified = $inspection['package'];
             $stat = @lstat($verified['path']);
             if (!$stat || $stat['uid'] !== $this->uid() || $stat['nlink'] !== 1) throw new \RuntimeException('Cached package has an unexpected owner or hard link');
             $candidate['package'] = $verified;
@@ -69,21 +76,36 @@ final class Installer
                 return $this->record(false, 'blocked', (string)($again['message'] ?? 'GPU usage changed during verification'), $boot, $kernel, $candidate, $previous);
             }
             if (hash_file('md5', $verified['path']) !== $verified['md5']) throw new \RuntimeException('Cached package changed after verification');
+            $migration = PkgtoolsMigration::select($this->store->paths->root, $verified['path']);
             $configuration = new InstallConfiguration($this->store->paths, $this->runner);
             $configuration->begin($verified);
             $completionUnknown = false;
+            $configurationComplete = false;
             try {
+                if (PkgtoolsMigration::select($this->store->paths->root, $verified['path']) !== $migration || hash_file('md5', $verified['path']) !== $verified['md5']) {
+                    throw new \RuntimeException('Installed package ownership or cache changed during configuration backup');
+                }
                 $this->record(false, 'installing', 'Installing the prepared driver', $boot, $kernel, $candidate, $previous, false);
-                $installed = $this->command(['upgradepkg', '--install-new', '--reinstall', $verified['path']], 300);
-                $completionUnknown = $installed['code'] === 124;
+                $installed = $this->installationCommand(['upgradepkg', '--install-new', '--reinstall', $migration['argument']], 300);
                 if ($installed['code'] !== 0) throw new \RuntimeException('Driver package installation failed');
+                PkgtoolsMigration::verify($this->store->paths->root, $migration);
                 $configuration->restore();
+                $configuration->prepareTemplates($inspection['plan']['templates']);
                 $configuration->registerDocker();
-                if ($this->command(['depmod', '-a', $kernel], 60)['code'] !== 0) throw new \RuntimeException('Driver module dependency update failed');
-                if (!$this->installedMatches($verified, $kernel)) throw new \RuntimeException('Installed module version or kernel does not match the prepared package');
-                $this->activateNative($settings, $verified);
+                if ($this->installationCommand(['depmod', '-a', $kernel], 60)['code'] !== 0) throw new \RuntimeException('Driver module dependency update failed');
+                if ($this->installationCommand(['ldconfig', '-X'], 60)['code'] !== 0) throw new \RuntimeException('Driver library cache update failed');
+                $this->verifyInstalledPlan($inspection['plan'], $verified, $kernel);
+                // All fallible configuration checks and the journal commit
+                // precede the first module load. Activation is a separate phase.
                 $configuration->complete();
+                $configurationComplete = true;
+                $this->activateNative($settings, $verified);
             } catch (\Throwable $error) {
+                if ($configurationComplete) {
+                    throw new \RuntimeException('Driver package installed and verified; native activation failed: ' . $error->getMessage() .
+                        '. Installed configurations retained; transaction: ' . $configuration->path(), 0, $error);
+                }
+                $completionUnknown = $error instanceof InstallTimeout;
                 $recovery = $configuration->fail($completionUnknown);
                 throw new \RuntimeException($error->getMessage() . '. ' . $recovery, 0, $error);
             }
@@ -166,6 +188,28 @@ final class Installer
             str_starts_with(trim($magic['stdout']), $kernel . ' ');
     }
 
+    private function verifyInstalledPlan(array $plan, array $package, string $kernel): void
+    {
+        foreach ($plan['modules'] as $member => $expected) {
+            $path = $this->store->paths->path('/' . $member);
+            // Verify the exact archived path, not a possibly stale depmod alias.
+            for ($parent = dirname($path); $parent !== $this->store->paths->root && $parent !== '/'; $parent = dirname($parent)) {
+                if (is_link($parent)) throw new \RuntimeException('Installed module parent is a symbolic link');
+            }
+            clearstatcache(true, $path);
+            $stat = @lstat($path);
+            if (!$stat || ($stat['mode'] & 0170000) !== 0100000 || $stat['size'] !== $expected['size'] || hash_file('sha256', $path) !== $expected['sha256']) {
+                throw new \RuntimeException('Installed module is missing or differs from the prepared package: ' . basename($member));
+            }
+            foreach (['version' => $package['driver'], 'vermagic' => $kernel] as $field => $value) {
+                $read = $this->installationCommand(['modinfo', '-F', $field, $path]);
+                $actual = trim($read['stdout']);
+                if ($field === 'vermagic') $actual = preg_split('/\s+/', $actual)[0];
+                if ($read['code'] !== 0 || $actual !== $value) throw new \RuntimeException('Installed module version or kernel does not match the prepared package: ' . basename($member));
+            }
+        }
+    }
+
     private function installedReceiptMatches(array $candidate, array $state, string $boot): bool
     {
         $last = $state['last_success'] ?? null;
@@ -198,7 +242,7 @@ final class Installer
         // host/Docker-only operation still needs its device nodes and UVM.
         if (($settings['runtime']['enabled'] ?? false) === true) return;
         foreach ([['nvidia-modprobe'], ['nvidia-modprobe', '-u']] as $argv) {
-            if ($this->command($argv, 30)['code'] !== 0) throw new \RuntimeException('NVIDIA device initialization failed');
+            if ($this->installationCommand($argv, 30)['code'] !== 0) throw new \RuntimeException('NVIDIA device initialization failed');
         }
         if ($this->read('/sys/module/nvidia/version') !== $package['driver']) throw new \RuntimeException('Loaded NVIDIA driver differs from the installed package');
     }
@@ -230,6 +274,13 @@ final class Installer
     {
         $result = ($this->runner)($argv, $timeout, null);
         return ['code' => (int)($result['code'] ?? -1), 'stdout' => (string)($result['stdout'] ?? '')];
+    }
+
+    private function installationCommand(array $argv, int $timeout = 30): array
+    {
+        $result = $this->command($argv, $timeout);
+        if ($result['code'] === 124) throw new InstallTimeout(basename($argv[0]) . ' timed out; completion is unknown');
+        return $result;
     }
 
     private function read(string $path): string

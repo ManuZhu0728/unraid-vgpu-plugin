@@ -96,6 +96,12 @@ final class Download
     /** Revalidate a persisted cache receipt before a boot-time installation. */
     public function verifyCached(array $package, string $kernel): array
     {
+        return $this->inspectCached($package, $kernel)['package'];
+    }
+
+    /** The ephemeral plan contains package templates, never persisted receipt data. */
+    public function inspectCached(array $package, string $kernel): array
+    {
         $kernel = $this->kernel($kernel);
         $package = PackageIdentity::receipt($package);
         $filename = $package['filename'] ?? '';
@@ -122,8 +128,8 @@ final class Download
             $this->parseChecksum((string)file_get_contents($record), $filename) !== $md5) {
             throw new \RuntimeException('Cached driver checksum record differs');
         }
-        $this->validateArchive($expected, ['kernel' => $kernel, 'driver' => $identity['driver']]);
-        return $package;
+        $plan = $this->validateArchive($expected, ['kernel' => $kernel, 'driver' => $identity['driver']]);
+        return ['package' => $package, 'plan' => $plan];
     }
 
     private function cacheFile(string $temporary, string $filename, array $context, string $md5, bool $checksumVerified): array
@@ -451,7 +457,7 @@ final class Download
         } catch (\Throwable $error) { @unlink($temporary); throw $error; }
     }
 
-    private function validateArchive(string $path, array $context): void
+    private function validateArchive(string $path, array $context): array
     {
         $handle = fopen($path, 'rb');
         $magic = $handle ? fread($handle, 6) : false;
@@ -498,12 +504,21 @@ final class Download
             }
         }
         $prefix = 'lib/modules/' . $context['kernel'] . '-Unraid/kernel/drivers/video/';
-        $modules = ['nvidia', 'nvidia-modeset', 'nvidia-drm', 'nvidia-uvm', 'nvidia-vgpu-vfio'];
+        $modules = InstallContract::REQUIRED_MODULES;
+        foreach (InstallContract::OPTIONAL_MODULES as $module) {
+            if (isset($entries[$prefix . $module . '.ko'])) $modules[] = $module;
+        }
         $members = [];
         foreach ($modules as $module) {
             $member = $prefix . $module . '.ko';
             if (($entries[$member] ?? '') !== '-' || ($sizes[$member] ?? 0) < 1) throw new \RuntimeException('Required regular vGPU module is missing or empty');
             $members[$member] = $rawNames[$member];
+        }
+        $templates = [];
+        foreach (InstallContract::TEMPLATES as $member) {
+            if (!isset($entries[$member])) continue;
+            if ($entries[$member] !== '-' || $sizes[$member] > InstallContract::MAX_TEMPLATE) throw new \RuntimeException('Configuration template must be a bounded regular file');
+            $templates[$member] = $rawNames[$member];
         }
         foreach (['usr/bin/nvidia-vgpud', 'usr/bin/nvidia-vgpu-mgr', 'usr/lib64/libvgpu_unlock_rs.so',
             'usr/share/nvidia/vgpu/vgpuConfig.xml', 'usr/lib64/libcuda.so.1', 'usr/lib64/libnvcuvid.so.1',
@@ -519,16 +534,31 @@ final class Download
         $scratch = $this->temporary($this->paths->runtimeDir);
         unlink($scratch);
         if (!mkdir($scratch, 0700)) throw new \RuntimeException('Cannot create module verification directory');
+        $plan = ['modules' => [], 'templates' => []];
         try {
             $this->command(array_merge(['tar', '--extract', '--xz', '--file', $path, '--directory', $scratch,
-                '--no-same-owner', '--no-same-permissions', '--keep-old-files', '--'], array_values($members)), 180);
+                '--no-same-owner', '--no-same-permissions', '--keep-old-files', '--'], array_values($members + $templates)), 180);
             foreach (array_keys($members) as $member) {
                 $module = $scratch . '/' . $member;
+                $stat = @lstat($module);
+                if (!$stat || ($stat['mode'] & 0170000) !== 0100000 || $stat['nlink'] !== 1 || $stat['size'] < 1) throw new \RuntimeException('Extracted module is not a nonempty regular file');
+                $sha256 = hash_file('sha256', $module);
+                if ($sha256 === false) throw new \RuntimeException('Cannot hash extracted module');
                 if (trim($this->command(['modinfo', '-F', 'version', $module])) !== $context['driver']) throw new \RuntimeException('Module driver version differs from selected artifact');
                 $magic = trim($this->command(['modinfo', '-F', 'vermagic', $module]));
                 if (!str_starts_with($magic, $context['kernel'] . '-Unraid ')) throw new \RuntimeException('Module vermagic differs from running kernel');
+                $plan['modules'][$member] = ['size' => $stat['size'], 'sha256' => $sha256];
+            }
+            foreach (array_keys($templates) as $member) {
+                $template = $scratch . '/' . $member;
+                $stat = @lstat($template);
+                if (!$stat || ($stat['mode'] & 0170000) !== 0100000 || $stat['nlink'] !== 1 || $stat['size'] !== $sizes[$member] || $stat['size'] > InstallContract::MAX_TEMPLATE) throw new \RuntimeException('Extracted configuration template is invalid');
+                $contents = file_get_contents($template);
+                if ($contents === false || strlen($contents) !== $stat['size']) throw new \RuntimeException('Cannot read configuration template');
+                $plan['templates'][$member] = $contents;
             }
         } finally { $this->removeTemporaryTree($scratch); }
+        return $plan;
     }
 
     private function command(array $argv, int $timeout = 30): string

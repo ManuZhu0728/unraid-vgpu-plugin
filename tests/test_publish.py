@@ -85,7 +85,7 @@ class PublishTests(unittest.TestCase):
         configuration = source / "include/InstallConfiguration.php"
         configuration.parent.mkdir(parents=True)
         configuration.write_text("passive packaging fixture\n")
-        for name in ["unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page", "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page", "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php", "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/PackageIdentity.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]:
+        for name in ["unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page", "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page", "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php", "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/PackageIdentity.php", "include/PkgtoolsMigration.php", "include/InstallContract.php", "include/InstallTimeout.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]:
             path = source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("passive packaging fixture\n")

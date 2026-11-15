@@ -41,6 +41,7 @@ final class DownloadFixture
     public string $listUrl;
     public string $packageUrl;
     public string $md5Url;
+    public array $templates = [];
 
     public function __construct(string $provider = 'gitlab', string $mode = 'releases')
     {
@@ -165,7 +166,7 @@ final class DownloadFixture
             foreach (array_slice($argv, array_search('--', $argv, true) + 1) as $member) {
                 $file = $directory . '/' . $member;
                 if (!is_dir(dirname($file))) mkdir(dirname($file), 0700, true);
-                file_put_contents($file, 'fake module');
+                file_put_contents($file, $this->templates[ltrim($member, './')] ?? 'fake module');
             }
             return ['code' => 0, 'stdout' => '', 'stderr' => ''];
         }
@@ -320,6 +321,31 @@ try {
         $f = $fixture(); $f->listing = str_replace('-rw-r--r-- 0/0 1 2026-11-02 10:00:00 usr/lib64/libcuda.so.1',
             '-rw-r--r-- 0/0 0 2026-11-02 10:00:00 usr/lib64/libcuda.so.1', $f->listing);
         download_fails(fn() => $f->download->fetch($f->source, $f->credentials, '6.18.58'), 'compatible merged');
+    });
+    $case('Install inspection reuses one restricted extraction and keeps its plan out of receipts', function () use ($fixture): void {
+        $f = $fixture();
+        $f->listing .= '-rw-r--r-- 0/0 1 2026-11-02 10:00:00 lib/modules/6.18.58-Unraid/kernel/drivers/video/nvidia-peermem.ko' . "\n";
+        $f->templates['etc/nvidia/gridd.conf.new'] = "vendor template\n";
+        $f->listing .= '-rw-r--r-- 0/0 ' . strlen($f->templates['etc/nvidia/gridd.conf.new']) . ' 2026-11-02 10:00:00 etc/nvidia/gridd.conf.new' . "\n";
+        $f->listing .= '-rw-r--r-- 0/0 1 2026-11-02 10:00:00 install/doinst.sh' . "\n";
+        $package = $f->download->fetch($f->source, $f->credentials, '6.18.58')['package'];
+        $f->calls = [];
+        $inspection = $f->download->inspectCached($package, '6.18.58');
+        download_check($inspection['package'] === $package && !isset($package['plan']), 'Inspection plan is separate from persistent package identity');
+        download_check(count($inspection['plan']['modules']) === 6 && $inspection['plan']['templates'] === $f->templates, 'Six module records and only reviewed templates are retained');
+        foreach ($inspection['plan']['modules'] as $module) download_check($module === ['size' => strlen('fake module'), 'sha256' => hash('sha256', 'fake module')], 'Module size and digest come from the extracted file');
+        $extracts = array_values(array_filter($f->calls, fn(array $call): bool => $call['argv'][0] === 'tar' && in_array('--extract', $call['argv'], true)));
+        download_check(count($extracts) === 1 && !in_array('install/doinst.sh', $extracts[0]['argv'], true), 'Inspection extracts once and never extracts or replays a third-party doinst');
+    });
+    $case('Optional peermem and reviewed templates must be regular and bounded', function () use ($fixture): void {
+        foreach ([
+            ['lrwxrwxrwx 0/0 0 2026-11-02 10:00:00 lib/modules/6.18.58-Unraid/kernel/drivers/video/nvidia-peermem.ko -> nvidia.ko', 'vGPU module'],
+            ['lrwxrwxrwx 0/0 0 2026-11-02 10:00:00 etc/nvidia/gridd.conf.new -> gridd.conf', 'bounded regular'],
+            ['-rw-r--r-- 0/0 1048577 2026-11-02 10:00:00 etc/nvidia/gridd.conf.new', 'bounded regular'],
+        ] as [$entry, $message]) {
+            $f = $fixture(); $f->listing .= $entry . "\n";
+            download_fails(fn() => $f->download->fetch($f->source, $f->credentials, '6.18.58'), $message);
+        }
     });
     $case('TAR dot prefixes and relative library links are supported', function () use ($fixture): void {
         $f = $fixture(); $f->listing = preg_replace('/ 10:00:00 /', ' 10:00:00 ./', $f->listing);

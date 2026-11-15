@@ -18,6 +18,7 @@ final class InstallConfiguration
     private string $transactionBase = '';
     private array $package = [];
     private ?string $registeredDocker = null;
+    private ?string $stagedDocker = null;
     private $runner;
 
     public function __construct(private Paths $paths, ?callable $runner = null)
@@ -110,10 +111,16 @@ final class InstallConfiguration
         $metadata = $exists ? $this->stat($path) : ['mode' => 0644, 'uid' => $this->uid(), 'gid' => null, 'mtime' => time()];
         $temporary = tempnam(dirname($path), '.uvm-docker-');
         if ($temporary === false) throw new \RuntimeException('Cannot stage Docker runtime registration');
+        $this->stagedDocker = $temporary;
+        $completionUnknown = false;
         try {
             chmod($temporary, 0600);
             if (file_put_contents($temporary, $before) !== strlen($before)) throw new \RuntimeException('Cannot stage Docker configuration');
             $result = ($this->runner)(['nvidia-ctk', 'runtime', 'configure', '--runtime=docker', '--config=' . $temporary], 30, null);
+            if (($result['code'] ?? -1) === 124) {
+                $completionUnknown = true;
+                throw new InstallTimeout('Docker NVIDIA runtime registration timed out; completion is unknown');
+            }
             if (($result['code'] ?? -1) !== 0) throw new \RuntimeException('Docker NVIDIA runtime registration failed');
             if (is_link($temporary) || !is_file($temporary) || (lstat($temporary)['nlink'] ?? 0) !== 1) throw new \RuntimeException('Staged Docker configuration changed type');
             $updated = $this->dockerObject($this->contents($temporary));
@@ -129,9 +136,48 @@ final class InstallConfiguration
             }
             $this->metadata($temporary, $metadata);
             if (!rename($temporary, $path)) throw new \RuntimeException('Cannot publish Docker runtime registration');
+            $this->stagedDocker = null;
             $this->registeredDocker = hash_file('sha256', $path);
         } finally {
-            if (is_file($temporary) || is_link($temporary)) unlink($temporary);
+            // A timed-out child may still have the candidate open. Retain it
+            // privately rather than racing the child with recovery or cleanup.
+            if (!$completionUnknown) {
+                if (is_file($temporary) || is_link($temporary)) unlink($temporary);
+                $this->stagedDocker = null;
+            }
+        }
+    }
+
+    /** Rehydrate consumed .new members, then apply Slackware policy explicitly. */
+    public function prepareTemplates(array $templates): void
+    {
+        foreach ($templates as $member => $contents) {
+            if (!in_array($member, InstallContract::TEMPLATES, true) || !is_string($contents) || strlen($contents) > InstallContract::MAX_TEMPLATE) {
+                throw new \RuntimeException('Invalid post-install configuration template');
+            }
+            $logical = '/' . $member;
+            $path = $this->resolve($logical);
+            $relative = substr($path, strlen($this->paths->root));
+            // An administrator's pending candidate takes priority over this
+            // package's candidate, even if it is identical to the live file.
+            if (($this->records[$relative]['kind'] ?? 'absent') !== 'absent') continue;
+            $this->directory(dirname($path), 0755);
+            if (is_link($path) || (file_exists($path) && !is_file($path))) throw new \RuntimeException('New configuration template has an unexpected type');
+            $temporary = tempnam(dirname($path), '.uvm-template-');
+            if ($temporary === false) throw new \RuntimeException('Cannot stage configuration template');
+            try {
+                if (file_put_contents($temporary, $contents) !== strlen($contents) || !chmod($temporary, 0644) || !rename($temporary, $path)) {
+                    throw new \RuntimeException('Cannot publish configuration template');
+                }
+            } finally {
+                if (is_file($temporary) || is_link($temporary)) unlink($temporary);
+            }
+            $original = substr($path, 0, -4);
+            if (!file_exists($original) && !is_link($original)) {
+                if (!rename($path, $original)) throw new \RuntimeException('Cannot promote configuration default');
+            } elseif (!is_link($original) && is_file($original) && $this->contents($original) === $contents) {
+                if (!unlink($path)) throw new \RuntimeException('Cannot remove redundant configuration template');
+            }
         }
     }
 
@@ -144,17 +190,21 @@ final class InstallConfiguration
     public function fail(bool $completionUnknown = false): string
     {
         if ($completionUnknown) {
-            $this->journal('completion_unknown');
-            return 'Installer completion is unknown; configuration backup: ' . $this->transaction;
+            $status = 'completion_unknown';
+            $message = 'Installer completion is unknown; configuration backup: ' . $this->transaction;
+        } else {
+            try {
+                $this->restore(true);
+                $status = 'failed_restored';
+                $message = 'Original configurations restored; transaction: ' . $this->transaction;
+            } catch (\Throwable) {
+                $status = 'recovery_required';
+                $message = 'Configuration recovery requires attention; backup: ' . $this->transaction;
+            }
         }
-        try {
-            $this->restore(true);
-            $this->journal('failed_restored');
-            return 'Original configurations restored; transaction: ' . $this->transaction;
-        } catch (\Throwable) {
-            $this->journal('recovery_required');
-            return 'Configuration recovery requires attention; backup: ' . $this->transaction;
-        }
+        try { $this->journal($status); }
+        catch (\Throwable) { $message .= '; recovery journal could not be updated'; }
+        return $message;
     }
 
     private function snapshot(string $logical, bool $directoryAllowed = false): void
@@ -350,6 +400,7 @@ final class InstallConfiguration
     {
         if ($this->transaction === '') return;
         $data = ['status' => $status, 'updated_at' => time(), 'package' => $this->package, 'configurations' => $this->records];
+        if ($this->stagedDocker !== null) $data['staged_docker'] = $this->stagedDocker;
         (new Store($this->paths))->write($this->transaction . '/transaction.json', $data);
     }
 

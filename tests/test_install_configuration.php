@@ -45,6 +45,7 @@ final class ConfigurationFixture
         $temporary = substr($argv[4], strlen('--config='));
         configuration_check(str_starts_with($temporary, $this->root . '/') && str_contains(basename($temporary), '.uvm-docker-'), 'Staged configuration stays inside fixture root');
         if ($this->behavior === 'failure') return ['code' => 1, 'stdout' => 'SECRET IN TOOL OUTPUT', 'stderr' => 'SECRET IN ERROR'];
+        if ($this->behavior === 'timeout') return ['code' => 124, 'stdout' => '', 'stderr' => 'fixture timeout'];
         $object = json_decode(file_get_contents($temporary), false, 64, JSON_THROW_ON_ERROR);
         $object->runtimes ??= new stdClass();
         $object->runtimes->nvidia = (object)['path' => '/usr/bin/nvidia-container-runtime', 'runtimeArgs' => []];
@@ -237,6 +238,43 @@ $configurationCases['recovery refuses a newly redirected parent'] = function (Co
     symlink('/tmp/outside-config-recovery', $f->paths->path('/etc/vgpu_unlock'));
     configuration_check(str_contains($f->transaction->fail(), 'requires attention'), 'Unsafe recovery path keeps backup for manual recovery');
     configuration_check(is_file($f->transaction->path() . '/transaction.json'), 'Recovery metadata retained');
+};
+$configurationCases['explicit new-template policy promotes defaults and preserves pending candidates'] = function (ConfigurationFixture $f): void {
+    $f->write('/etc/vgpu_unlock/config.toml', 'custom');
+    $f->write('/etc/vgpu_unlock/profile_override.toml', 'same');
+    $f->write('/etc/modprobe.d/nvidia.conf', 'pending');
+    $f->write('/etc/modprobe.d/nvidia.conf.new', 'pending', 0600);
+    $f->transaction->begin(ConfigurationFixture::PACKAGE);
+    $f->transaction->restore();
+    $f->transaction->prepareTemplates([
+        'etc/nvidia/gridd.conf.new' => 'fresh',
+        'etc/vgpu_unlock/config.toml.new' => 'vendor',
+        'etc/vgpu_unlock/profile_override.toml.new' => 'same',
+        'etc/modprobe.d/nvidia.conf.new' => 'new module options',
+    ]);
+    configuration_check($f->read('/etc/nvidia/gridd.conf') === 'fresh' && !file_exists($f->paths->path('/etc/nvidia/gridd.conf.new')), 'Missing live config promotes a fresh default');
+    configuration_check($f->read('/etc/vgpu_unlock/config.toml') === 'custom' && $f->read('/etc/vgpu_unlock/config.toml.new') === 'vendor', 'Different live setting keeps the vendor candidate');
+    configuration_check(!file_exists($f->paths->path('/etc/vgpu_unlock/profile_override.toml.new')), 'Identical new template is redundant');
+    configuration_check($f->read('/etc/modprobe.d/nvidia.conf.new') === 'pending' && (fileperms($f->paths->path('/etc/modprobe.d/nvidia.conf.new')) & 0777) === 0600, 'Existing pending template retains its content and mode even if identical');
+};
+$configurationCases['template policy rejects Docker arbitrary paths and oversized candidates'] = function (ConfigurationFixture $f): void {
+    $f->transaction->begin(ConfigurationFixture::PACKAGE);
+    foreach ([['etc/docker/daemon.json.new' => '{}'], ['etc/unrelated.new' => 'value'], ['etc/nvidia/gridd.conf.new' => str_repeat('x', 1048577)]] as $templates) {
+        $f->rejects(fn() => $f->transaction->prepareTemplates($templates), 'Only small reviewed template paths can be processed');
+    }
+    configuration_check($f->calls === [] && !file_exists($f->paths->path('/etc/docker/daemon.json')), 'Template processing never registers Docker or executes a script');
+};
+$configurationCases['Docker timeout retains private candidate and does not race recovery'] = function (ConfigurationFixture $f): void {
+    $f->write('/etc/docker/daemon.json', '{"debug":true}');
+    $f->transaction->begin(ConfigurationFixture::PACKAGE);
+    $f->behavior = 'timeout';
+    try { $f->transaction->registerDocker(); configuration_check(false, 'Timeout expected'); }
+    catch (\Vgpu\InstallTimeout) { configuration_check(true, 'Timeout has an explicit unknown-completion type'); }
+    $f->transaction->fail(true);
+    $journal = json_decode(file_get_contents($f->transaction->path() . '/transaction.json'), true);
+    configuration_check($journal['status'] === 'completion_unknown' && is_file($journal['staged_docker']), 'Unknown child keeps its candidate and recovery metadata');
+    configuration_check((fileperms($journal['staged_docker']) & 0777) === 0600, 'Retained Docker candidate is private');
+    configuration_check($f->read('/etc/docker/daemon.json') === '{"debug":true}', 'The live Docker file was not replaced');
 };
 
 foreach ($configurationCases as $name => $case) {
