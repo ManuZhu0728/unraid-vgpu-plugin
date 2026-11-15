@@ -40,9 +40,9 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-Keep an explicit Add Device entry available while editing an existing vGPU device.
-Add Cancel Edit, reset editor fields safely and retain the existing UUID during editing.
-Generate UUID only in add mode without clearing the selected GPU profile.
+Separate the permanent Add Device form from read-only device details.
+Create new UUID configurations without overwriting existing devices or starting GPUs.
+Preserve failed-save drafts and refresh the authoritative list with GET after success.
 Preserve disabled states, independent POST forms, CSRF checks and confirmations.
 Keep page width, profile availability and driver startup behavior unchanged.
 Use the maintenance migration steps when replacing an existing driver plugin.
@@ -134,7 +134,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.15.4")
+    parser.add_argument("--version", default="2026.11.16.1")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

@@ -1,5 +1,36 @@
 # 本地验证记录
 
+## Alpha 12 第一阶段：独立新增与只读详情（2026-11-16）
+
+本节记录 `2026.11.16.1` / `v2026.11.16.1-alpha.12` 的本地验证和发布准备，
+不替代用户 Unraid 7.3.4 浏览器及接管验收。
+
+固定新增面板与原生只读详情分离，旧编辑模式及覆盖身份的交互已移除。
+详情以 PCI + UUID 标识各行，保存、定义和运行身份分别呈现；详情没有可提交表单。
+新增使用独立 `device-create`：插件锁内查重，不覆盖、不启动；legacy `device-save` 原行为保留。
+失败和未知结果不导航、不重建 UUID，确认创建成功才以 GET 刷新权威列表。
+
+完整硬件无关回归最终通过：Application 332 检查、UI 750 检查、Python 39 测试，
+包含新增加的 HTTP 5 项测试；日志 `/tmp/vgpu-plugin-alpha12-final-20261116.log`。
+HTTP 测试使用 localhost PHP 服务器、真实 Application/Store 和独立临时根目录，
+覆盖成功写入、相同/冲突 UUID 不覆盖、真实原子 rename 失败、输入校验、双 CSRF、Origin、
+单次多 tab dispatch 与成功后 GET 不重复保存。运行命令 runner 会拒绝任何调用。
+该测试替换 uvm_cli transport 并模拟原生网关消费 csrf_token，不声称真实 emhttp/proc_open
+端到端或 GPU 功能已经验证。命令/输出/网络均不访问 NAS。
+
+可选浏览器测试通过 10 组综合场景：永久新增草稿不受任意详情开关影响；校验失败、
+重复 UUID、异常响应、连接失败和真实 Abort 超时均保留字段与 profile 选择；请求期间
+及确认成功到 GET 导航之间的二次提交被阻止。成功导航前 fieldset setter 只记录禁用，
+没有 finally 解锁；GET 核对权威新增行、清空草稿、保留 driver_mode 和一次性成功提示。
+GET 状态失败不显示假成功。布局沿用官方 7.3.4 CSS/字体和原生 tab 外层，60 用例、
+102 次同行比较及 3 个负对照通过；不依赖 NAS，也未为测试安装新浏览器。
+
+最终候选 TXZ 为 91,992 字节，MD5 `091c197a41bdfa6393e223878db0e0d8`，SHA256
+`d2132d18227cbc0401aeb89fb76477925287884cae7c4a420374a4353723eb07`。
+与 Alpha 11 的 35 个载荷文件比较，集合、权限和所有权不变；仅 Application、CLI、
+ui-page、ui/common、ui/state、ui/vgpu 六个 PHP 文件变化。Runtime、Store、驱动与
+启动脚本未改。发布 dry-run 独立重建与候选逐字节一致，根在线 PLG 与生成结果一致。
+
 ## Alpha 11 新增／编辑设备模式切换（2026-11-15）
 
 本节记录 `2026.11.15.4` / `v2026.11.15.4-alpha.11` 的本地验证与发布准备，

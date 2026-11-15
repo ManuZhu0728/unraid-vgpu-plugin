@@ -3,7 +3,21 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
-## Alpha 11 发布范围（2026-11-15）
+## Alpha 12 第一阶段发布范围（2026-11-16）
+
+版本 `2026.11.16.1` / `v2026.11.16.1-alpha.12` 彻底拆分固定新增面板和只读设备详情。
+详情按 PCI + UUID 定位，不含编辑表单，不改变新增草稿；分别显示保存、定义和运行身份。
+`device-create` 在现有事务锁内仅新增，重复 UUID 返回明确失败，`device-save` 保持旧兼容行为。
+两者均不启动 GPU，没有增加重新配置或改变既有运行态安全门禁。
+
+新增表单以同页 fetch POST 提交双 CSRF，原生多标签页面只输出一次
+`uvm-device-create-result` JSON 标记，不执行响应 HTML 的脚本。失败和结果未知保留输入；
+只有确认创建成功才以 GET 替换页面并刷新列表，避免刷新重放 POST。
+后端、PHP/HTTP 与浏览器分别测试保存契约、网关消费 CSRF、字段保留和新列表刷新。
+
+仅第一阶段交付；重新配置、设备事务恢复及 Unraid 实机接管/系统升级另行验收。
+
+## Alpha 11 阶段记录（2026-11-15）
 
 版本 `2026.11.15.4` / `v2026.11.15.4-alpha.11` 明确区分设备新增和编辑模式。
 列表上方始终提供“添加设备”，编辑区顶部提供“取消编辑”；两者只在浏览器重置表单。
@@ -220,8 +234,12 @@ python3 scripts/build-plugin.py \
 
 命令：`status`、`logs`、`plan`、`config-save`、`source-test`、`source-versions`、`source-download`、
 `source-import`、`source-upload-begin`、`source-upload-chunk`、`source-upload-finish`、
-`source-upload-cancel`、`upgrade-check`、`device-save`、`device-start`、`device-stop`、`device-remove`、`ensure`、`boot`。
+`source-upload-cancel`、`upgrade-check`、`device-create`、`device-save`、`device-start`、`device-stop`、`device-remove`、`ensure`、`boot`。
 status/logs/plan 只读，其余加锁。
+
+`device-create` 只创建新 UUID 的配置，不触发 Runtime；重复 UUID 即使配置相同也返回
+`device_exists`，不覆盖、不重复写入。`device-save` 继续供旧客户端幂等保存，不能覆盖已有身份。
+新增表单失败时不导航、不重建 UUID；未知结果不自动重试，成功后只进行 GET 列表刷新。
 
 `logs` 接受 `category: plugin | vgpu | kernel`，返回最近 200 行匹配记录。
 页面日志通过 GET 刷新，不改变设置。
