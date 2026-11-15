@@ -1,14 +1,16 @@
 <?xml version="1.0" standalone="yes"?>
-<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.15.3" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
+<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.15.4" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
 <CHANGES>
-Fix the remaining device action button offset caused by native tab first-form padding.
+Keep an explicit Add Device entry available while editing an existing vGPU device.
+Add Cancel Edit, reset editor fields safely and retain the existing UUID during editing.
+Generate UUID only in add mode without clearing the selected GPU profile.
 Preserve disabled states, independent POST forms, CSRF checks and confirmations.
 Keep page width, profile availability and driver startup behavior unchanged.
 Use the maintenance migration steps when replacing an existing driver plugin.
 </CHANGES>
-<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.15.3-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
-<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.15.3-alpha.10/unraid-vgpu-manager-2026.11.15.3-noarch-1.txz</URL>
-<MD5>46a94091c5c63ecff66eea214d677713</MD5>
+<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.15.4-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
+<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.15.4-alpha.11/unraid-vgpu-manager-2026.11.15.4-noarch-1.txz</URL>
+<MD5>d31ba3162874fcdbd0f4eaaccd614788</MD5>
 </FILE>
 <FILE Run="/bin/bash"><INLINE><![CDATA[
 # Installation must succeed without a repository, token or NVIDIA package.

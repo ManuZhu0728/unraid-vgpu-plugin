@@ -3,7 +3,18 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
-## Alpha 10 发布范围（2026-11-15）
+## Alpha 11 发布范围（2026-11-15）
+
+版本 `2026.11.15.4` / `v2026.11.15.4-alpha.11` 明确区分设备新增和编辑模式。
+列表上方始终提供“添加设备”，编辑区顶部提供“取消编辑”；两者只在浏览器重置表单。
+编辑 UUID 使用 readonly 保留原身份且仍参与提交；新增时重置选择和 UUID。
+“生成 UUID”仅在新增模式提供，不再清空已选 GPU/profile。保存后端、安全门禁、
+profile 可用性、驱动启动逻辑和 Alpha 10 的按钮对齐规则没有变化。
+
+可选浏览器测试 `tests/test_ui_editor.cjs` 复用布局测试的依赖，执行真实模板的模式切换，
+核对 FormData/双 CSRF/独立操作表单以及零提交、零网络请求。发布不包含 NAS 部署或重启。
+
+## Alpha 10 阶段记录（2026-11-15）
 
 版本 `2026.11.15.3` / `v2026.11.15.3-alpha.10` 修复 Alpha 9 遗留的首个操作表单内边距。
 原生标签页的 `.tab-content form:first-of-type` 为每行“启动”表单添加 `1rem` 顶部内边距，

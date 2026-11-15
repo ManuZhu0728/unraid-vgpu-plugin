@@ -63,6 +63,9 @@ nvidia-595.58.03-6.18.58-Unraid-2.txz
 未启动的系统定义同样保留在列表中。只有本插件保存的设备提供编辑、启动、停止和移除操作。
 
 在“vGPU 管理”中展开“添加设备”，选择显卡和配置，并将设备 UUID 写入虚拟机 XML。
+设备列表上方也始终保留“添加设备”入口。点击某行“编辑”后，共用表单会显示该设备配置；
+可用“取消编辑”退出，或点击“添加设备”清空选择并生成新 UUID。编辑时保留原 UUID，
+“生成 UUID”只在新增模式提供，不再清空已选配置。保存仅记录配置，不会启动设备。
 UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置与 vGPU 启动设置分别保存。
 使用原插件或 User Scripts 的用户，先完成启动入口迁移，再开启“vGPU 初始化”。
 
@@ -102,7 +105,7 @@ UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置�
 
 ```bash
 bash tests/run-tests.sh
-python3 scripts/build-plugin.py --version 2026.11.15.3
+python3 scripts/build-plugin.py --version 2026.11.15.4
 ```
 
 更多内容：[开发文档](docs/DEVELOPMENT.md) · [下载源格式](docs/DRIVER-SOURCES.md) ·
