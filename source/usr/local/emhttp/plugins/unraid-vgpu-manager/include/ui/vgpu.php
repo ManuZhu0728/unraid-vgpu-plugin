@@ -22,6 +22,7 @@ if (!$uvm_inventory) {
 ?>
 <section class="uvm-panel">
   <h2>已有 vGPU 设备</h2>
+  <div class="uvm-actions" style="margin-top:0"><button type="button" id="uvm-add-device" <?=!$uvm_controls ? 'disabled' : ''?>>添加设备</button></div>
   <?php if (!$uvm_inventory_rows): ?>
   <p class="uvm-muted"><?=!empty($uvm_inventory_checks['active_known']) && !empty($uvm_inventory_checks['defined_known']) ? '未发现 vGPU 设备。' : '设备列表暂不完整。'?></p>
   <?php else: ?>
@@ -63,11 +64,13 @@ if (!$uvm_inventory) {
   <?php endif; ?>
   <?php foreach ($uvm_inventory_messages as $inventoryMessage): if (is_string($inventoryMessage) && $inventoryMessage !== ''): ?><p class="uvm-muted"><?=uvm_h($inventoryMessage)?></p><?php endif; endforeach; ?>
 
-  <details class="uvm-advanced" id="uvm-device-editor" <?=$uvm_action === 'device-save' ? 'open' : ''?>>
+  <details class="uvm-advanced" id="uvm-device-editor" data-mode="add" <?=$uvm_action === 'device-save' ? 'open' : ''?>>
     <summary id="uvm-device-editor-title">添加设备</summary>
     <form method="post" class="uvm-submit-form" id="uvm-device-form">
       <?php uvm_form_hidden('device-save', $uvm_csrf); ?>
       <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
+      <p class="uvm-muted" id="uvm-edit-device-note" hidden>编辑时保留原 UUID；已有设备的 GPU 和配置身份不能直接覆盖。添加另一台设备请点击“添加设备”。保存配置不会启动设备。</p>
+      <button type="button" id="uvm-cancel-edit" hidden>取消编辑</button>
       <div class="uvm-grid" style="margin-top:14px">
         <label class="uvm-field"><span>mdev UUID</span><input name="uuid" id="uvm-device-uuid" type="text" maxlength="36" required pattern="[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" value="<?=uvm_h($uvm_new_uuid)?>"><small>使用虚拟机 XML 中的 UUID，或生成新的 UUID。</small></label>
         <label class="uvm-field"><span>物理 GPU</span><select name="pci" id="uvm-device-pci" required><option value="">选择 GPU</option><?php foreach ($uvm_gpus as $pci => $gpu): ?><option value="<?=uvm_h($pci)?>"><?=uvm_h($pci . ' · NVIDIA ' . $gpu['device'])?></option><?php endforeach; ?></select></label>
@@ -77,7 +80,7 @@ if (!$uvm_inventory) {
       <div class="uvm-scroll"><table><thead><tr><th>选择</th><th>配置名称</th><th>类型</th><th>显存</th><th>显示头</th><th>最大分辨率</th><th>FRL</th><th>可用 / 上限</th></tr></thead><tbody id="uvm-profile-body"><tr><td colspan="8">选择 GPU 后显示可用配置。</td></tr></tbody></table></div>
       <p class="uvm-muted">可用数量由驱动报告，实际分配受物理显存限制。</p>
       <?php if (!$uvm_gpus): ?><div class="uvm-note">未发现 NVIDIA 显卡，请检查驱动。</div><?php endif; ?>
-      <div class="uvm-actions"><button type="submit">保存设备</button><button type="button" id="uvm-new-device">生成 UUID</button></div>
+      <div class="uvm-actions"><button type="submit" id="uvm-save-device">保存新设备</button><button type="button" id="uvm-new-device">生成 UUID</button></div>
       </fieldset>
     </form>
   </details>
@@ -126,6 +129,46 @@ if (!$uvm_inventory) {
   const type = document.getElementById('uvm-device-type');
   const uuid = document.getElementById('uvm-device-uuid');
   const body = document.getElementById('uvm-profile-body');
+  const addDevice = document.getElementById('uvm-add-device');
+  const generateUuid = document.getElementById('uvm-new-device');
+  const cancelEdit = document.getElementById('uvm-cancel-edit');
+  const saveDevice = document.getElementById('uvm-save-device');
+  const editNote = document.getElementById('uvm-edit-device-note');
+  const initialUuid = uuid.value;
+  function setEditorMode(editing) {
+    editor.dataset.mode = editing ? 'edit' : 'add';
+    editorTitle.textContent = editing ? '编辑设备' : '添加设备';
+    saveDevice.textContent = editing ? '保存当前配置' : '保存新设备';
+    uuid.readOnly = editing;
+    generateUuid.hidden = editing;
+    cancelEdit.hidden = !editing;
+    editNote.hidden = !editing;
+  }
+  function newUuid() {
+    if (!window.crypto || !window.crypto.getRandomValues) return null;
+    const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    const hex = Array.from(bytes, function (value) { return value.toString(16).padStart(2, '0'); }).join('');
+    return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+  }
+  function resetEditor(open) {
+    if (ui.isBusy()) return;
+    // The server-rendered UUID remains a safe add-mode fallback even when
+    // browser crypto is unavailable. Never reuse the edited device's UUID.
+    uuid.value = newUuid() || initialUuid;
+    pci.querySelectorAll('[data-uvm-editor-temporary]').forEach(function (option) { option.remove(); });
+    pci.value = '';
+    profile.value = '';
+    type.value = '';
+    setEditorMode(false);
+    renderProfiles('');
+    editor.open = open;
+    if (open) form.scrollIntoView({behavior: 'smooth', block: 'center'});
+    else addDevice.focus();
+  }
+  addDevice.addEventListener('click', function () { resetEditor(true); });
+  cancelEdit.addEventListener('click', function () { resetEditor(false); });
   function cell(row, text) {
     const node = document.createElement('td');
     node.textContent = text;
@@ -182,6 +225,7 @@ if (!$uvm_inventory) {
             const option = document.createElement('option');
             option.value = device.pci;
             option.textContent = device.pci + '（当前未发现）';
+            option.dataset.uvmEditorTemporary = '1';
             pci.appendChild(option);
           }
         }
@@ -190,27 +234,19 @@ if (!$uvm_inventory) {
         type.value = device.type;
         renderProfiles(device.profile);
         editor.open = true;
-        editorTitle.textContent = '编辑设备';
+        setEditorMode(true);
         form.scrollIntoView({behavior: 'smooth', block: 'center'});
       } catch (_) { ui.message('无法读取设备配置，请刷新后重试。', true); }
     });
   });
-  document.getElementById('uvm-new-device').addEventListener('click', function () {
-    if (ui.isBusy()) return;
-    if (!window.crypto || !window.crypto.getRandomValues) {
+  generateUuid.addEventListener('click', function () {
+    if (ui.isBusy() || editor.dataset.mode !== 'add') return;
+    const value = newUuid();
+    if (!value) {
       ui.message('浏览器无法生成 UUID，请刷新页面获取新的 UUID。', true);
       return;
     }
-    const bytes = window.crypto.getRandomValues(new Uint8Array(16));
-    bytes[6] = (bytes[6] & 15) | 64;
-    bytes[8] = (bytes[8] & 63) | 128;
-    const hex = Array.from(bytes, function (value) { return value.toString(16).padStart(2, '0'); }).join('');
-    uuid.value = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
-    pci.value = '';
-    profile.value = '';
-    type.value = '';
-    editorTitle.textContent = '添加设备';
-    renderProfiles('');
+    uuid.value = value;
   });
   root.querySelectorAll('.uvm-copy-xml').forEach(function (button) {
     button.addEventListener('click', async function () {

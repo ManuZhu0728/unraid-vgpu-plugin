@@ -202,6 +202,12 @@ ui_check(str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="runtime_enabled"')
 ui_check(!str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="source_url"') && !str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="credential_token"'), 'vGPU tab must not render source credentials or download settings');
 ui_check(!str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="driver_enabled"') && !str_contains(ui_panel($vgpuRendered, 'vgpu'), 'name="upgrade_enabled"'), 'vGPU initialization must not own either driver lifecycle switch');
 ui_check(preg_match('/<details[^>]*id="uvm-device-editor"[^>]*>\s*<summary[^>]*>添加设备/u', ui_panel($vgpuRendered, 'vgpu'), $editor) === 1 && preg_match('/\bopen\b/', $editor[0]) !== 1, 'Add device editor must start collapsed');
+$vgpuPanel = ui_panel($vgpuRendered, 'vgpu');
+ui_check(strpos($vgpuPanel, 'id="uvm-add-device"') < strpos($vgpuPanel, 'id="uvm-device-editor"'), 'The persistent add-device entry must remain outside the shared editor');
+ui_check(preg_match('/<button type="button" id="uvm-add-device"[^>]*>添加设备<\/button>/', $vgpuPanel) === 1, 'Entering add mode must be an explicit local-only button, never a submit');
+ui_check(preg_match('/<button type="button" id="uvm-cancel-edit" hidden>取消编辑<\/button>/', $vgpuPanel) === 1, 'Editing must have a local cancel button, initially hidden');
+ui_check(str_contains($vgpuPanel, 'id="uvm-save-device">保存新设备</button>'), 'The initial save button must clearly identify a new device');
+ui_check(str_contains($vgpuPanel, 'id="uvm-edit-device-note" hidden') && str_contains($vgpuPanel, '保存配置不会启动设备'), 'Edit mode must retain a configuration-only explanation');
 $statusRendered = ui_render($base + ['tab' => 'status']);
 ui_check(ui_actions($statusRendered) === ['status', 'logs'], 'Status tab GET must only read local status and whitelisted logs');
 ui_check(!str_contains(ui_panel($statusRendered, 'status'), 'name="runtime_enabled"') && !str_contains(ui_panel($statusRendered, 'status'), 'name="source_url"'), 'Status tab must not render settings forms');
