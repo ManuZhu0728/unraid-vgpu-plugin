@@ -1,5 +1,42 @@
 # 本地验证记录
 
+## Alpha 10 原生标签页首表单内边距修正（2026-11-15）
+
+本节记录 `2026.11.15.3` / `v2026.11.15.3-alpha.10` 的本地验证与发布准备，
+不作为线上发布或 NAS 实机验收证明；线上发布结果以 GitHub Releases 为准。
+
+最终候选 TXZ 为 90,684 字节，MD5 `46a94091c5c63ecff66eea214d677713`，SHA256
+`9de5b5871a350899b1078d8d738b2f5a0d628188df92b2320dbfe4956256eae2`。
+与 Alpha 9 的 35 个载荷文件逐项对照，只有 `include/ui-page.php` 的内容变化。
+发布 dry-run 独立重建与候选逐字节一致，根在线 PLG 与生成结果一致。
+本次完整回归日志为 `/tmp/vgpu-plugin-alpha10-regression-20261115.log`。
+
+用户更新 Alpha 9 后截图仍显示启动按钮偏低。重新检查官方 WebGUI 7.3.4 发现：
+`default-base.css` 的 `.tab-content form:first-of-type` 给首个表单设置 `padding-top:1rem`，
+原生 `MainContentTabbed.php` 为外层 section 设置 `tab-content content` 类。
+设备操作行中“启动”是第一个 form（“编辑”是直接 button），因此独有顶部内边距。
+在居中 flex 布局下，默认 10px 根字号产生 5px 按钮偏移；16px 根字号产生 8px 偏移。
+将启动按钮改为 enabled 后偏移不变，证明 disabled 并非原因。
+
+Alpha 9 测试遗漏了原生 tab 类名；此外，仅在 itemTop 相等时互比按钮，导致整个 form
+发生位移时也会漏检。后文 Alpha 9 的通过记录仅描述当时不完整的夹具，不能证明实机修复。
+
+本次用 `.uvm-wrap .uvm-actions > form` 局部清零 padding，保留 Alpha 9 的 flex 和零 margin。
+该选择器与宿主规则的 specificity 同为 `(0,2,1)`，后置插件样式可以覆盖宿主；
+低 specificity 的 `.uvm-actions form {padding:0}` 已作为对照证实不能覆盖。
+未使用 `!important`，也未修改禁用条件、POST、CSRF、确认提示、页面宽度或启动流程。
+
+测试夹具补上原生外层类名及选中标签的可见状态。布局测试按水平方向回退识别合法换行，
+直接比较同行按钮的 top/bottom，不按已经偏移的 top 分组；默认字号的宽视口另要求四按钮单排。
+60 个主题/字号/视口/设备状态用例、102 次同行比较通过。
+恢复 Alpha 9 样式稳定产生 5px 偏移，启用首按钮仍偏移；整 form 平移 6px 的负对照
+同样会被新的同行断言拒绝。完整硬件无关回归通过，包含 UI 691 检查和 Python 34 测试，
+日志为 `/tmp/vgpu-plugin-native-tab-padding-regression-20261115.log`。
+
+离线截图在 `work/native-tab-padding-evidence/`：`alpha9-native-tab-before.png` 与
+`native-tab-padding-fixed.png`。这些是官方 CSS 和原生外层结构下的本地浏览器证据，
+不是 NAS 截图。发布不包含在 Unraid 部署本次修正或执行 GPU/服务/重启操作。
+
 ## Alpha 9 按钮布局与发布预检（2026-11-15）
 
 候选 `2026.11.15.2` / `v2026.11.15.2-alpha.9` 的 TXZ 为 90,668 字节，MD5
