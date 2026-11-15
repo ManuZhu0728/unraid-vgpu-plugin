@@ -62,6 +62,7 @@ nvidia-595.58.03-6.18.58-Unraid-2.txz
 表格直接显示 UUID、type、配置名称、显存、PCI、状态与来源；旧脚本创建的设备也能查看。
 未启动的系统定义同样保留在列表中。“详情”分别显示插件保存、系统定义和当前运行身份，
 完全只读，不会改变新增表单，也不会接管外部运行时。只有本插件保存的设备提供启动、停止和移除。
+详情和 VM XML 在列表下方的独立区域展开，关闭后返回对应按钮；窄屏时仅设备表格局部横向滚动。
 
 “添加设备”是独立的固定面板，选择显卡和配置，使用新 UUID 或填写虚拟机 XML 中的 UUID。
 “生成 UUID”仅更新 UUID，不清空已选配置。保存只新增插件中尚未配置的 UUID；已存在的 UUID
@@ -107,7 +108,7 @@ UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置�
 
 ```bash
 bash tests/run-tests.sh
-python3 scripts/build-plugin.py --version 2026.11.16.1
+python3 scripts/build-plugin.py --version 2026.11.16.2
 ```
 
 更多内容：[开发文档](docs/DEVELOPMENT.md) · [下载源格式](docs/DRIVER-SOURCES.md) ·
