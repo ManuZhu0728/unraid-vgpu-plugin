@@ -119,10 +119,18 @@ async function actions(page) {
         assert.equal(await page.locator('#uvm-profile-body input[value="nvidia-762"]').isDisabled(), true);
         await page.locator('#uvm-profile-body input[value="nvidia-760"]').check();
         const selected = await draft(page);
-        for (const details of await page.locator('.uvm-device-details').all()) {
-            await details.locator(':scope > summary').click();
+        for (const control of await page.locator('.uvm-readonly-toggle').all()) {
+            const panelId = await control.getAttribute('aria-controls');
+            const panel = page.locator('#' + panelId);
+            await control.click();
+            assert.equal(await control.getAttribute('aria-expanded'), 'true');
+            assert.equal(await panel.isVisible(), true);
+            assert.equal(await panel.evaluate(node => node === document.activeElement), true);
             assert.deepEqual(await draft(page), selected, 'Opening details must not touch the independent create draft');
-            await details.locator(':scope > summary').click();
+            await panel.locator('.uvm-close-readonly').click();
+            assert.equal(await panel.isHidden(), true);
+            assert.equal(await control.getAttribute('aria-expanded'), 'false');
+            assert.equal(await control.evaluate(node => node === document.activeElement), true);
         }
         assert.equal(new Set(await page.locator('.uvm-device-details').evaluateAll(nodes => nodes.map(node => node.dataset.deviceKey))).size, 3);
         const detailText = await page.locator('.uvm-device-details').first().textContent();
@@ -138,6 +146,22 @@ async function actions(page) {
         assert.match(await page.locator('#uvm-device-create-message').textContent(), /当前 UUID 已保留/);
         await page.evaluate(() => { Object.defineProperty(window, 'crypto', { configurable: true, value: window.__nativeCrypto }); delete window.__nativeCrypto; });
         assert.equal(requests.filter(request => request.method === 'POST').length, 0);
+        ++scenarios;
+
+        const xmlControl = page.locator('.uvm-toggle-xml').first();
+        await xmlControl.click();
+        const xmlPanel = page.locator('#' + await xmlControl.getAttribute('aria-controls'));
+        const xmlText = await xmlPanel.locator('.uvm-vm-xml').textContent();
+        await page.evaluate(() => {
+            Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.__copiedXml = text; } } });
+        });
+        await xmlPanel.locator('.uvm-copy-xml').click();
+        assert.equal(await page.evaluate(() => window.__copiedXml), xmlText, 'Copy XML must preserve the complete read-only snippet');
+        assert.ok(xmlText.includes(devices[0].uuid) && xmlText.includes('<hostdev') && xmlText.includes('</hostdev>'));
+        assert.deepEqual(await draft(page), generated);
+        assert.equal(requests.filter(request => request.method === 'POST').length, 0, 'Copy XML must not submit a device action');
+        await xmlPanel.locator('.uvm-close-readonly').click();
+        await page.evaluate(() => { delete navigator.clipboard; delete window.__copiedXml; });
         ++scenarios;
 
         await page.locator('#uvm-device-pci').selectOption(devices[1].pci);
@@ -173,12 +197,13 @@ async function actions(page) {
         assert.equal(await page.locator('#uvm-device-fields').evaluate(fields => fields.disabled), true);
         await page.locator('#uvm-device-form').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
         await page.locator('#uvm-new-device').evaluate(button => button.click());
-        await page.locator('.uvm-device-details').first().locator(':scope > summary').click();
+        const busyControl = page.locator('.uvm-toggle-details').first();
+        await busyControl.click();
         assert.deepEqual(await draft(page), preserved);
         assert.equal(requests.length, beforePending + 1, 'Busy double-submit must not produce a second request');
         await releasePending();
         await page.waitForFunction(() => !window.uvmUI.isBusy());
-        await page.locator('.uvm-device-details').first().locator(':scope > summary').click();
+        await page.locator('#' + await busyControl.getAttribute('aria-controls')).locator('.uvm-close-readonly').click();
         assert.deepEqual(await actions(page), baselineActions);
         ++scenarios;
 

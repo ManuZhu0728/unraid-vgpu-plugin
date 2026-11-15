@@ -6,6 +6,7 @@ $uvm_inventory = is_array($uvm_status['device_inventory'] ?? null) ? $uvm_status
 $uvm_inventory_rows = is_array($uvm_inventory['devices'] ?? null) ? $uvm_inventory['devices'] : [];
 $uvm_inventory_checks = is_array($uvm_inventory['checks'] ?? null) ? $uvm_inventory['checks'] : ['active_known' => $uvm_mdevs_known, 'defined_known' => false];
 $uvm_inventory_messages = is_array($uvm_inventory['messages'] ?? null) ? $uvm_inventory['messages'] : [];
+$uvm_readonly_panels = [];
 // Older backend responses still expose saved configurations; keep their controls usable.
 if (!$uvm_inventory) {
     foreach ($uvm_devices as $device) {
@@ -25,7 +26,7 @@ if (!$uvm_inventory) {
   <?php if (!$uvm_inventory_rows): ?>
   <p class="uvm-muted"><?=!empty($uvm_inventory_checks['active_known']) && !empty($uvm_inventory_checks['defined_known']) ? '未发现 vGPU 设备。' : '设备列表暂不完整。'?></p>
   <?php else: ?>
-  <div class="uvm-scroll"><table id="uvm-inventory-table"><thead><tr><th>UUID / VM XML</th><th>type</th><th>配置名称 / 显存</th><th>物理 GPU / PCI</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody>
+  <div class="uvm-scroll"><table id="uvm-inventory-table"><colgroup><col style="width:22%"><col style="width:7%"><col style="width:14%"><col style="width:10%"><col style="width:10%"><col style="width:5%"><col style="width:32%"></colgroup><thead><tr><th>UUID / VM XML</th><th>type</th><th>配置名称 / 显存</th><th>物理 GPU / PCI</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody>
   <?php foreach ($uvm_inventory_rows as $device):
     if (!is_array($device)) continue;
     $uuid = (string)($device['uuid'] ?? '');
@@ -43,25 +44,18 @@ if (!$uvm_inventory) {
     $activeTypeLabel = $active === true ? (($device['active_type'] ?? '') ?: '未知') : ($active === false ? '未创建' : '未知');
     $definedTypeLabel = $defined === true ? (($device['defined_type'] ?? '') ?: '未知') : ($defined === false ? '无' : '未知');
     $xml = "<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci' display='off' ramfb='off'>\n  <source>\n    <address uuid='" . $uuid . "'/>\n  </source>\n</hostdev>";
+    $panelId = 'uvm-device-' . hash('sha256', $pci . '|' . $uuid);
+    $uvm_readonly_panels[] = compact('panelId', 'pci', 'uuid', 'validUuid', 'configuration', 'managed', 'defined', 'active', 'definedTypeLabel', 'activeTypeLabel', 'statusLabel', 'identityDiffers', 'xml') + ['definition_start' => $device['definition_start'] ?? ''];
   ?>
     <tr data-uuid="<?=uvm_h($uuid)?>" data-pci="<?=uvm_h($pci)?>" data-device-source="<?=$managed ? 'plugin' : 'system'?>">
-      <td><code><?=uvm_h($uuid)?></code><?php if ($validUuid): ?><details><summary>VM XML</summary><pre class="uvm-vm-xml"><?=uvm_h($xml)?></pre><button type="button" class="uvm-copy-xml">复制 XML</button></details><?php endif; ?></td>
+      <td><code><?=uvm_h($uuid)?></code><?php if ($validUuid): ?><br><button type="button" class="uvm-toggle-xml uvm-readonly-toggle" id="<?=uvm_h($panelId)?>-xml-control" data-device-key="<?=uvm_h($pci . '|' . $uuid)?>" aria-controls="<?=uvm_h($panelId)?>-xml" aria-expanded="false">VM XML</button><?php endif; ?></td>
       <td><code><?=uvm_h(($device['type'] ?? '') ?: '未知')?></code><?php if ($identityDiffers): ?><details><summary>配置差异</summary><p>当前设备：<code><?=uvm_h($activeTypeLabel)?></code><br>系统定义：<code><?=uvm_h($definedTypeLabel)?></code><br>插件保存：<code><?=uvm_h(($device['configured_type'] ?? '') ?: '无')?></code><?php if ($configuration !== null): ?><br>插件配置：<?=uvm_h($configuration['profile'] ?? '')?><?php endif; ?></p></details><?php endif; ?></td>
       <td><?=uvm_h(($device['profile'] ?? '') ?: '未知')?><?php if (($device['framebuffer'] ?? '') !== ''): ?><br><span class="uvm-muted"><?=uvm_h($device['framebuffer'])?></span><?php endif; ?></td>
       <td><code><?=uvm_h($pci)?></code><?php if (($device['iommu_group'] ?? null) !== null): ?><br><span class="uvm-muted">IOMMU <?=uvm_h($device['iommu_group'])?></span><?php endif; ?></td>
       <td><?=$statusLabel?><?php if ($defined === true): ?><br><span class="uvm-muted">系统定义 · <?=($device['definition_start'] ?? '') === 'auto' ? '自动启动' : (($device['definition_start'] ?? '') === 'manual' ? '手动启动' : '启动方式未知')?></span><?php elseif ($defined === null): ?><br><span class="uvm-muted">系统定义未知</span><?php endif; ?></td>
       <td><?=$managed ? '插件配置' : '系统设备'?></td>
       <td><div class="uvm-actions" style="margin-top:0">
-        <details class="uvm-device-details" data-device-key="<?=uvm_h($pci . '|' . $uuid)?>"><summary>详情</summary>
-          <div class="uvm-device-detail-content">
-            <p>UUID：<code><?=uvm_h($uuid)?></code><br>来源：<?=$managed ? '插件配置' : '系统设备'?></p>
-            <p>插件保存：<?php if ($configuration !== null): ?><code><?=uvm_h($configuration['pci'] ?? '')?></code> · <?=uvm_h($configuration['profile'] ?? '')?> · <code><?=uvm_h(($configuration['type'] ?? '') ?: '未记录')?></code><?php else: ?>未保存<?php endif; ?></p>
-            <p>系统定义：<code><?=uvm_h($definedTypeLabel)?></code><?php if ($defined === true): ?> · <code><?=uvm_h($pci)?></code> · <?=($device['definition_start'] ?? '') === 'auto' ? '自动启动' : (($device['definition_start'] ?? '') === 'manual' ? '手动启动' : '启动方式未知')?><?php endif; ?></p>
-            <p>当前运行：<?=$statusLabel?> · <code><?=uvm_h($activeTypeLabel)?></code><?php if ($active === true): ?> · <code><?=uvm_h($pci)?></code><?php endif; ?></p>
-            <p class="uvm-muted"><?=$identityDiffers ? '保存、定义或运行身份存在差异；查看详情不会修改或修复设备。' : '此处仅供查看，不会保存、启动或重新配置设备。'?></p>
-            <?php if ($validUuid): ?><p>VM XML</p><pre class="uvm-detail-xml"><?=uvm_h($xml)?></pre><?php endif; ?>
-          </div>
-        </details>
+        <button type="button" class="uvm-toggle-details uvm-readonly-toggle" id="<?=uvm_h($panelId)?>-details-control" data-device-key="<?=uvm_h($pci . '|' . $uuid)?>" aria-controls="<?=uvm_h($panelId)?>-details" aria-expanded="false">详情</button>
         <?php if ($managed): ?>
         <?php foreach (['device-start' => '启动', 'device-stop' => '停止', 'device-remove' => '移除'] as $action => $label): ?>
         <form method="post" class="uvm-submit-form" <?=in_array($action, ['device-stop', 'device-remove'], true) ? 'data-confirm="请确认使用此设备的虚拟机已关闭。继续？"' : ''?>><?php uvm_form_hidden($action, $uvm_csrf, ['uuid' => $uuid]); ?><button type="submit" <?=!$uvm_controls || !$validUuid || $active === null || ($action === 'device-start' && ($active === true || empty($uvm_runtime_settings['enabled']))) || ($action === 'device-stop' && $active !== true) ? 'disabled' : ''?>><?=uvm_h($label)?></button></form>
@@ -71,16 +65,36 @@ if (!$uvm_inventory) {
     </tr>
   <?php endforeach; ?>
   </tbody></table></div>
+  <?php foreach ($uvm_readonly_panels as $panel): ?>
+  <section class="uvm-readonly-panel uvm-device-details" id="<?=uvm_h($panel['panelId'])?>-details" data-device-key="<?=uvm_h($panel['pci'] . '|' . $panel['uuid'])?>" aria-labelledby="<?=uvm_h($panel['panelId'])?>-details-title" tabindex="-1" hidden>
+    <h3 id="<?=uvm_h($panel['panelId'])?>-details-title">设备详情：<?=uvm_h($panel['pci'])?> · <?=uvm_h($panel['uuid'])?></h3>
+    <button type="button" class="uvm-close-readonly" data-readonly-control="<?=uvm_h($panel['panelId'])?>-details-control">关闭详情</button>
+    <p>UUID：<code><?=uvm_h($panel['uuid'])?></code><br>物理 GPU / PCI：<code><?=uvm_h($panel['pci'])?></code><br>来源：<?=$panel['managed'] ? '插件配置' : '系统设备'?></p>
+    <p>插件保存：<?php if ($panel['configuration'] !== null): ?><code><?=uvm_h($panel['configuration']['pci'] ?? '')?></code> · <?=uvm_h($panel['configuration']['profile'] ?? '')?> · <code><?=uvm_h(($panel['configuration']['type'] ?? '') ?: '未记录')?></code><?php else: ?>未保存<?php endif; ?></p>
+    <p>系统定义：<code><?=uvm_h($panel['definedTypeLabel'])?></code><?php if ($panel['defined'] === true): ?> · <code><?=uvm_h($panel['pci'])?></code> · <?=$panel['definition_start'] === 'auto' ? '自动启动' : ($panel['definition_start'] === 'manual' ? '手动启动' : '启动方式未知')?><?php endif; ?></p>
+    <p>当前运行：<?=$panel['statusLabel']?> · <code><?=uvm_h($panel['activeTypeLabel'])?></code><?php if ($panel['active'] === true): ?> · <code><?=uvm_h($panel['pci'])?></code><?php endif; ?></p>
+    <p class="uvm-muted"><?=$panel['identityDiffers'] ? '保存、定义或运行身份存在差异；查看详情不会修改或修复设备。' : '此处仅供查看，不会保存、启动或重新配置设备。'?></p>
+    <?php if ($panel['validUuid']): ?><p>VM XML</p><pre class="uvm-detail-xml"><?=uvm_h($panel['xml'])?></pre><?php endif; ?>
+  </section>
+  <?php if ($panel['validUuid']): ?>
+  <section class="uvm-readonly-panel uvm-device-xml" id="<?=uvm_h($panel['panelId'])?>-xml" data-device-key="<?=uvm_h($panel['pci'] . '|' . $panel['uuid'])?>" aria-labelledby="<?=uvm_h($panel['panelId'])?>-xml-title" tabindex="-1" hidden>
+    <h3 id="<?=uvm_h($panel['panelId'])?>-xml-title">VM XML：<?=uvm_h($panel['pci'])?> · <?=uvm_h($panel['uuid'])?></h3>
+    <button type="button" class="uvm-close-readonly" data-readonly-control="<?=uvm_h($panel['panelId'])?>-xml-control">关闭 VM XML</button>
+    <pre class="uvm-vm-xml"><?=uvm_h($panel['xml'])?></pre><button type="button" class="uvm-copy-xml">复制 XML</button>
+  </section>
+  <?php endif; ?>
+  <?php endforeach; ?>
   <?php endif; ?>
   <?php foreach ($uvm_inventory_messages as $inventoryMessage): if (is_string($inventoryMessage) && $inventoryMessage !== ''): ?><p class="uvm-muted"><?=uvm_h($inventoryMessage)?></p><?php endif; endforeach; ?>
 
 </section>
 
 <style>
-.uvm-device-details > summary { box-sizing: border-box; min-width: 86px; padding: 8px; border: var(--button-border); border-radius: 4px; color: var(--button-text-color); background: var(--button-background); background-size: var(--button-background-size); font-family: clear-sans, sans-serif; font-size: 1.1rem; font-weight: bold; letter-spacing: 1.8px; line-height: normal; text-align: center; list-style: none; }
-.uvm-device-details > summary::-webkit-details-marker { display: none; }
-.uvm-device-detail-content { max-width: 380px; min-width: 220px; }
-.uvm-actions:has(> .uvm-device-details[open]) { align-items: flex-start; }
+#uvm-inventory-table { table-layout: fixed; min-width: 1220px; }
+#uvm-inventory-table th, #uvm-inventory-table td { overflow-wrap: anywhere; }
+.uvm-readonly-panel { min-width: 0; max-width: 100%; margin-top: 14px; padding-top: 12px; border-top: 1px solid #8884; overflow-wrap: anywhere; }
+.uvm-readonly-panel pre { max-width: 100%; box-sizing: border-box; }
+#uvm-profile-body td { overflow-wrap: anywhere; }
 </style>
 
 <section class="uvm-panel" id="uvm-device-create">
@@ -138,6 +152,25 @@ if (!$uvm_inventory) {
   function overrideOptions() { override.disabled = !replaceOverride.checked; }
   replaceOverride.addEventListener('change', overrideOptions);
   overrideOptions();
+
+  function showReadonly(control, open) {
+    const panel = document.getElementById(control.getAttribute('aria-controls'));
+    if (!panel || !root.contains(panel)) return;
+    panel.hidden = !open;
+    control.setAttribute('aria-expanded', String(open));
+    const target = open ? panel : control;
+    target.focus({preventScroll: true});
+    target.scrollIntoView({block: 'nearest'});
+  }
+  root.querySelectorAll('.uvm-readonly-toggle').forEach(function (control) {
+    control.addEventListener('click', function () { showReadonly(control, control.getAttribute('aria-expanded') !== 'true'); });
+  });
+  root.querySelectorAll('.uvm-close-readonly').forEach(function (button) {
+    button.addEventListener('click', function () {
+      const control = document.getElementById(button.dataset.readonlyControl);
+      if (control) showReadonly(control, false);
+    });
+  });
 
   const form = document.getElementById('uvm-device-form');
   const pci = document.getElementById('uvm-device-pci');

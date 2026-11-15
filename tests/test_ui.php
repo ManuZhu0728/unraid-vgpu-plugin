@@ -127,6 +127,25 @@ function ui_inventory_row(string $table, string $uuid, string $pci): string
     return $row[0];
 }
 
+function ui_readonly_panel(array $rendered, string $row, string $kind, string $uuid, string $pci): array
+{
+    $pattern = '~<button\b(?=[^>]*\bclass="[^"]*\buvm-toggle-' . preg_quote($kind, '~') . '\b)[^>]*>.*?</button>~s';
+    ui_check(preg_match($pattern, $row, $toggle) === 1, 'Each inventory identity must expose its own ' . $kind . ' toggle');
+    ui_check(str_contains($toggle[0], 'type="button"') && str_contains($toggle[0], 'aria-expanded="false"'), 'Read-only toggles must start collapsed and never submit a form');
+    ui_check(str_contains($toggle[0], 'data-device-key="' . htmlspecialchars($pci . '|' . $uuid, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"'), 'Read-only toggles must target the exact PCI/UUID pair');
+    ui_check(preg_match('/\baria-controls="([A-Za-z0-9_-]+)"/', $toggle[0], $target) === 1, 'Every read-only toggle must declare a safe unique target ID');
+    $pattern = '~<section\b(?=[^>]*\bid="' . preg_quote($target[1], '~') . '")[^>]*>.*?</section>~s';
+    ui_check(preg_match($pattern, ui_panel($rendered, 'vgpu'), $panel) === 1, 'Each read-only toggle must resolve to an actual panel');
+    ui_check(!str_contains(ui_inventory_table($rendered), 'id="' . $target[1] . '"'), 'Expanded content must be outside inventory table column sizing');
+    ui_check(str_contains($panel[0], 'uvm-readonly-panel') && preg_match('/\bhidden(?:\s|>)/', $panel[0]) === 1 && str_contains($panel[0], 'tabindex="-1"'), 'Read-only panels must start hidden and provide a programmatic focus destination');
+    ui_check(str_contains($panel[0], 'data-device-key="' . htmlspecialchars($pci . '|' . $uuid, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"'), 'Panel identity must match the exact toggle identity');
+    ui_check(preg_match('/\baria-labelledby="([A-Za-z0-9_-]+)"/', $panel[0], $label) === 1 && str_contains($panel[0], 'id="' . $label[1] . '"'), 'Each panel must be labelled by its own visible heading');
+    ui_check(!preg_match('/<(?:form|input|select|textarea)\b/i', $panel[0]) && !str_contains($panel[0], 'type="submit"'), 'Read-only content must contain no writable field or mutation form');
+    ui_check(str_contains($panel[0], 'uvm-close-readonly'), 'Each panel must provide a non-mutating close control');
+    ui_check(preg_match('/\bid="([A-Za-z0-9_-]+)"/', $toggle[0], $control) === 1 && str_contains($panel[0], 'data-readonly-control="' . $control[1] . '"'), 'Closing each panel must return to its own disclosure control');
+    return ['id' => $target[1], 'html' => $panel[0], 'toggle' => $toggle[0]];
+}
+
 $defaults = Store::defaults();
 $status = [
     'settings' => $defaults, 'devices' => [], 'credential_configured' => false,
@@ -390,7 +409,11 @@ foreach ([$deviceInput['uuid'], $deviceInput['pci'], 'nvidia-762', 'NVIDIA RTXA5
 ui_check(str_contains($row, 'data-device-source="system"') && str_contains($row, '系统设备'), 'External devices must be identified as system devices rather than plugin-owned');
 ui_check(str_contains($row, '手动启动') && str_contains($row, 'IOMMU 27'), 'Device details must expose the retained definition mode and IOMMU group');
 ui_check(!str_contains($row, '<form') && !str_contains($row, 'uvm-edit-device'), 'External devices must not get edit/start/stop/remove mutation controls');
-ui_check(str_contains($row, '复制 XML'), 'An external valid UUID must still provide its VM XML for viewing/copying');
+$externalDetail = ui_readonly_panel($rendered, $row, 'details', $deviceInput['uuid'], $deviceInput['pci']);
+$externalXml = ui_readonly_panel($rendered, $row, 'xml', $deviceInput['uuid'], $deviceInput['pci']);
+ui_check($externalDetail['id'] !== $externalXml['id'], 'Details and VM XML for one device must use separate disclosure targets');
+ui_check(str_contains($externalXml['html'], '复制 XML') && str_contains($externalXml['html'], '&lt;hostdev') && str_contains($externalXml['html'], $deviceInput['uuid']), 'An external valid UUID must retain its escaped VM XML and copy control outside the table');
+ui_check(!str_contains($table, '<pre'), 'Inventory cells must not hold the expandable XML body');
 $inventoryPanel = ui_panel($rendered, 'vgpu');
 ui_check(strpos($inventoryPanel, '已有 vGPU 设备') < strpos($inventoryPanel, '开机管理'), 'Existing devices must be visible before boot configuration');
 
@@ -424,9 +447,20 @@ ui_check(!str_contains($row, '<form') && !str_contains($row, 'uvm-edit-device'),
 $otherParent = array_replace($externalDefined, ['uuid' => $deviceInput['uuid'], 'pci' => '0000:02:00.0']);
 $rendered = ui_render(ui_inventory_fixture($base, [$externalActive, $otherParent]));
 $table = ui_inventory_table($rendered);
-ui_inventory_row($table, $deviceInput['uuid'], $deviceInput['pci']);
-ui_inventory_row($table, $deviceInput['uuid'], $otherParent['pci']);
+$firstParentRow = ui_inventory_row($table, $deviceInput['uuid'], $deviceInput['pci']);
+$secondParentRow = ui_inventory_row($table, $deviceInput['uuid'], $otherParent['pci']);
 ui_check(substr_count($table, 'data-uuid="' . $deviceInput['uuid'] . '"') === 2, 'The same UUID under two parents must not be silently collapsed into one inventory row');
+$parentTargets = [];
+foreach ([$deviceInput['pci'] => $firstParentRow, $otherParent['pci'] => $secondParentRow] as $parentPci => $parentRow) {
+    foreach (['details', 'xml'] as $kind) {
+        $parentPanel = ui_readonly_panel($rendered, $parentRow, $kind, $deviceInput['uuid'], $parentPci);
+        $parentTargets[] = $parentPanel['id'];
+        ui_check(str_contains($parentPanel['html'], $parentPci) && str_contains($parentPanel['html'], $deviceInput['uuid']), 'Read-only panels must visibly identify their own PCI and UUID');
+    }
+}
+ui_check(count(array_unique($parentTargets)) === 4, 'Same-UUID devices under different parents and disclosure kinds must not share targets');
+preg_match_all('/\bid="([^"]+)"/', $rendered['html'], $pairIds);
+ui_check(count($pairIds[1]) === count(array_unique($pairIds[1])), 'All disclosure controls, headings and panels must have unique IDs across native tabs');
 
 $managedRow = array_replace($externalActive, [
     'type' => 'nvidia-999', 'active_type' => 'nvidia-999', 'defined_type' => 'nvidia-999',
@@ -438,11 +472,11 @@ $rendered = ui_render($managedFixture);
 $row = ui_inventory_row(ui_inventory_table($rendered), $managedRow['uuid'], $managedRow['pci']);
 ui_check(str_contains($row, 'nvidia-999') && str_contains($row, 'nvidia-762'), 'Inventory must expose actual and configured identities when their types differ');
 ui_check(str_contains($row, 'data-device-source="plugin"') && str_contains($row, '插件配置'), 'Plugin-saved rows must retain their managed source label');
-ui_check(preg_match('~<details class="uvm-device-details"[^>]*>(.*?)</details>~s', $row, $readOnlyDetail) === 1, 'Managed rows must offer independent read-only details');
+$readOnlyDetail = ui_readonly_panel($rendered, $row, 'details', $managedRow['uuid'], $managedRow['pci']);
 foreach (['插件保存', '系统定义', '当前运行', $deviceInput['profile'], 'nvidia-762', 'nvidia-999'] as $value) {
-    ui_check(str_contains($readOnlyDetail[1], $value), 'Details must distinguish stored, defined and actual identity: ' . $value);
+    ui_check(str_contains($readOnlyDetail['html'], $value), 'Details must distinguish stored, defined and actual identity: ' . $value);
 }
-ui_check(!preg_match('/<(?:form|input|select|textarea|button)\b/i', $readOnlyDetail[1]), 'Device details must contain no writable form or save action');
+ui_check(!str_contains($row, 'uvm-device-detail-content'), 'Action columns must not contain the expanded detail body');
 ui_check(str_contains($row, 'data-device-key="' . $deviceInput['pci'] . '|' . $deviceInput['uuid'] . '"'), 'Details must identify the exact PCI/UUID pair');
 ui_check(!str_contains($row, 'data-device=') && !str_contains($row, 'uvm-edit-device'), 'Details must not export an editable draft or switch the create form');
 foreach (['device-start', 'device-stop', 'device-remove'] as $action) ui_check(str_contains($row, 'value="' . $action . '"'), 'Managed rows must retain the existing ' . $action . ' action');
@@ -470,6 +504,13 @@ $rendered = ui_render(ui_inventory_fixture($base, [], ['active_known' => false, 
 ui_check(str_contains(ui_panel($rendered, 'vgpu'), '设备列表暂不完整') && !str_contains(ui_panel($rendered, 'vgpu'), '未发现 vGPU 设备'), 'An unreadable empty inventory must not claim that the host has no vGPU devices');
 $rendered = ui_render(ui_inventory_fixture($base, []));
 ui_check(str_contains(ui_panel($rendered, 'vgpu'), '未发现 vGPU 设备'), 'An empty inventory may report no devices only after both sources were read successfully');
+
+$invalidIdentity = array_replace($externalActive, ['uuid' => 'invalid<uuid>']);
+$rendered = ui_render(ui_inventory_fixture($base, [$invalidIdentity]));
+$invalidIdentityRow = ui_inventory_row(ui_inventory_table($rendered), htmlspecialchars($invalidIdentity['uuid'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), $invalidIdentity['pci']);
+$invalidDetail = ui_readonly_panel($rendered, $invalidIdentityRow, 'details', $invalidIdentity['uuid'], $invalidIdentity['pci']);
+ui_check(!str_contains($invalidIdentityRow, 'uvm-toggle-xml') && !str_contains($invalidDetail['html'], '&lt;hostdev'), 'An invalid UUID must not expose a usable VM XML toggle or snippet');
+ui_check(!str_contains($rendered['html'], $invalidIdentity['uuid']) && str_contains($invalidDetail['html'], 'invalid&lt;uuid&gt;'), 'Invalid inventory identity must remain escaped in read-only content');
 
 $inventoryAttack = '<img src=x onerror="alert(7)"></script><script>alert(8)</script>';
 $unsafeConfiguration = array_replace($deviceInput, ['profile' => $inventoryAttack]);
