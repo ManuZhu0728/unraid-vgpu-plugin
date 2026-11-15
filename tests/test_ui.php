@@ -58,7 +58,9 @@ if (($argv[1] ?? '') === '--render-fixture') {
         ob_start();
         eval('?>' . $page);
         $panels[$ui_tab] = ob_get_clean();
-        $html .= '<section id="fixture-' . $ui_tab . '-panel" role="tabpanel">' . $panels[$ui_tab] . '</section>';
+        // Native MainContentTabbed.php supplies these classes. In particular,
+        // .tab-content form:first-of-type introduces host layout rules.
+        $html .= '<section id="fixture-' . $ui_tab . '-panel" class="tab-content content" role="tabpanel">' . $panels[$ui_tab] . '</section>';
     }
     echo json_encode(['html' => $html, 'panels' => $panels, 'calls' => $ui_calls, 'profile_scans' => $ui_profile_scans], JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
@@ -172,7 +174,8 @@ foreach (['driver' => ['1', '驱动管理'], 'vgpu' => ['2', 'vGPU 管理'], 'st
 }
 
 $rendered = ui_render($base);
-ui_check(preg_match('/\.uvm-actions form\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*margin:\s*0;[^}]*\}/', $rendered['html']) === 1, 'Action forms must use flex layout so native table line boxes cannot offset their buttons');
+ui_check(str_contains($rendered['html'], 'class="tab-content content" role="tabpanel"'), 'UI fixture must retain the native tab classes that affect first-form padding');
+ui_check(preg_match('/\.uvm-wrap \.uvm-actions > form\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*margin:\s*0;[^}]*padding:\s*0;[^}]*\}/', $rendered['html']) === 1, 'Action forms must override native first-form padding with matching specificity and equal flex layout');
 ui_check(ui_actions($rendered) === ['status', 'logs'], 'All native tab bodies must share one local status read and one log read, without remote work');
 ui_check($rendered['profile_scans'] === 1, 'All native tabs must share one profile scan');
 ui_check(str_contains($rendered['html'], 'uvm-source-url') && str_contains($rendered['html'], 'GitHub / GitLab'), 'UI must offer a repository or release URL as the primary input');
