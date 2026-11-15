@@ -355,13 +355,15 @@ final class Runtime
     {
         $processes = $this->processes();
         $active = $this->activeDevices();
+        $startup = (new StartupInventory($this->paths))->read();
         return [
             'kernel' => $this->read('/proc/sys/kernel/osrelease'),
             'loaded_driver' => $this->read('/sys/module/nvidia/version'),
             'host_cuda_parameter' => $this->read('/sys/module/nvidia/parameters/cudahost'),
             'manager_pids' => $processes['nvidia-vgpu-mgr'],
             'vgpud_pids' => $processes['nvidia-vgpud'],
-            'active_mdevs' => $active ?? [], 'legacy_owners' => $this->legacyOwners(),
+            'active_mdevs' => $active ?? [], 'legacy_owners' => $this->legacyOwners($startup),
+            'startup_inventory' => $startup,
             'profiles_present' => (bool)glob($this->paths->path('/sys/bus/pci/devices/*/mdev_supported_types/nvidia-*'), GLOB_ONLYDIR),
             'checks' => ['processes_known' => $processes['known'], 'mdevs_known' => $active !== null],
         ];
@@ -400,38 +402,9 @@ final class Runtime
         return $result;
     }
 
-    private function legacyOwners(): array
+    private function legacyOwners(array $startup): array
     {
-        $owners = [];
-        foreach (['novidio-vgpu-driver.plg', 'nvidia-vgpu-driver.plg'] as $plugin) {
-            if (is_file($this->paths->path('/boot/config/plugins/' . $plugin))) $owners[] = 'plugin:' . $plugin;
-        }
-        $schedule = $this->paths->path('/boot/config/plugins/user.scripts/schedule.json');
-        if (is_file($schedule)) {
-            $jobs = json_decode((string)@file_get_contents($schedule), true);
-            if (!is_array($jobs)) return array_merge($owners, ['unknown:user-scripts-schedule']);
-            foreach ($jobs as $key => $job) {
-                if (is_string($job)) $job = ['frequency' => $job];
-                if (!is_array($job) || in_array(strtolower((string)($job['frequency'] ?? 'disabled')), ['', 'disabled', 'off', 'none'], true)) continue;
-                $script = (string)($job['script'] ?? $key);
-                $looksGpuRelated = preg_match('/vgpu|nvidia/i', $script) === 1;
-                $base = '/boot/config/plugins/user.scripts/scripts/';
-                if (preg_match('#^[A-Za-z0-9_ .-]+(?:/script)?$#D', $script) && !str_contains($script, '..')) {
-                    $script = $base . preg_replace('#/script$#', '', $script) . '/script';
-                }
-                if (!str_starts_with($script, '/boot/config/plugins/user.scripts/scripts/') || str_contains($script, '..')) {
-                    if ($looksGpuRelated) $owners[] = 'unknown:scheduled-vgpu-initializer';
-                    continue;
-                }
-                $contents = @file_get_contents($this->paths->path($script));
-                if ($contents === false) {
-                    if ($looksGpuRelated) $owners[] = 'unknown:scheduled-vgpu-script';
-                } elseif (preg_match('/nvidia-vgpu-mgr|nvidia-vgpud|mdevctl\s+(?:define|start)/', $contents)) {
-                    $owners[] = 'user-script:' . basename(dirname($script));
-                }
-            }
-        }
-        return array_values(array_unique($owners));
+        return $startup['owners'];
     }
 
     private function ownedRuntime(array $state, array $library): array

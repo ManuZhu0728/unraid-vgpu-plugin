@@ -85,8 +85,8 @@ def build(version, output, public_base=None, update_url=None):
         "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php",
         "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php",
         "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php",
-        "include/Store.php", "include/Runtime.php", "include/Download.php",
-        "include/PackageIdentity.php", "include/PkgtoolsMigration.php", "include/InstallContract.php",
+        "include/Store.php", "include/StartupInventory.php", "include/Runtime.php", "include/Download.php",
+        "include/PackageIdentity.php", "include/PackageHistory.php", "include/PkgtoolsMigration.php", "include/InstallContract.php",
         "include/InstallTimeout.php", "include/InstallConfiguration.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php",
         "include/Installer.php", "include/upgrade-watch.php",
     ]

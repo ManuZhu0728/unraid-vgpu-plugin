@@ -431,4 +431,48 @@ try {
     echo "PASS lifecycle: explicit local branch -> restore enablement -> cold installation\n";
 } finally { $fixture->close(); }
 
-echo 'Application upgrade lifecycle: 10 scenarios / ' . $lifecycleChecks . " checks passed (fake filesystem/HTTP/installer; no real services)\n";
+$fixture = new LifecycleFixture();
+try {
+    $old = $fixture->enableAndSelectCurrent();
+    lifecycle_check($fixture->prepareTarget()['ok'], 'First migration prepares the new kernel');
+    $fixture->reboot();
+    lifecycle_check($fixture->application->dispatch('boot')['ok'], 'First migration installs the new kernel before the old cache has ever been plugin-installed');
+    $history = new \Vgpu\PackageHistory($fixture->store);
+    lifecycle_check($history->read('6.18.58-Unraid') === null && $history->read('6.18.60-Unraid')['installed_boot_id'] === LifecycleFixture::NEW_BOOT, 'Only the genuinely installed new kernel initially has a success receipt');
+    $prepared = $fixture->application->dispatch('upgrade-check');
+    $oldHistory = $history->read('6.18.58-Unraid');
+    lifecycle_check($prepared['status'] === 'current' && $fixture->store->settings()['selected_package']['kernel'] === '6.18.60-Unraid', 'The new-kernel helper refreshes the baseline selection');
+    lifecycle_check($oldHistory['package']['md5'] === $old['md5'] && $oldHistory['saved_boot_id'] === LifecycleFixture::OLD_BOOT && !isset($oldHistory['installed_boot_id']), 'Overwriting the old selection retains its verified authorization without inventing old installation success');
+    $fixture->routes = [];
+    $requests = $fixture->count('curl');
+    $fixture->reboot(LifecycleFixture::THIRD_BOOT);
+    $fixture->write('/proc/sys/kernel/osrelease', '6.18.58-Unraid');
+    $rollback = $fixture->application->dispatch('boot');
+    lifecycle_check($rollback['ok'] && $rollback['driver_installation']['status'] === 'installed' && $fixture->installedKernel === '6.18.58-Unraid', 'Offline OS rollback cold-installs the authorized old-kernel history');
+    lifecycle_check($fixture->count('curl') === $requests && $fixture->count('upgradepkg') === 2, 'History restoration performs a full install and never needs the network');
+    lifecycle_check($history->read('6.18.58-Unraid')['installed_boot_id'] === LifecycleFixture::THIRD_BOOT && $history->read('6.18.60-Unraid')['installed_boot_id'] === LifecycleFixture::NEW_BOOT, 'Successful record writes preserve both kernel histories');
+    lifecycle_check($fixture->store->settings()['selected_package']['kernel'] === '6.18.60-Unraid', 'A historical rollback does not overwrite the explicit user cache selection');
+    $oldBytes = file_get_contents($fixture->paths->configDir . '/package-history/6.18.58-Unraid.json');
+    $newBytes = file_get_contents($fixture->paths->configDir . '/package-history/6.18.60-Unraid.json');
+    $fixture->reboot('44444444-4444-4444-8444-444444444444');
+    $fixture->write('/proc/sys/kernel/osrelease', '6.18.58-Unraid');
+    $fixture->failInstall = true;
+    lifecycle_check(!$fixture->application->dispatch('boot')['ok'], 'A later historical install failure remains explicit');
+    lifecycle_check(file_get_contents($fixture->paths->configDir . '/package-history/6.18.58-Unraid.json') === $oldBytes && file_get_contents($fixture->paths->configDir . '/package-history/6.18.60-Unraid.json') === $newBytes, 'Failed records preserve both prior histories and never promote the failed candidate');
+    lifecycle_check($fixture->application->dispatch('boot')['status'] === 'already_attempted' && $fixture->count('upgradepkg') === 3, 'Historical fallback cannot reopen a failed current boot');
+    echo "PASS lifecycle: first migration -> helper baseline refresh -> offline old-kernel rollback -> history retained after later failure\n";
+} finally { $fixture->close(); }
+
+$fixture = new LifecycleFixture();
+try {
+    $old = $fixture->enableAndSelectCurrent();
+    (new \Vgpu\PackageHistory($fixture->store))->remember(\Vgpu\PackageHistory::fromPackage($old));
+    $fixture->application->dispatch('config-save', ['source' => ['url' => 'https://git.example.test/other/repo']]);
+    $fixture->reboot();
+    $fixture->write('/proc/sys/kernel/osrelease', '6.18.58-Unraid');
+    $boot = $fixture->application->dispatch('boot');
+    lifecycle_check(!$boot['ok'] && $fixture->count('upgradepkg') === 0 && is_file($old['path']), 'A changed current source rejects old authorized history without deleting or installing its cache');
+    echo "PASS lifecycle: changed source refuses historical rollback authorization\n";
+} finally { $fixture->close(); }
+
+echo 'Application upgrade lifecycle: 12 scenarios / ' . $lifecycleChecks . " checks passed (fake filesystem/HTTP/installer; no real services)\n";

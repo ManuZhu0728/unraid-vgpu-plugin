@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/bootstrap.php';
+require_once __DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/StartupInventory.php';
 
 use Vgpu\Paths;
 use Vgpu\Runtime;
@@ -196,6 +197,28 @@ $tests['relative schedule keys detect only GPU initializers'] = function (Runtim
     $f->write('/boot/config/plugins/user.scripts/scripts/gpu-init/script', 'nvidia-vgpud');
     $f->write('/boot/config/plugins/user.scripts/schedule.json', json_encode(['gpu-init' => ['frequency' => 'boot', 'script' => 'gpu-init']]));
     runtime_check($f->runtime->ensure($f->settings, [])['code'] === 'migration_required', 'Relative initializer script is inspected');
+};
+$tests['scheduled wrapper and go references block before any GPU mutation'] = function (RuntimeFixture $f): void {
+    $f->write('/boot/config/plugins/user.scripts/scripts/startup/script', "bash /boot/config/vgpu-cold-init.sh\n");
+    $f->write('/boot/config/vgpu-cold-init.sh', "LD_PRELOAD=/test /usr/bin/nvidia-vgpud\n");
+    $f->write('/boot/config/plugins/user.scripts/schedule.json', json_encode(['startup' => ['frequency' => 'boot']]));
+    $status = $f->runtime->status($f->settings, []);
+    runtime_check($status['runtime']['legacy_owners'] === ['user-script:startup'], 'Wrapper must preserve the compatible user-script owner identity');
+    runtime_check(isset($status['runtime']['startup_inventory']['references'][0]), 'Read-only status exposes the reference evidence');
+    runtime_check($f->runtime->ensure($f->settings, [])['code'] === 'migration_required', 'Enabled wrapper must block runtime initialization');
+    runtime_check($f->runtime->installationPreflight()['code'] === 'migration_required', 'Enabled wrapper must block cold package installation');
+    runtime_check(!$f->commands && !is_dir($f->paths->path('/etc')), 'Ownership check precedes commands and writes');
+    $f->write('/boot/config/plugins/user.scripts/schedule.json', json_encode(['startup' => ['frequency' => 'disabled']]));
+    $f->write('/boot/config/go', "bash /boot/config/vgpu-cold-init.sh\n");
+    runtime_check($f->runtime->ensure($f->settings, [])['code'] === 'migration_required', 'go is a startup root even with User Scripts disabled');
+    runtime_check(!$f->commands, 'go conflict must not trigger commands');
+};
+$tests['comments and monitoring commands do not claim runtime ownership'] = function (RuntimeFixture $f): void {
+    $f->write('/boot/config/plugins/user.scripts/scripts/vgpu-monitor/script', "# nvidia-vgpu-mgr\necho 'nvidia-vgpud'\ngrep nvidia-vgpu-mgr /var/log/syslog\npgrep -af nvidia-vgpud\nmdevctl list\necho \"\$(pgrep -x nvidia-vgpu-mgr)\"\npids=\$(pidof nvidia-vgpud)\n");
+    $f->write('/boot/config/plugins/user.scripts/schedule.json', json_encode(['vgpu-monitor' => ['frequency' => 'daily']]));
+    runtime_check($f->runtime->status($f->settings, [])['runtime']['legacy_owners'] === [], 'Mentioning daemon names is not executing them');
+    runtime_check(!$f->runtime->status($f->settings, [])['runtime']['startup_inventory']['coverage']['complete'], 'Recognized monitoring substitutions remain non-evaluated coverage evidence');
+    runtime_check($f->runtime->ensure($f->settings, [])['ok'], 'Read-only monitoring must not prevent a normal managed cold start');
 };
 $tests['foreign active mdev is not a takeover invitation'] = function (RuntimeFixture $f): void {
     $f->active($f->device);

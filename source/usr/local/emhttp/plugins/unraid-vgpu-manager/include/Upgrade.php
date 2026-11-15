@@ -111,6 +111,7 @@ final class Upgrade
                     if ($baseline['changed']) {
                         $previous['notifications'] = $record['notifications'];
                         $previous['baseline_package'] = $baseline['package'];
+                        if (isset($record['history_warning'])) $previous['history_warning'] = $record['history_warning'];
                         $this->store->write($this->store->paths->configDir . '/upgrade-state.json', $previous);
                     }
                 } elseif ($baseline['changed'] || !$same || ($previous['status'] ?? '') !== 'current') {
@@ -122,12 +123,13 @@ final class Upgrade
                 }
                 return ['ok' => true, 'status' => 'current', 'current_kernel' => $current,
                     'target_kernel' => $current, 'baseline_prepared' => $baseline['changed'],
-                    'package' => $baseline['package'], 'message' => '当前内核驱动缓存已就绪。'];
+                    'package' => $baseline['package'], 'message' => '当前内核驱动缓存已就绪。'] + array_intersect_key($record, ['history_warning' => true]);
             }
             if ($same && ($previous['status'] ?? '') === 'ready' && $this->matchesBuild($previous['package'] ?? [], $source) && $this->cached($previous['package'] ?? [], $target['kernel'])) {
                 if ($baseline['changed']) {
                     $previous['notifications'] = $record['notifications'];
                     $previous['baseline_package'] = $baseline['package'];
+                    if (isset($record['history_warning'])) $previous['history_warning'] = $record['history_warning'];
                     $this->store->write($this->store->paths->configDir . '/upgrade-state.json', $previous);
                 }
                 return ['ok' => true, 'unchanged' => true] + $previous;
@@ -180,25 +182,35 @@ final class Upgrade
                 $candidates[] = $package;
             }
         }
+        $policy = $settings;
+        $policy['source'] = $source;
+        $policy['upgrade']['driver_branch'] = $branch;
         foreach ($candidates as $package) {
-            $driver = $package['driver'] ?? '';
-            if (!is_string($driver) || explode('.', $driver)[0] !== $branch ||
-                ($source['driver'] !== '' && $driver !== $source['driver']) || !$this->matchesBuild($package, $source) || !$this->cached($package, $current)) continue;
-            $local = ($package['source'] ?? '') === 'local';
-            if (!$local && (($package['source_id'] ?? '') !== $record['source_id'] || ($package['source_fingerprint'] ?? '') !== $record['source_fingerprint'])) continue;
-            if (!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/D', (string)($package['saved_boot_id'] ?? ''))) {
-                $package['saved_boot_id'] = $record['prepared_boot_id'];
-            }
-            $package = $this->receipt($package, $source, $package['saved_boot_id']);
-            return $package;
+            $found = $this->baselinePackage($package, $policy, $current, $record);
+            if ($found !== null) return $found;
         }
-        return null;
+        $historical = (new PackageHistory($this->store))->read($current);
+        if ($historical === null) return null;
+        return $this->baselinePackage(array_replace($historical['package'], array_intersect_key($historical,
+            array_flip(['saved_boot_id', 'source_id', 'source_fingerprint']))), $policy, $current, $record);
+    }
+
+    private function baselinePackage(array $package, array $policy, string $current, array $record): ?array
+    {
+        try { PackageHistory::assertPolicy(PackageHistory::fromPackage($package), $policy, $current); }
+        catch (\Throwable) { return null; }
+        if (!$this->cached($package, $current)) return null;
+        if (!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/D', (string)($package['saved_boot_id'] ?? ''))) {
+            $package['saved_boot_id'] = $record['prepared_boot_id'];
+        }
+        return $this->receipt($package, $policy['source'], $package['saved_boot_id']);
     }
 
     private function ensureBaseline(array $settings, array $source, array $credentials, string $current, string $branch, string $reference, ?array $candidate, array &$record): array
     {
         if ($candidate !== null) {
             if (($settings['selected_package'] ?? null) === $candidate) return ['package' => $candidate, 'changed' => false];
+            $this->rememberSelection($settings, $source, $branch, $record);
             $settings['selected_package'] = $candidate;
             $this->store->saveSettings($settings);
             return ['package' => $candidate, 'changed' => true];
@@ -211,12 +223,32 @@ final class Upgrade
         $record = $this->saveAndNotify($record, 'baseline-start', '正在准备当前驱动缓存', $record['message']);
         $package = $this->fetchKernelPackage($effective, $credentials, $current, $branch, $reference, $source['driver']);
         $package = $this->receipt($package, $source, $record['prepared_boot_id']);
+        $this->rememberSelection($settings, $source, $branch, $record);
         $settings['selected_package'] = $package;
         $this->store->saveSettings($settings);
         $record['baseline_package'] = $package;
         $record['message'] = $current . ' · NVIDIA ' . $package['driver'] . ' 当前驱动缓存已准备好。';
         $record = $this->saveAndNotify($record, 'baseline-ready', '当前驱动缓存已准备', $record['message']);
         return ['package' => $package, 'changed' => true];
+    }
+
+    private function rememberSelection(array $settings, array $source, string $branch, array &$record): void
+    {
+        if (!is_array($settings['selected_package'] ?? null)) return;
+        try {
+            $candidate = PackageHistory::authorization(PackageHistory::fromPackage($settings['selected_package']));
+            $kernel = $candidate['package']['kernel'];
+            $policy = $settings;
+            $policy['source'] = $source;
+            $policy['upgrade']['driver_branch'] = $branch;
+            PackageHistory::assertPolicy($candidate, $policy, $kernel);
+            if (!PackageHistory::cached($this->store->paths, $candidate['package'], $kernel)) throw new \RuntimeException('Previous cache is invalid');
+            (new PackageHistory($this->store))->remember($candidate);
+        } catch (\Throwable) {
+            // An obsolete or damaged selection must not block preparation of a
+            // valid new baseline, nor silently gain rollback authorization.
+            $record['history_warning'] = 'Previous selected package could not be retained as an authorized rollback receipt';
+        }
     }
 
     private function fetchKernelPackage(array $source, array $credentials, string $kernel, string $branch, string $reference, string $pin): array
@@ -322,14 +354,7 @@ final class Upgrade
 
     private function cached(array $package, string $kernel): bool
     {
-        try { $identity = PackageIdentity::receipt($package); }
-        catch (\InvalidArgumentException) { return false; }
-        $filename = $identity['filename'];
-        $expected = $this->store->paths->cacheDir . '/' . preg_replace('/-Unraid$/', '', $kernel) . '/' . $filename;
-        $md5 = $package['md5'] ?? '';
-        return ($package['kernel'] ?? '') === $kernel && ($package['filename'] ?? '') === $filename &&
-            ($package['path'] ?? '') === $expected && !is_link($expected) && is_file($expected) &&
-            is_string($md5) && preg_match('/^[a-f0-9]{32}$/D', $md5) && hash_file('md5', $expected) === $md5;
+        return PackageHistory::cached($this->store->paths, $package, $kernel);
     }
 
     private function matchesBuild(array $package, array $source): bool

@@ -43,13 +43,93 @@ function install_aliases(string $root): array
     return $result;
 }
 
+/** A separate, bounded PHP child supplies the injected result, not pkgtools. */
+function install_fault_child(string $mode, string $artifacts, callable $execute): array
+{
+    install_assert(in_array($mode, ['failure', 'timeout'], true), 'Invalid fault child mode');
+    $scope = 'INJECTED post-upgrade classification: genuine pkgtools already exited 0; this is a separate controlled PHP child, not a pkgtools/GPU failure';
+    if ($mode === 'failure') {
+        $response = $execute(['integration-only-post-upgrade-failure'],
+            [PHP_BINARY, '-n', '-r', 'fwrite(STDOUT, "controlled post-upgrade failure\\n"); exit(9);'], 5, null, $scope);
+        install_assert($response['code'] === 9, 'Controlled failure child did not exit 9');
+        return ['response' => $response, 'mode' => $mode, 'child_reaped' => true,
+            'reap_method' => 'production Process normal proc_close after direct PHP child exit', 'scope' => $scope];
+    }
+    install_assert(function_exists('pcntl_waitpid'), 'pcntl_waitpid is required to reap the controlled timeout child');
+    $pidFile = $artifacts . '/injected-timeout-child.json';
+    $finished = $artifacts . '/injected-timeout-natural-finish';
+    install_assert(!file_exists($pidFile) && !is_link($pidFile) && !file_exists($finished) && !is_link($finished), 'Fault child artifacts already exist');
+    // No shell, descendants, signals handlers, driver files, or GPU calls.
+    // Even a failed SIGTERM is bounded by this five-second sleep; waitpid below
+    // must reap the direct child before the adapter can return to Installer.
+    $program = <<<'PHP'
+$status = (string)file_get_contents('/proc/self/status');
+if (!preg_match('/^PPid:\s+([0-9]+)/m', $status, $parent)) exit(70);
+$identity = json_encode(['pid' => getmypid(), 'ppid' => (int)$parent[1]], JSON_THROW_ON_ERROR);
+if (file_put_contents($argv[1], $identity) !== strlen($identity)) exit(71);
+fwrite(STDOUT, "controlled post-upgrade timeout child started\n");
+usleep(5000000);
+if (file_put_contents($argv[2], 'natural finish') === false) exit(72);
+PHP;
+    $started = microtime(true);
+    $response = $execute(['integration-only-post-upgrade-timeout'],
+        [PHP_BINARY, '-n', '-r', $program, $pidFile, $finished], 1, null, $scope);
+    install_assert(is_file($pidFile) && !is_link($pidFile), 'Controlled timeout child did not record its identity');
+    $identity = json_decode((string)file_get_contents($pidFile), true, 8, JSON_THROW_ON_ERROR);
+    $pid = $identity['pid'] ?? 0;
+    install_assert(is_int($pid) && $pid > 1 && ($identity['ppid'] ?? 0) === getmypid(), 'Timeout PID is not this adapter direct child');
+    $status = 0;
+    $waited = pcntl_waitpid($pid, $status, 0);
+    clearstatcache();
+    $absent = !is_dir('/proc/' . $pid);
+    install_assert(($waited === $pid || $waited === -1) && $absent, 'Controlled timeout child was not reaped');
+    install_assert($response['code'] === 124 && !file_exists($finished), 'Process did not terminate the controlled child before natural completion');
+    if ($waited === $pid) install_assert(pcntl_wifsignaled($status) && pcntl_wtermsig($status) === 15, 'Controlled timeout child was not terminated by Process SIGTERM');
+    return ['response' => $response, 'mode' => $mode, 'child_pid' => $pid, 'child_reaped' => true,
+        'reap_method' => $waited === $pid ? 'explicit pcntl_waitpid after production Process SIGTERM' : 'Process resource already reaped child; waitpid ECHILD and namespace PID absent',
+        'waitpid_result' => $waited, 'seconds_including_reap' => round(microtime(true) - $started, 3),
+        'natural_finish_marker_absent' => true, 'scope' => $scope];
+}
+
+function install_verify_transaction(string $transaction, int $uid): array
+{
+    $directory = dirname($transaction);
+    foreach ([$directory, $directory . '/files'] as $path) {
+        $info = lstat($path);
+        install_assert(!is_link($path) && is_dir($path) && ($info['mode'] & 0777) === 0700 && $info['uid'] === $uid,
+            'Configuration transaction directory is not private');
+    }
+    $info = lstat($transaction);
+    install_assert(!is_link($transaction) && ($info['mode'] & 0777) === 0600 && $info['uid'] === $uid, 'Configuration journal is not private');
+    $receipt = json_decode((string)file_get_contents($transaction), true, 32, JSON_THROW_ON_ERROR);
+    $backups = 0;
+    foreach ($receipt['configurations'] as $record) {
+        if (($record['kind'] ?? '') !== 'file') continue;
+        install_assert(preg_match('#^files/[0-9]+$#D', $record['backup'] ?? '') === 1, 'Invalid transaction backup path');
+        $path = $directory . '/' . $record['backup'];
+        $info = lstat($path);
+        install_assert(!is_link($path) && is_file($path) && ($info['mode'] & 0777) === 0600 && $info['uid'] === $uid &&
+            $info['nlink'] === 1 && hash_file('sha256', $path) === $record['sha256'], 'Configuration backup hash or privacy differs');
+        ++$backups;
+    }
+    install_assert($backups > 0, 'No protected configuration files were backed up');
+    return ['receipt' => $receipt, 'backups_verified' => $backups];
+}
+
 $commands = [];
 $result = ['ok' => false, 'scope' => 'production plugin Installer.boot, genuine pkgtools and passive tools in a fixture ROOT; not Unraid/GPU runtime evidence'];
 $artifacts = null;
 $safeArtifacts = false;
 try {
-    if ($argc !== 5) throw new InvalidArgumentException('Usage: php -n install-driver.php PACKAGE.txz PRIVATE_ROOT HOST_TOOLS ARTIFACT_DIRECTORY');
-    [$script, $package, $requestedRoot, $tools, $artifacts] = $argv;
+    if (!in_array($argc, [5, 7], true)) throw new InvalidArgumentException('Usage: php -n install-driver.php PACKAGE.txz PRIVATE_ROOT HOST_TOOLS ARTIFACT_DIRECTORY [--fault-after-upgrade none|failure|timeout]');
+    $faultAfterUpgrade = 'none';
+    if ($argc === 7) {
+        if ($argv[5] !== '--fault-after-upgrade' || !in_array($argv[6], ['none', 'failure', 'timeout'], true)) {
+            throw new InvalidArgumentException('Invalid --fault-after-upgrade; choose none, failure, or timeout');
+        }
+        $faultAfterUpgrade = $argv[6];
+    }
+    [$script, $package, $requestedRoot, $tools, $artifacts] = array_slice($argv, 0, 5);
     $root = realpath($requestedRoot);
     install_assert($root !== false && $root === $requestedRoot && !is_link($root) && basename($root) === 'root' &&
         str_starts_with(basename(dirname($root)), 'pkgtools-lifecycle.'), 'An exact private lifecycle ROOT is required');
@@ -61,6 +141,7 @@ try {
     install_assert(realpath($tools) === $work . '/host-tools' && realpath($artifacts) === $artifacts &&
         str_starts_with($artifacts, $work . '/plugin-cases/') && is_dir($artifacts), 'Private tools/artifact paths are required');
     $safeArtifacts = true;
+    install_assert($faultAfterUpgrade !== 'timeout' || function_exists('pcntl_waitpid'), 'pcntl_waitpid is required for the controlled timeout case');
     install_assert(is_file($tools . '/modinfo') && is_file($tools . '/depmod') && is_file($tools . '/ldconfig-real'), 'Real passive host tools are required');
     install_assert(realpath($package) === $package && is_file($package) && !is_link($package), 'Regular absolute TXZ required');
     $identity = PackageIdentity::parse(basename($package));
@@ -76,6 +157,7 @@ try {
     $paths = new Paths($root);
     $store = new Store($paths);
     $process = new Process();
+    $injection = null;
     $execute = static function (array $requested, array $executed, int $timeout, ?string $stdin, string $scope = 'real-command') use ($process, &$commands, $artifacts): array {
         $index = count($commands);
         $start = microtime(true);
@@ -88,7 +170,7 @@ try {
         install_json($artifacts . '/commands.json', $commands);
         return $response;
     };
-    $runner = static function (array $requested, int $timeout = 30, ?string $stdin = null) use ($execute, &$commands, $root, $tools, $kernel, $artifacts): array {
+    $runner = static function (array $requested, int $timeout = 30, ?string $stdin = null) use ($execute, &$commands, &$injection, $faultAfterUpgrade, $root, $tools, $kernel, $artifacts): array {
         $executed = $requested;
         switch ($requested[0]) {
             case 'tar':
@@ -139,6 +221,15 @@ try {
             install_json($artifacts . '/library-aliases.json', ['before' => $before, 'after' => $after,
                 'unchanged' => $before === $after, 'scope' => 'real ldconfig -n on private libraries only, not the full Unraid linker environment']);
             install_assert($simulation['code'] === 0 && $before && $before === $after, 'Private implicit ldconfig changed a compatibility alias');
+            if ($faultAfterUpgrade !== 'none') {
+                install_assert($injection === null, 'Fault injection was invoked more than once');
+                $injection = install_fault_child($faultAfterUpgrade, $artifacts, $execute);
+                $injection['genuine_upgrade_returncode'] = $response['code'];
+                install_json($artifacts . '/injected-fault.json', $injection);
+                // Preserve the genuine command's recorded code/stdout/stderr.
+                // Only this separate child result is passed back to Installer.
+                return $injection['response'];
+            }
         }
         return $response;
     };
@@ -155,29 +246,52 @@ try {
     $preflight = $runtime->installationPreflight();
     install_assert(($preflight['ok'] ?? false) === true, 'Production fixture preflight failed');
     $installer = new Installer($store, $download, $runtime, $runner);
+    $transactionsBefore = glob($paths->runtimeDir . '/install-transactions/*/transaction.json') ?: [];
     $bootResult = $store->locked(fn() => $installer->boot($settings));
     $result += ['fixture_boot_id' => $boot, 'preflight' => $preflight, 'package' => $import['package']];
     $result['installer'] = $bootResult;
-    install_assert(($bootResult['ok'] ?? false) === true && $bootResult['status'] === 'installed', 'Production boot installation failed: ' . ($bootResult['message'] ?? 'unknown'));
-    install_assert($installer->state()['status'] === 'installed', 'Production install state did not commit');
+    $result['fault_after_upgrade'] = $faultAfterUpgrade;
+    $result['injection'] = $injection;
+    $expectedStatus = $faultAfterUpgrade === 'none' ? 'installed' : 'failed';
+    install_assert(($bootResult['ok'] ?? false) === ($faultAfterUpgrade === 'none') && ($bootResult['status'] ?? '') === $expectedStatus,
+        'Unexpected production boot result: ' . ($bootResult['message'] ?? 'unknown'));
+    install_assert($installer->state()['status'] === $expectedStatus, 'Production installation state did not commit');
     install_assert(!is_file($paths->runtimeDir . '/owner.json') && !is_dir($root . '/sys/module/nvidia'), 'Hardware/runtime activation occurred');
-    install_assert(is_file($root . '/etc/ld.so.cache') && filesize($root . '/etc/ld.so.cache') > 0 &&
-        is_file($root . '/lib/modules/' . $kernel . '/modules.dep'), 'Real passive linker/module outputs missing');
-    $transactions = glob($paths->runtimeDir . '/install-transactions/*/transaction.json') ?: [];
-    $complete = [];
-    foreach ($transactions as $transaction) {
-        $receipt = json_decode((string)file_get_contents($transaction), true, 32, JSON_THROW_ON_ERROR);
-        if (($receipt['status'] ?? '') === 'complete') $complete[] = $transaction;
+    $transactions = array_values(array_diff(glob($paths->runtimeDir . '/install-transactions/*/transaction.json') ?: [], $transactionsBefore));
+    install_assert(count($transactions) === 1, 'Expected exactly one new configuration transaction');
+    $verifiedTransaction = install_verify_transaction($transactions[0], lstat($root)['uid']);
+    $expectedJournal = match ($faultAfterUpgrade) { 'failure' => 'failed_restored', 'timeout' => 'completion_unknown', default => 'complete' };
+    install_assert($verifiedTransaction['receipt']['status'] === $expectedJournal, 'Unexpected configuration journal outcome');
+    $result['transaction'] = $transactions[0];
+    $result['transaction_status'] = $expectedJournal;
+    $result['transaction_backups_verified'] = $verifiedTransaction['backups_verified'];
+    if ($faultAfterUpgrade === 'none') {
+        install_assert(is_file($root . '/etc/ld.so.cache') && filesize($root . '/etc/ld.so.cache') > 0 &&
+            is_file($root . '/lib/modules/' . $kernel . '/modules.dep'), 'Real passive linker/module outputs missing');
+    } else {
+        install_assert(is_array($injection) && $injection['child_reaped'] === true && $injection['genuine_upgrade_returncode'] === 0,
+            'Expected a reaped, separate injected child after successful genuine pkgtools');
+        $commandsBeforeRetry = count($commands);
+        $stateBeforeRetry = $installer->state();
+        $retry = $store->locked(fn() => $installer->boot($settings));
+        install_assert(($retry['ok'] ?? false) === false && ($retry['status'] ?? '') === 'already_attempted' &&
+            count($commands) === $commandsBeforeRetry && $installer->state() === $stateBeforeRetry, 'Same-boot retry was not blocked before new commands');
+        $result['same_boot_retry'] = $retry;
+        $result['same_boot_retry_command_count_unchanged'] = true;
+        $result['package_payload_rollback_claimed'] = false;
     }
-    install_assert((bool)$complete, 'No production configuration transaction completed');
     install_assert(hash_file('sha256', $package) === $inputHash, 'Input archive changed');
     $result['ok'] = true;
     $result['checks'] = ['production local import and inspectCached', 'production Runtime.installationPreflight on fixture proc/sys',
-        'production Installer.boot and InstallConfiguration transaction', 'genuine upgradepkg/installpkg/removepkg',
+        'production Installer.boot and private hash-verified InstallConfiguration backups', 'genuine upgradepkg/installpkg/removepkg',
+        'real ldconfig -n private-library link processing, compatibility aliases unchanged', 'no native activation or Runtime.ensure'];
+    if ($faultAfterUpgrade === 'none') $result['checks'] = array_merge($result['checks'], [
         'actual installed nvidia-ctk writes only temporary private Docker JSON', 'real depmod -b private ROOT',
-        'real ldconfig -X with private cache', 'real ldconfig -n private-library link processing, compatibility aliases unchanged',
-        'actual modinfo of all installed module files', 'no native activation or Runtime.ensure'];
-    $result['complete_transactions'] = $complete;
+        'real ldconfig -X with private cache', 'actual modinfo of all installed module files']);
+    else $result['checks'] = array_merge($result['checks'], ['separate controlled PHP child result injected after real upgrade success',
+        'controlled child terminated/reaped before Installer receives injected result', 'same-boot retry blocked without any new command',
+        'configuration outcome checked; no claim of package payload rollback']);
+    $result['complete_transactions'] = $faultAfterUpgrade === 'none' ? $transactions : [];
     $result['commands'] = $commands;
     install_json($artifacts . '/result.json', $result);
     echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";

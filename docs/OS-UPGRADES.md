@@ -26,15 +26,50 @@ Generic 定位规则见[下载源格式](DRIVER-SOURCES.md)。
 驱动恢复、升级预下载和 vGPU 初始化分别设置。驱动恢复负责安装缓存，预下载负责网络获取，
 vGPU 初始化负责服务和设备。只使用宿主机或 Docker 的 GPU 功能不需要启用 vGPU 初始化。
 使用原插件或 User Scripts 的机器，需要先整理为一个启动入口，再安排第一次重启。
-插件会识别冲突的旧驱动插件、脚本及 GPU/VFIO 占用。
+插件检查已知旧驱动插件、启用的 User Scripts、go 及可解析的固定路径引用，同时检查 GPU/VFIO 占用。
+动态脚本引用、其他插件事件和 `/boot/extra` 安装入口在首次迁移时另行核对。
 
 开启预下载会启动下载助手；开启驱动恢复只保存启用时的 boot ID，安装发生在后续开机。
-原缓存保留。开发分支正在补齐按内核的历史授权回执；目前不能仅凭旧 TXZ 仍在缓存中，
-就认为系统回退后的自动安装已得到验证。
+原缓存保留。开发分支按内核保存历史包记录；升级助手更新当前内核的选择前，也会保存
+已经核验的旧选择，因此首次迁移不要求旧包先被本插件安装过。
+回退内核时仍检查当前下载源策略、驱动分支、版本及 build 限制，并重新校验缓存包。
+这些路径已通过本地生命周期测试，实际系统回退仍需在维护窗口验收。
 
 旧版设置读取时自动转换为 schema 2：原 `upgrade.enabled=true` 对应预下载和驱动恢复均开启，
 原启用 boot ID 转移至 `driver.enabled_boot_id`。页面查看不写文件；下次保存时写入新结构。
 已经明确保存的 `driver.enabled=false` 不会因为预下载开启而被重新启用。
+
+### 维护窗口步骤
+
+1. 先更新插件，保留原启动方式。下载或上传目标内核的 TXZ，在缓存中确认驱动版本与构建号。
+   同时保留旧可用包及其原安装入口，准备失败时的恢复路径。
+2. 备份闪存配置、旧插件 PLG、User Scripts 任务、VM XML、mdev 定义和实际使用的 override。
+   在“添加设备”中填写原 UUID、PCI 和 profile，保存到本插件；不要生成新 UUID 或修改 VM XML。
+3. 记录并暂时关闭使用 GPU 的 VM、容器和阵列自动启动，停止相关工作负载。
+   停用旧 vGPU User Script 的自动执行；旧驱动插件的卸载动作需先核对，
+   可将其 PLG 保留到不参与启动的备份位置，而不是在线执行可能卸载驱动的脚本。
+   检查 go、extra、plugins-nextboot 和相关事件入口，确保下一次开机只由本插件初始化。
+4. 在本插件保存 UnlockRS 和 override 设置，开启“开机恢复驱动”及“vGPU 初始化”。
+   “系统升级预下载”可按需开启。保存设置后按正常流程重启，不在运行中卸载 NVIDIA 模块。
+5. 第一次开机先检查安装结果、包构建号、`cudahost` 实际值、服务和 mdev，
+   再依次启动 GPU 容器及 VM。确认 UUID 未变、profile 显存正确，记录同次 boot 的就绪时间。
+6. 功能正常后恢复原自动启动设置，再验证一次普通重启。
+
+本项目当前测试配置为 UUID `ae9572f6-1259-4136-9aa4-497dda98d2db`、PCI `0000:01:00.0`、
+profile `NVIDIA RTXA5500-1Q`（1GiB）。`nvidia-762` 是当前类型编号，升级后按 profile 名重解析。
+新插件使用驱动包配套 XML/UnlockRS；旧 `/boot/config/nvidia-vgpu/profile_override.toml`
+如有有效内容，需保存到本插件的高级设置。不要把旧 XML 覆盖到新驱动。
+
+### 恢复旧启动方式
+
+若第一次接管失败，保留安装状态、syslog 和事务备份，先不要启动 GPU 工作负载。
+关闭本插件的三个开关，恢复备份的旧 PLG、驱动选择、User Scripts 调度和所需配置后重启。
+只恢复旧入口不会把当前内存中的驱动替换回去；在下一次开机验收旧路径恢复结果。
+原包、原插件缓存和脚本全部保留到接管与重启测试结束。
+
+模块参数的持久化单独核对：安装事务保留本次开机已有的 `/etc/modprobe.d/nvidia.conf`，
+不会从前一次运行目录重建它。若依赖自定义参数，应记录其 `/boot/config/modprobe.d` 等持久来源；
+本项目 R595 候选默认启用 host CUDA，仍需在实机重启后读取实际 `cudahost` 值。
 
 ## 执行顺序
 
@@ -47,6 +82,12 @@ vGPU 初始化负责服务和设备。只使用宿主机或 Docker 的 GPU 功�
 
 目标是驱动及 vGPU 就绪后再由 Docker/VM 使用 GPU；Unraid 7.3.4 的整机启动时序仍需实测。
 升级助手通过轮询发现目标内核，不会拦截系统重启。请等待驱动准备完成通知再重启。
+
+2026-11-15 已只读核对测试机的 Unraid 7.3.4：`rc.local` 依次安装 `/boot/extra` 包、
+处理 `plugins-nextboot`、同步安装 PLG，之后才运行 `go` 或默认 emhttp；插件工具通过
+`popen`/`pclose` 等待 FILE 命令完成。这个顺序支持在插件阶段安装缓存驱动。
+仍需在迁移后的同一次冷启动记录安装完成、GPU/vGPU 就绪和首个容器/VM 使用 GPU 的时间。
+插件安装失败会停止本插件的后续初始化，不会自动关闭整个 Docker 或虚拟机服务。
 
 Unraid 的 `/usr` 内容在重启后重建，因此普通重启也需要从持久缓存恢复驱动。
 安装器记录 Linux boot ID，区分重新开机与运行中更新插件；同一次启动失败后不重复安装。
@@ -75,6 +116,7 @@ UnlockRS 和 `/etc/modprobe.d/nvidia.conf` 配置，包括已有 `.new`、许可
 | `settings.json` 的 `upgrade` | 预下载开关和驱动分支 |
 | `upgrade-state.json` | 当前准备任务和目标包回执 |
 | `driver-state.json` | 开机安装结果及成功回执 |
+| `package-history/<内核>-Unraid.json` | 按内核保存的包授权记录；不是本次开机已安装证明 |
 | `packages/<内核>/` | 各内核驱动缓存 |
 | `/var/log/unraid-vgpu-manager-upgrade.log` | 助手运行摘要 |
 
@@ -82,6 +124,13 @@ UnlockRS 和 `/etc/modprobe.d/nvidia.conf` 配置，包括已有 `.new`、许可
 助手使用独立 PHP 进程，不覆盖系统共享的 `plugin_update_helper`。
 
 ## 开发验证
+
+只读启动核对的本地证据在相邻驱动仓库
+`work/boot-order-audit.P7YVLAr3/{startup-readonly,plugin-execution-readonly}.txt`。
+当时测试机仍运行 novidio `2025.01.22a`，自有插件为 `2026.11.03.2`，
+启用的 vGPU User Script 是 `vgpu-580`（boot）；另三个相关任务禁用。
+虽安装了 User Scripts 和 Enhanced，两者不能据此算作两条 vGPU 自动启动链。
+该快照未完整审查 go 内容及全部间接引用，不作为迁移完成证明。
 
 运行 `bash tests/run-tests.sh`。测试使用临时文件、模拟下载源和安装命令，覆盖准备、
 新内核重启、后续普通重启、重复启动、缺包、占用和安装失败。实机升级测试需在发布后

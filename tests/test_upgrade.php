@@ -502,6 +502,49 @@ try {
     $f->check();
     upgrade_check($f->count('curl') === $calls + 1, 'New credentials must permit immediate retry of baseline preparation');
 
+    // First migration: the old selected cache was never installed by this
+    // plugin, but must survive the new kernel's helper baseline refresh.
+    $f = $fixture();
+    $old = $f->settings['selected_package'];
+    upgrade_check($f->check()['status'] === 'ready', 'Prepare a new-kernel receipt before simulating reboot');
+    file_put_contents($f->paths->path('/proc/sys/kernel/osrelease'), '6.18.60-Unraid');
+    file_put_contents($f->paths->path('/proc/sys/kernel/random/boot_id'), '22222222-2222-4222-8222-222222222222');
+    $f->settings = $f->store->settings();
+    $f->routes = [];
+    $requests = $f->count('curl');
+    $result = $f->check('6.18.60-Unraid');
+    $oldHistory = (new \Vgpu\PackageHistory($f->store))->read('6.18.58-Unraid');
+    upgrade_check($result['ok'] && $f->store->settings()['selected_package']['kernel'] === '6.18.60-Unraid' && $f->count('curl') === $requests, 'A ready new baseline is reused offline');
+    upgrade_check($oldHistory['package']['md5'] === $old['md5'] && $oldHistory['saved_boot_id'] === $old['saved_boot_id'] && !isset($oldHistory['installed_boot_id']), 'A verified old selected receipt is archived across kernels without inventing an installation');
+    upgrade_check($oldHistory['source_id'] === $old['source_id'] && $oldHistory['source_fingerprint'] === $old['source_fingerprint'], 'Old baseline authorization retains its original complete source policy');
+
+    foreach (['source_id', 'source_fingerprint', 'saved_boot_id', 'cache_md5', 'build'] as $badOld) {
+        $f = $fixture();
+        upgrade_check($f->check()['status'] === 'ready', 'A valid new target is prepared independently of the bad old selection');
+        $previousHistory = $f->paths->configDir . '/package-history/6.18.58-Unraid.json';
+        if (is_file($previousHistory)) unlink($previousHistory); // Isolate the attempted invalid migration below.
+        file_put_contents($f->paths->path('/proc/sys/kernel/osrelease'), '6.18.60-Unraid');
+        file_put_contents($f->paths->path('/proc/sys/kernel/random/boot_id'), '22222222-2222-4222-8222-222222222222');
+        $f->settings = $f->store->settings();
+        if ($badOld === 'source_id' || $badOld === 'source_fingerprint') $f->settings['selected_package'][$badOld] = str_repeat('0', 64);
+        if ($badOld === 'saved_boot_id') $f->settings['selected_package']['saved_boot_id'] = '';
+        if ($badOld === 'cache_md5') file_put_contents($f->settings['selected_package']['path'], 'changed old cache');
+        if ($badOld === 'build') $f->settings['selected_package']['build'] = 2;
+        $f->store->saveSettings($f->settings);
+        $result = $f->check('6.18.60-Unraid');
+        upgrade_check($result['ok'] && isset($result['history_warning']) && isset($f->upgrade->status()['history_warning']), 'A bad old selection does not block a valid new baseline, but remains diagnosable: ' . $badOld);
+        upgrade_check((new \Vgpu\PackageHistory($f->store))->read('6.18.58-Unraid') === null, 'An invalid old selection must not gain rollback authorization: ' . $badOld);
+    }
+
+    $f = $fixture();
+    $old = $f->settings['selected_package'];
+    (new \Vgpu\PackageHistory($f->store))->remember(\Vgpu\PackageHistory::fromPackage($old));
+    $f->settings['selected_package'] = null;
+    $f->store->saveSettings($f->settings);
+    $f->routes = [];
+    $result = $f->check('6.18.58-Unraid');
+    upgrade_check($result['ok'] && $f->count('curl') === 0 && $f->store->settings()['selected_package']['md5'] === $old['md5'], 'A current-policy history receipt restores the helper baseline without networking');
+
     $watch = file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/upgrade-watch.php');
     $shell = file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper');
     upgrade_check(str_contains($watch, 'LOCK_EX | LOCK_NB') && str_contains($watch, 'upgrade-check'), 'Monitor must be single-instance and use the current CLI');

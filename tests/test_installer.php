@@ -730,6 +730,101 @@ $cases['same-boot native reactivation rechecks every module before loading'] = f
     installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('nvidia-modprobe') === $loads && $f->count('upgradepkg') === 1, 'A stale successful receipt cannot authorize loading damaged secondary modules');
 };
 
+$cases['per-kernel history restores an authorized cache without a current selection'] = function (InstallerFixture $f): void {
+    $candidate = \Vgpu\PackageHistory::fromPackage($f->remotePackage());
+    (new \Vgpu\PackageHistory($f->store))->remember($candidate);
+    $f->settings['selected_package'] = null;
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'installed' && $f->count('upgradepkg') === 1, 'Historical authorization must execute the complete cold install, not claim already installed');
+    $history = (new \Vgpu\PackageHistory($f->store))->read('6.18.58-Unraid');
+    installer_check($history['source_id'] === $candidate['source_id'] && $history['saved_boot_id'] === InstallerFixture::OLD_BOOT && $history['installed_boot_id'] === InstallerFixture::BOOT, 'Successful restoration retains original authorization and records the real installation boot');
+};
+$cases['explicit selected ready and last-success receipts all outrank history'] = function (InstallerFixture $f): void {
+    (new \Vgpu\PackageHistory($f->store))->remember(\Vgpu\PackageHistory::fromPackage($f->remotePackage()));
+    $f->selectBuild(2);
+    $selected = $f->remotePackage();
+    $f->settings['selected_package'] = $selected;
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['ok'] && $result['package']['build'] === 2, 'An explicit selection supersedes older per-kernel history');
+    foreach (['ready', 'last_success'] as $priority) {
+        unlink($f->paths->path('/sys/module/nvidia/version'));
+        rmdir($f->paths->path('/sys/module/nvidia'));
+        $f->write('/proc/sys/kernel/random/boot_id', $priority === 'ready' ? InstallerFixture::NEXT_BOOT : '44444444-4444-4444-8444-444444444444');
+        $old = $selected;
+        $old['filename'] = str_replace('-2.txz', '-1.txz', $old['filename']);
+        $old['path'] = str_replace('-2.txz', '-1.txz', $old['path']);
+        $old['build'] = 1;
+        $old['md5'] = md5_file($old['path']);
+        (new \Vgpu\PackageHistory($f->store))->remember(\Vgpu\PackageHistory::fromPackage($old));
+        $f->settings['selected_package'] = null;
+        $prepared = $priority === 'ready' ? $f->prepared() : null;
+        if ($priority === 'ready') $f->store->write($f->paths->configDir . '/driver-state.json', []);
+        $result = $f->installer->boot($f->settings, $prepared);
+        installer_check($result['ok'] && $result['package']['build'] === 2, 'The ' . $priority . ' receipt must precede history');
+    }
+};
+$cases['history cannot masquerade as proof of a loaded current-boot revision'] = function (InstallerFixture $f): void {
+    $candidate = \Vgpu\PackageHistory::fromPackage($f->remotePackage());
+    $candidate['installed_boot_id'] = InstallerFixture::BOOT;
+    (new \Vgpu\PackageHistory($f->store))->remember($candidate);
+    $f->settings['selected_package'] = null;
+    $f->installed = $f->package['driver'];
+    $f->write('/sys/module/nvidia/version', $f->package['driver']);
+    $result = $f->installer->boot($f->settings);
+    installer_check($result['status'] === 'pending_reboot' && $f->count('upgradepkg') === 0 && $f->count('nvidia-modprobe') === 0, 'Only driver-state last_success may prove the active current-boot package build');
+};
+$cases['a damaged lower-priority history does not shadow an explicit selection'] = function (InstallerFixture $f): void {
+    $f->write('/boot/config/plugins/unraid-vgpu-manager/package-history/6.18.58-Unraid.json', 'damaged history');
+    installer_check($f->installer->boot($f->settings)['status'] === 'installed' && $f->count('upgradepkg') === 1, 'An authorized explicit selection is resolved before the lower-priority history is read');
+};
+$cases['legacy last success is archived without reauthorizing unknown provenance'] = function (InstallerFixture $f): void {
+    $old = \Vgpu\PackageHistory::fromPackage($f->remotePackage());
+    $f->store->write($f->paths->configDir . '/driver-state.json', ['status' => 'installed', 'boot_id' => InstallerFixture::OLD_BOOT, 'last_success' => $old]);
+    $f->settings['selected_package'] = null;
+    installer_check($f->installer->boot($f->settings)['ok'], 'A valid legacy installed receipt remains usable');
+    installer_check((new \Vgpu\PackageHistory($f->store))->read('6.18.58-Unraid')['source_id'] === $old['source_id'], 'Legacy migration keeps the authenticated source identity');
+    $f->write('/proc/sys/kernel/random/boot_id', InstallerFixture::NEXT_BOOT);
+    $f->fail = 'upgradepkg';
+    unlink($f->paths->path('/sys/module/nvidia/version'));
+    rmdir($f->paths->path('/sys/module/nvidia'));
+    $before = file_get_contents($f->paths->configDir . '/package-history/6.18.58-Unraid.json');
+    installer_check(!$f->installer->boot($f->settings)['ok'], 'Later installation failure propagates');
+    installer_check(file_get_contents($f->paths->configDir . '/package-history/6.18.58-Unraid.json') === $before, 'A failed new candidate does not replace proven history or invent a successful installation boot');
+};
+$cases['bare cached archives never become implicit rollback candidates'] = function (InstallerFixture $f): void {
+    $f->settings['selected_package'] = null;
+    installer_check($f->installer->boot($f->settings)['status'] === 'missing_package' && $f->count('upgradepkg') === 0, 'A canonical TXZ without any authorized receipt is not discovered');
+};
+$cases['history must satisfy every current source branch version and build policy'] = function (InstallerFixture $unused): void {
+    foreach (['source_id', 'source_fingerprint', 'branch', 'driver_pin', 'build_pin'] as $case) {
+        $f = new InstallerFixture();
+        try {
+            $candidate = \Vgpu\PackageHistory::fromPackage($f->remotePackage());
+            if ($case === 'source_id' || $case === 'source_fingerprint') $candidate[$case] = str_repeat('0', 64);
+            (new \Vgpu\PackageHistory($f->store))->remember($candidate);
+            $f->settings['selected_package'] = null;
+            if ($case === 'branch') $f->settings['upgrade']['driver_branch'] = '580';
+            if ($case === 'driver_pin') $f->settings['source']['driver'] = '595.63.01';
+            if ($case === 'build_pin') $f->settings['source']['build'] = '2';
+            installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('upgradepkg') === 0, 'History is not a policy bypass: ' . $case);
+        } finally { $f->close(); }
+    }
+};
+$cases['history never bypasses cache or embedded module inspection'] = function (InstallerFixture $unused): void {
+    foreach (['cache_md5', 'cache_missing', 'embedded_kernel', 'bad_json'] as $case) {
+        $f = new InstallerFixture();
+        try {
+            (new \Vgpu\PackageHistory($f->store))->remember(\Vgpu\PackageHistory::fromPackage($f->remotePackage()));
+            $f->settings['selected_package'] = null;
+            if ($case === 'cache_md5') file_put_contents($f->package['path'], 'changed archive');
+            if ($case === 'cache_missing') unlink($f->package['path']);
+            if ($case === 'embedded_kernel') $f->archiveMagic = '6.18.60-Unraid SMP';
+            if ($case === 'bad_json') file_put_contents($f->paths->configDir . '/package-history/6.18.58-Unraid.json', 'damaged json');
+            installer_check(!$f->installer->boot($f->settings)['ok'] && $f->count('upgradepkg') === 0, 'Invalid history/cache cannot reach pkgtools: ' . $case);
+        } finally { $f->close(); }
+    }
+};
+
 foreach ($cases as $name => $case) {
     $fixture = new InstallerFixture();
     try {

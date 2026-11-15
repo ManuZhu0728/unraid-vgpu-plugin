@@ -137,9 +137,7 @@ final class Installer
         $candidates = [];
         $selected = $settings['selected_package'] ?? null;
         if (is_array($selected) && ($selected['kernel'] ?? '') === $kernel) {
-            $candidates[] = ['package' => $selected, 'saved_boot_id' => $selected['saved_boot_id'] ?? '',
-                'source_id' => $selected['source_id'] ?? '', 'source_fingerprint' => $selected['source_fingerprint'] ?? '',
-                'local' => ($selected['source'] ?? '') === 'local'];
+            $candidates[] = PackageHistory::fromPackage($selected);
         }
         if (($prepared['status'] ?? '') === 'ready' && ($prepared['target_kernel'] ?? '') === $kernel && is_array($prepared['package'] ?? null)) {
             $candidates[] = ['package' => $prepared['package'], 'saved_boot_id' => $prepared['prepared_boot_id'] ?? '',
@@ -155,6 +153,16 @@ final class Installer
                 return $candidate;
             } catch (\Throwable) { /* Keep looking for a current-policy receipt. */ }
         }
+        // A damaged low-priority history must not interfere with an explicit
+        // valid selection. Only the requested kernel's receipt is ever read.
+        $historical = (new PackageHistory($this->store))->read($kernel);
+        if ($historical !== null) {
+            $candidates[] = $historical;
+            try {
+                $this->identity($historical, $settings, $kernel);
+                return $historical;
+            } catch (\Throwable) { /* Preserve the primary policy error below. */ }
+        }
         // boot() repeats identity validation so the primary receipt's error is
         // retained when none are usable. Cache verification never falls back.
         return $candidates[0] ?? null;
@@ -162,22 +170,7 @@ final class Installer
 
     private function identity(array $candidate, array $settings, string $kernel): void
     {
-        $package = PackageIdentity::receipt($candidate['package'] ?? []);
-        $driver = $package['driver'] ?? '';
-        if (!is_string($driver) || !preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/D', $driver) ||
-            ($package['kernel'] ?? '') !== $kernel || !preg_match('/^[a-f0-9]{32}$/D', (string)($package['md5'] ?? ''))) {
-            throw new \RuntimeException('Prepared driver metadata is invalid');
-        }
-        $branch = (string)($settings['upgrade']['driver_branch'] ?? '');
-        if ($branch !== '' && (!preg_match('/^[0-9]+$/D', $branch) || explode('.', $driver)[0] !== $branch)) throw new \RuntimeException('Prepared driver belongs to another NVIDIA branch');
-        if (($settings['source']['driver'] ?? '') !== '' && $driver !== $settings['source']['driver']) throw new \RuntimeException('Prepared driver differs from the selected version');
-        if (($settings['source']['build'] ?? '') !== '' && $package['build'] !== PackageIdentity::build($settings['source']['build'])) throw new \RuntimeException('Prepared driver differs from the selected package build');
-        if (!($candidate['local'] ?? false)) {
-            if (($candidate['source_id'] ?? '') !== Store::sourceIdentity($settings['source']) ||
-                ($candidate['source_fingerprint'] ?? '') !== Upgrade::sourceFingerprint($settings['source'])) {
-                throw new \RuntimeException('Driver source changed; prepare the package again');
-            }
-        }
+        PackageHistory::assertPolicy($candidate, $settings, $kernel);
     }
 
     private function installedMatches(array $package, string $kernel): bool
@@ -256,8 +249,20 @@ final class Installer
                 $state['last_success']['installed_boot_id'] = $previous['boot_id'];
             }
         }
+        $history = new PackageHistory($this->store);
+        $old = null;
+        if (isset($state['last_success'])) {
+            // Legacy records may be incomplete. Never turn missing provenance
+            // or an invented boot ID into new authorization while migrating.
+            try { $old = PackageHistory::authorization($state['last_success']); }
+            catch (\Throwable) { /* Retain the original state without authorizing it. */ }
+            if ($old !== null && PackageHistory::cached($this->store->paths, $old['package'], $old['package']['kernel'])) $history->remember($old);
+        }
         if ($candidate !== null) $state['attempted_package'] = $candidate['package'];
-        if ($status === 'installed' && $candidate !== null) $state['last_success'] = array_replace($candidate, ['installed_boot_id' => $boot]);
+        if ($status === 'installed' && $candidate !== null) {
+            $state['last_success'] = array_replace($candidate, ['installed_boot_id' => $boot]);
+            $history->remember($state['last_success']);
+        }
         $key = hash('sha256', $boot . '\0' . $status . '\0' . $kernel . '\0' . $message);
         $state['notification_key'] = $notify ? $key : ($previous['notification_key'] ?? '');
         $this->store->write($this->store->paths->configDir . '/driver-state.json', $state);
