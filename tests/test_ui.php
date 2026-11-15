@@ -172,6 +172,7 @@ foreach (['driver' => ['1', '驱动管理'], 'vgpu' => ['2', 'vGPU 管理'], 'st
 }
 
 $rendered = ui_render($base);
+ui_check(preg_match('/\.uvm-actions form\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*margin:\s*0;[^}]*\}/', $rendered['html']) === 1, 'Action forms must use flex layout so native table line boxes cannot offset their buttons');
 ui_check(ui_actions($rendered) === ['status', 'logs'], 'All native tab bodies must share one local status read and one log read, without remote work');
 ui_check($rendered['profile_scans'] === 1, 'All native tabs must share one profile scan');
 ui_check(str_contains($rendered['html'], 'uvm-source-url') && str_contains($rendered['html'], 'GitHub / GitLab'), 'UI must offer a repository or release URL as the primary input');
@@ -430,6 +431,19 @@ $editDevice = json_decode(html_entity_decode($encodedDevice[1], ENT_QUOTES | ENT
 ui_check($editDevice === $deviceInput, 'Editing a managed row must use the original saved configuration, not overwrite it with observed host identity');
 foreach (['device-start', 'device-stop', 'device-remove'] as $action) ui_check(str_contains($row, 'value="' . $action . '"'), 'Managed rows must retain the existing ' . $action . ' action');
 ui_check(ui_actions($rendered) === ['status', 'logs'], 'Rendering a managed inventory discrepancy must not repair or rewrite it');
+foreach ([true, false, null] as $active) foreach ([true, false] as $runtimeEnabled) {
+    $actionFixture = ui_inventory_fixture($base, [array_replace($managedRow, ['active' => $active])]);
+    $actionFixture['status']['settings']['runtime']['enabled'] = $runtimeEnabled;
+    $actionRow = ui_inventory_row(ui_inventory_table(ui_render($actionFixture)), $managedRow['uuid'], $managedRow['pci']);
+    ui_check(substr_count($actionRow, '<form ') === 3, 'Device actions must retain three independent POST forms');
+    foreach (['device-start', 'device-stop', 'device-remove'] as $action) {
+        ui_check(preg_match('~<form method="post"[^>]*>(?:(?!</form>).)*name="uvm_action" value="' . $action . '"(?:(?!</form>).)*<button type="submit"([^>]*)>~s', $actionRow, $actionButton) === 1, 'Each action must retain its own submit button: ' . $action);
+        $disabled = $active === null || ($action === 'device-start' && ($active === true || !$runtimeEnabled)) || ($action === 'device-stop' && $active !== true);
+        ui_check((preg_match('/\bdisabled\b/', $actionButton[1]) === 1) === $disabled, 'Button alignment must preserve the device state and runtime safety gate: ' . $action);
+        ui_check(str_contains($actionButton[0], 'name="csrf_token"') && str_contains($actionButton[0], 'name="uvm_csrf_token"'), 'Aligned action forms must retain both CSRF fields');
+        ui_check(str_contains($actionButton[0], 'data-confirm=') === ($action !== 'device-start'), 'Stop/remove must retain their existing VM shutdown confirmation');
+    }
+}
 
 $unknownRow = array_replace($externalActive, ['active' => null, 'defined' => null, 'active_type' => '', 'defined_type' => '']);
 $rendered = ui_render(ui_inventory_fixture($base, [$unknownRow], ['active_known' => false, 'defined_known' => false], ['设备定义读取失败。']));

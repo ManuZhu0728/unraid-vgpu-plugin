@@ -43,7 +43,9 @@ $uvm_ui_assets_rendered = true;
 .uvm-wrap fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .uvm-wrap fieldset:disabled { opacity: .65; }
 .uvm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
-.uvm-actions form, .uvm-inline-form { display: inline-block; margin: 0; }
+/* Keep form buttons out of the native table-cell line box. */
+.uvm-actions form { display: flex; align-items: center; margin: 0; }
+.uvm-inline-form { display: inline-block; margin: 0; }
 .uvm-scroll { overflow-x: auto; }
 .uvm-wrap table { width: 100%; border-collapse: collapse; margin: 12px 0; }
 .uvm-wrap th, .uvm-wrap td { padding: 9px; text-align: left; vertical-align: top; border-bottom: 1px solid #8884; white-space: normal; }
