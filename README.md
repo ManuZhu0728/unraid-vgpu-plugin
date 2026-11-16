@@ -89,7 +89,9 @@ nvidia-595.58.03-6.18.58-Unraid-2.txz
 UnlockRS 和 profile_override 位于该页的“高级设置”。驱动设置与 vGPU 启动设置分别保存。
 使用原插件或 User Scripts 的用户，先完成启动入口迁移，再开启“vGPU 初始化”。
 
-界面字体的继承与差异见 [字体核对](docs/UI-TYPOGRAPHY.md)；本版不改变原生字体样式。
+正文、普通表单和按钮沿用 Unraid 原生字体/风格；展示的 UUID、type、PCI、版本号以及 XML、日志
+和代码编辑区使用同一等宽字体栈，优先原生 `bitstream`，加载失败时统一回退。规则仅作用于插件，
+不修改 WebGUI 全局样式或按钮字重/字距；详见 [字体规则与核对](docs/UI-TYPOGRAPHY.md)。
 
 ## 查看状态与日志
 

@@ -87,9 +87,9 @@ $uvm_package_label = static function ($package, string $kernel = ''): string {
   <div class="uvm-scroll"><table id="uvm-driver-tasks">
     <thead><tr><th>任务</th><th>状态</th><th>版本 / 内核</th></tr></thead>
     <tbody>
-      <tr><td>驱动缓存</td><td><?=$uvm_selected_package ? (($uvm_selected_package['source'] ?? '') === 'local' ? '已导入' : '已下载') : '尚无缓存'?></td><td><?=uvm_h($uvm_package_label($uvm_selected_package))?></td></tr>
-      <tr><td>升级准备</td><td><?=uvm_h($uvm_upgrade_labels[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?></td><td><?=uvm_h($uvm_package_label($uvm_upgrade['package'] ?? [], $uvm_upgrade['target_kernel'] ?? ''))?></td></tr>
-      <tr><td>开机安装</td><td><?=uvm_h($uvm_install_labels[$uvm_installation['status'] ?? ''] ?? ($uvm_installation['status'] ?? '尚无安装记录'))?></td><td><?=uvm_h($uvm_package_label($uvm_install_package, $uvm_installation['kernel'] ?? ''))?></td></tr>
+      <tr><td>驱动缓存</td><td><?=$uvm_selected_package ? (($uvm_selected_package['source'] ?? '') === 'local' ? '已导入' : '已下载') : '尚无缓存'?></td><td><code><?=uvm_h($uvm_package_label($uvm_selected_package))?></code></td></tr>
+      <tr><td>升级准备</td><td><?=uvm_h($uvm_upgrade_labels[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?></td><td><code><?=uvm_h($uvm_package_label($uvm_upgrade['package'] ?? [], $uvm_upgrade['target_kernel'] ?? ''))?></code></td></tr>
+      <tr><td>开机安装</td><td><?=uvm_h($uvm_install_labels[$uvm_installation['status'] ?? ''] ?? ($uvm_installation['status'] ?? '尚无安装记录'))?></td><td><code><?=uvm_h($uvm_package_label($uvm_install_package, $uvm_installation['kernel'] ?? ''))?></code></td></tr>
     </tbody>
   </table></div>
   <?php foreach (['升级准备' => $uvm_upgrade, '开机安装' => $uvm_installation] as $task_label => $task): ?>

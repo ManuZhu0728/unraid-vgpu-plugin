@@ -19,8 +19,8 @@ const kernel = '6.18.58-Unraid';
 const packageInfo = build => ({ driver: '595.58.03', kernel, build, filename: `nvidia-595.58.03-${kernel}-${build}.txz`,
     path: '/boot/config/plugins/unraid-vgpu-manager/packages/cached.txz', md5: 'a'.repeat(32), checksum_verified: true });
 const commonCss = ['default-color-palette.css', 'default-base.css', 'default-dynamix.css'].map(file => readFileSync(path.join(styles, file), 'utf8')).join('\n');
-const fonts = [['clear-sans.woff', 'normal'], ['clear-sans-bold.woff', 'bold']].map(([file, weight]) =>
-    `@font-face {font-family:clear-sans;font-weight:${weight};src:url(data:font/woff;base64,${readFileSync(path.join(styles, file)).toString('base64')})}`).join('\n');
+const fonts = ['clear-sans', 'bitstream'].flatMap(family => [['', 'normal'], ['-bold', 'bold']].map(([suffix, weight]) =>
+    `@font-face {font-family:${family};font-weight:${weight};src:url(data:font/woff;base64,${readFileSync(path.join(styles, family + suffix + '.woff')).toString('base64')})}`)).join('\n');
 const baseUrl = 'https://unraid.example.test/Settings/unraid-vgpu-manager?uvm_view=driver#download';
 const marker = result => '<script type="application/json" id="uvm-download-result">' + JSON.stringify(result).replace(/</g, '\\u003c') + '</script>';
 const success = patch => ({ ok: true, outcome: 'cached', data: { package: { ...packageInfo(3), ...patch } } });
@@ -149,6 +149,8 @@ async function assertContained(page, label) {
         await waitFinished();
         assert.match(await page.locator('#uvm-download-message').textContent(), /已下载并校验/);
         assert.match(await page.locator('#uvm-driver-cache-body').textContent(), /构建 3/);
+        assert.deepEqual(await page.locator('#uvm-driver-cache-body > p:first-child > code').allTextContents(), ['595.58.03', '3', kernel], 'Dynamic download receipts must use the same semantic code markup as the initial page');
+        assert.equal(await page.locator('#uvm-driver-cache-body .uvm-cache-filename > code').textContent(), packageInfo(3).filename);
         assert.equal(await page.locator('#uvm-download-meter').getAttribute('value'), '1');
         assert.equal(await page.evaluate(() => window.uvmUI.isBusy()), false);
         assert.equal(await page.locator('#uvm-download-form button').isDisabled(), false);

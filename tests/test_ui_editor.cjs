@@ -23,7 +23,7 @@ const gpus = {
     [devices[1].pci]: { device: '0x1f82', profiles: [profile(devices[1].type, devices[1].profile, '1')] },
 };
 const css = ['default-color-palette.css', 'default-base.css', 'default-dynamix.css', 'themes/white.css'].map(file => readFileSync(path.join(styles, file), 'utf8')).join('\n') + '\n'
-    + [['clear-sans.woff', 'normal'], ['clear-sans-bold.woff', 'bold']].map(([file, weight]) => `@font-face {font-family:clear-sans;font-weight:${weight};src:url(data:font/woff;base64,${readFileSync(path.join(styles, file)).toString('base64')})}`).join('\n')
+    + ['clear-sans', 'bitstream'].flatMap(family => [['', 'normal'], ['-bold', 'bold']].map(([suffix, weight]) => `@font-face {font-family:${family};font-weight:${weight};src:url(data:font/woff;base64,${readFileSync(path.join(styles, family + suffix + '.woff')).toString('base64')})}`)).join('\n')
     + '\n#fixture-vgpu-panel {display:block}';
 const baseUrl = 'https://unraid.example.test/Settings/unraid-vgpu-manager?driver_mode=local&uvm_view=vgpu';
 const marker = data => '<html><body>native wrapper<script type="application/json" id="uvm-device-create-result">' + JSON.stringify(data) + '</script></body></html>';

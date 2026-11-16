@@ -194,6 +194,9 @@ foreach (['driver' => ['1', '驱动管理'], 'vgpu' => ['2', 'vGPU 管理'], 'st
 }
 
 $rendered = ui_render($base);
+ui_check(str_contains($rendered['html'], '--uvm-font-mono: bitstream, ui-monospace') && str_contains($rendered['html'], 'Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace'), 'Technical output must use an explicit shared native-first monospace fallback stack');
+ui_check(str_contains($rendered['html'], '.uvm-wrap code, .uvm-wrap pre, .uvm-wrap .uvm-field textarea { font-family: var(--uvm-font-mono); }'), 'Monospace rules must be scoped to plugin code, pre and code editor, not body/forms/buttons');
+ui_check(str_contains($rendered['html'], '.uvm-wrap code { font-size: 1em; }'), 'Inline code must retain surrounding text size rather than browser monospace defaults');
 ui_check(str_contains($rendered['html'], 'class="tab-content content" role="tabpanel"'), 'UI fixture must retain the native tab classes that affect first-form padding');
 ui_check(preg_match('/\.uvm-wrap \.uvm-actions > form\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*margin:\s*0;[^}]*padding:\s*0;[^}]*\}/', $rendered['html']) === 1, 'Action forms must override native first-form padding with matching specificity and equal flex layout');
 ui_check(ui_actions($rendered) === ['status', 'logs'], 'All native tab bodies must share one local status read and one log read, without remote work');
@@ -741,7 +744,8 @@ $cachedBuild = $base;
 $cachedBuild['status']['settings']['selected_package'] = $revisions[1] + ['source' => 'local'];
 $cachedBuild['status']['driver_installation'] = ['status' => 'pending_reboot', 'kernel' => '6.18.58-Unraid', 'message' => 'Selected build awaits reboot'];
 $rendered = ui_render($cachedBuild);
-ui_check(str_contains(ui_panel($rendered, 'driver'), 'NVIDIA 595.58.03 · 构建 2'), 'Cached build2 must be visible separately from the loaded driver version');
+ui_check(str_contains(strip_tags(ui_panel($rendered, 'driver')), 'NVIDIA 595.58.03 · 构建 2'), 'Cached build2 must be visible separately from the loaded driver version');
+ui_check(str_contains(ui_panel($rendered, 'driver'), 'NVIDIA <code>595.58.03</code> · 构建 <code>2</code>'), 'Initial cache markup must separate native labels from monospaced driver/build values');
 ui_check(str_contains(ui_panel($rendered, 'driver'), '等待重启安装所选构建'), 'A selected but not installed build must show pending reboot');
 ui_check(str_contains(ui_panel($rendered, 'status'), '<tr><td>开机安装</td><td>等待重启</td>'), 'Status tab must translate pending reboot without claiming the selected build is active');
 $installationFixture = $cachedBuild;
@@ -759,7 +763,7 @@ $disabledRendered = ui_render($disabledFixture);
 ui_check(str_contains(ui_panel($disabledRendered, 'status'), '升级预下载已关闭') && !str_contains(ui_panel($disabledRendered, 'status'), '自动更新已关闭'), 'Disabled upgrade status must describe prefetch only');
 unset($cachedBuild['status']['settings']['selected_package']['build']);
 $rendered = ui_render($cachedBuild);
-ui_check(str_contains(ui_panel($rendered, 'driver'), 'NVIDIA 595.58.03 · 构建 未记录'), 'The UI must not guess build1 from a driver version or incomplete build2 receipt');
+ui_check(str_contains(strip_tags(ui_panel($rendered, 'driver')), 'NVIDIA 595.58.03 · 构建 未记录'), 'The UI must not guess build1 from a driver version or incomplete build2 receipt');
 
 $upload = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'source-upload-begin',
     'filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz', 'total' => '200', 'checksum' => str_repeat('a', 32)];

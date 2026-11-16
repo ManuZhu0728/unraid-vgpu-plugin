@@ -13,7 +13,7 @@
       <input type="hidden" name="source_simple" value="1">
       <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
       <div class="uvm-grid">
-        <label class="uvm-field"><span>下载地址</span><input name="source_url" id="uvm-source-url" type="url" maxlength="1024" placeholder="GitHub / GitLab 仓库、Release 或驱动包链接" value="<?=uvm_h($uvm_source['url'] ?: $uvm_source['repository'])?>"><small>自动识别来源，并匹配 <?=uvm_h(php_uname('r'))?>。</small></label>
+        <label class="uvm-field"><span>下载地址</span><input name="source_url" id="uvm-source-url" type="url" maxlength="1024" placeholder="GitHub / GitLab 仓库、Release 或驱动包链接" value="<?=uvm_h($uvm_source['url'] ?: $uvm_source['repository'])?>"><small>自动识别来源，并匹配 <code><?=uvm_h(php_uname('r'))?></code>。</small></label>
         <label class="uvm-field"><span>Token（私有仓库）</span><input name="credential_token" id="uvm-credential-token" type="password" maxlength="4096" value="" autocomplete="new-password" spellcheck="false"><small><?=!empty($uvm_status['credential_configured']) ? '已保存。留空保留，输入新 Token 可替换。' : '公开仓库留空。'?></small></label>
       </div>
       <input type="hidden" name="source_repository" value="<?=uvm_h($uvm_source['repository'])?>">
@@ -42,7 +42,7 @@
 
     <?php if ($uvm_versions): ?>
     <div class="uvm-scroll"><table><thead><tr><th>驱动版本</th><th>构建号</th><th>内核</th><th>文件</th></tr></thead><tbody>
-    <?php foreach ($uvm_versions as $version): if (!is_array($version)) continue; ?><tr><td><?=uvm_h($version['driver'] ?? '')?></td><td><?=uvm_h($version['build'] ?? '未记录')?></td><td><?=uvm_h($version['kernel'] ?? '')?></td><td><?=uvm_h($version['filename'] ?? '')?></td></tr><?php endforeach; ?>
+    <?php foreach ($uvm_versions as $version): if (!is_array($version)) continue; ?><tr><td><code><?=uvm_h($version['driver'] ?? '')?></code></td><td><code><?=uvm_h($version['build'] ?? '未记录')?></code></td><td><code><?=uvm_h($version['kernel'] ?? '')?></code></td><td><code><?=uvm_h($version['filename'] ?? '')?></code></td></tr><?php endforeach; ?>
     </tbody></table></div>
     <?php endif; ?>
     <form method="post" class="uvm-submit-form uvm-inline-form" id="uvm-download-form" data-kernel="<?=uvm_h(($uvm_snapshot['kernel'] ?? '') ?: php_uname('r'))?>">
@@ -101,8 +101,8 @@
   <h2>驱动缓存</h2>
   <div id="uvm-driver-cache-body">
   <?php if ($uvm_selected_package): ?>
-  <p>NVIDIA <?=uvm_h($uvm_selected_package['driver'] ?? '')?> · 构建 <?=uvm_h($uvm_selected_package['build'] ?? '未记录')?> · <code><?=uvm_h($uvm_selected_package['kernel'] ?? '')?></code> · <?=($uvm_selected_package['source'] ?? '') === 'local' ? '本地导入' : '在线下载'?></p>
-  <p class="uvm-muted uvm-cache-filename"><?=uvm_h($uvm_selected_package['filename'] ?? basename($uvm_selected_package['path'] ?? ''))?></p>
+  <p>NVIDIA <code><?=uvm_h($uvm_selected_package['driver'] ?? '')?></code> · 构建 <code><?=uvm_h($uvm_selected_package['build'] ?? '未记录')?></code> · <code><?=uvm_h($uvm_selected_package['kernel'] ?? '')?></code> · <?=($uvm_selected_package['source'] ?? '') === 'local' ? '本地导入' : '在线下载'?></p>
+  <p class="uvm-muted uvm-cache-filename"><code><?=uvm_h($uvm_selected_package['filename'] ?? basename($uvm_selected_package['path'] ?? ''))?></code></p>
   <details><summary>文件信息</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_selected_package), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
   <?php else: ?><p class="uvm-muted">尚无缓存，下载或上传一个匹配内核的驱动包。</p><?php endif; ?>
   </div>
@@ -119,8 +119,8 @@
     <div class="uvm-scroll"><table class="uvm-cache-table"><thead><tr><th>文件 / 版本</th><th>内核</th><th>大小</th><th>引用 / 保护原因</th><th>操作</th></tr></thead><tbody>
     <?php foreach ($uvm_cache['packages'] as $cached): ?>
       <tr data-cache-filename="<?=uvm_h($cached['filename'])?>">
-        <td><?=uvm_h($cached['filename'])?><p class="uvm-muted">NVIDIA <?=uvm_h($cached['driver'])?> · 构建 <?=uvm_h($cached['build'])?></p></td>
-        <td><?=uvm_h($cached['kernel'])?></td><td><?=uvm_h(number_format($cached['size'] / 1048576, 1))?> MiB</td>
+        <td><code><?=uvm_h($cached['filename'])?></code><p class="uvm-muted">NVIDIA <code><?=uvm_h($cached['driver'])?></code> · 构建 <code><?=uvm_h($cached['build'])?></code></p></td>
+        <td><code><?=uvm_h($cached['kernel'])?></code></td><td><?=uvm_h(number_format($cached['size'] / 1048576, 1))?> MiB</td>
         <td><?=uvm_h(implode('、', $cached['references']) ?: '未被引用')?></td>
         <td><form method="post" class="uvm-cache-delete-form"><?php uvm_form_hidden('cache-delete', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls || $cached['deletable'] !== true ? 'disabled' : ''?>>删除</button></form></td>
       </tr>
@@ -135,7 +135,7 @@
     <h2>升级准备</h2>
     <p>系统升级预下载：<?=!empty($uvm_settings['upgrade']['enabled']) ? '开启' : '关闭'?></p>
     <?php $uvm_upgrade_label = ['idle'=>'尚无升级任务','current'=>'当前内核缓存已就绪','disabled'=>'升级预下载已关闭','downloading'=>'正在下载驱动','ready'=>'驱动已准备好','missing'=>'目标内核驱动尚未发布','error'=>'准备失败','blocked'=>'等待处理启动入口冲突']; ?>
-    <p><?=uvm_h($uvm_upgrade_label[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?><?php if (!empty($uvm_upgrade['target_kernel'])): ?> · <code><?=uvm_h($uvm_upgrade['target_kernel'])?></code><?php endif; ?><?php if (!empty($uvm_upgrade['package']['driver'])): ?> · NVIDIA <?=uvm_h($uvm_upgrade['package']['driver'])?> · 构建 <?=uvm_h($uvm_upgrade['package']['build'] ?? '未记录')?><?php endif; ?></p>
+    <p><?=uvm_h($uvm_upgrade_label[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?><?php if (!empty($uvm_upgrade['target_kernel'])): ?> · <code><?=uvm_h($uvm_upgrade['target_kernel'])?></code><?php endif; ?><?php if (!empty($uvm_upgrade['package']['driver'])): ?> · NVIDIA <code><?=uvm_h($uvm_upgrade['package']['driver'])?></code> · 构建 <code><?=uvm_h($uvm_upgrade['package']['build'] ?? '未记录')?></code><?php endif; ?></p>
     <?php if (in_array($uvm_upgrade['status'] ?? '', ['error','missing','blocked'], true) && !empty($uvm_upgrade['message'])): ?><p class="uvm-muted"><?=uvm_h(uvm_redact($uvm_upgrade['message']))?></p><?php endif; ?>
     <form method="post" class="uvm-submit-form"><?php uvm_form_hidden('upgrade-check', $uvm_csrf); ?><button type="submit" <?=!$uvm_controls || empty($uvm_settings['upgrade']['enabled']) ? 'disabled' : ''?>>检查升级准备</button></form>
   </section>
@@ -188,6 +188,15 @@
   const cacheMessage = document.getElementById('uvm-cache-message');
   const cacheCheck = document.getElementById('uvm-cache-check');
   const csrf = <?=uvm_json($uvm_csrf)?>;
+  function monoText(value) {
+    const node = document.createElement('code'); node.textContent = value; return node;
+  }
+  function packageIdentity(info, includeKernel) {
+    const identity = document.createElement('p');
+    identity.append('NVIDIA ', monoText(info.driver), ' · 构建 ', monoText(info.build));
+    if (includeKernel) identity.append(' · ', monoText(info.kernel), ' · 在线下载');
+    return identity;
+  }
   function renderCacheList(inventory) {
     cacheList.replaceChildren();
     if (!inventory || inventory.available !== true || !Array.isArray(inventory.packages)) {
@@ -208,9 +217,9 @@
     const body = table.createTBody();
     inventory.packages.forEach(function (item) {
       const row = body.insertRow(); row.dataset.cacheFilename = item.filename;
-      const file = row.insertCell(); file.textContent = item.filename;
-      const identity = document.createElement('p'); identity.className = 'uvm-muted'; identity.textContent = 'NVIDIA ' + item.driver + ' · 构建 ' + item.build; file.append(identity);
-      row.insertCell().textContent = item.kernel;
+      const file = row.insertCell(); file.append(monoText(item.filename));
+      const identity = packageIdentity(item, false); identity.className = 'uvm-muted'; file.append(identity);
+      row.insertCell().append(monoText(item.kernel));
       row.insertCell().textContent = (Number(item.size) / 1048576).toFixed(1) + ' MiB';
       row.insertCell().textContent = Array.isArray(item.references) ? (item.references.join('、') || '未被引用') : '引用状态未知';
       const form = document.createElement('form'); form.method = 'post'; form.className = 'uvm-cache-delete-form';
@@ -249,11 +258,10 @@
   function showCachedPackage(packageInfo) {
     const body = document.getElementById('uvm-driver-cache-body');
     const fragment = document.createDocumentFragment();
-    const identity = document.createElement('p');
-    identity.textContent = 'NVIDIA ' + packageInfo.driver + ' · 构建 ' + packageInfo.build + ' · ' + packageInfo.kernel + ' · 在线下载';
+    const identity = packageIdentity(packageInfo, true);
     const filename = document.createElement('p');
     filename.className = 'uvm-muted uvm-cache-filename';
-    filename.textContent = packageInfo.filename;
+    filename.append(monoText(packageInfo.filename));
     const details = document.createElement('details');
     const summary = document.createElement('summary');
     summary.textContent = '文件信息';

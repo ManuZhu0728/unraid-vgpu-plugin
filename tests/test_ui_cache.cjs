@@ -23,7 +23,7 @@ const inventory = (deleted = false, downloaded = false, long = false) => ({ avai
     ...(downloaded ? [{ ...pkg(4), deletable: false, references: ['当前选中'] }] : []),
 ] });
 const css = ['default-color-palette.css', 'default-base.css', 'default-dynamix.css'].map(file => readFileSync(path.join(styles, file), 'utf8')).join('\n');
-const fonts = [['clear-sans.woff', 'normal'], ['clear-sans-bold.woff', 'bold']].map(([file, weight]) => `@font-face {font-family:clear-sans;font-weight:${weight};src:url(data:font/woff;base64,${readFileSync(path.join(styles, file)).toString('base64')})}`).join('\n');
+const fonts = ['clear-sans', 'bitstream'].flatMap(family => [['', 'normal'], ['-bold', 'bold']].map(([suffix, weight]) => `@font-face {font-family:${family};font-weight:${weight};src:url(data:font/woff;base64,${readFileSync(path.join(styles, family + suffix + '.woff')).toString('base64')})}`)).join('\n');
 const base = 'https://unraid.example.test/Settings/unraid-vgpu-manager?uvm_view=driver';
 const marker = (id, result) => '<html><body><script>window.__responseExecuted=true</script><script type="application/json" id="' + id + '">' + JSON.stringify(result).replace(/</g, '\\u003c') + '</script></body></html>';
 const deleted = () => ({ ok: true, data: { filename: free.filename, changed: true, removed: [free.filename, free.filename + '.md5'], package_cache: inventory(true) }, message: '已删除 TXZ 和 MD5，需要时重新下载或上传。' });
@@ -106,6 +106,9 @@ function render(theme, fontSize, long, disabled) {
         assert.match(await page.locator('#uvm-driver-cache-body').textContent(), /构建 3/);
         assert.equal(await page.evaluate(() => window.uvmUI.isBusy()), false);
         assert.equal(await page.evaluate(() => window.__responseExecuted), undefined);
+        assert.equal(await row(selected.filename).locator('td:first-child > code').textContent(), selected.filename);
+        assert.equal(await row(selected.filename).locator('td:nth-child(2) > code').textContent(), selected.kernel);
+        assert.equal(await row(selected.filename).locator('td:first-child p code').count(), 2, 'Async cache lists preserve version/build code markup');
         ++cases;
 
         for (const kind of ['failure', 'unknown', 'login', 'http', 'network', 'timeout', 'wrong-file', 'missing-removed']) {
@@ -132,6 +135,8 @@ function render(theme, fontSize, long, disabled) {
         assert.equal(await row(selected.filename).locator('button').isDisabled(), false, 'Download refreshes the old selection reference');
         assert.equal(await row(pkg(4).filename).locator('button').isDisabled(), true, 'Newly downloaded/selected package is immediately protected');
         assert.equal(await row(upgraded.filename).locator('button').isDisabled(), true);
+        assert.equal(await row(pkg(4).filename).locator('td:first-child > code').textContent(), pkg(4).filename);
+        assert.equal(await row(pkg(4).filename).locator('td:first-child p code').count(), 2);
         ++cases;
 
         long = true;

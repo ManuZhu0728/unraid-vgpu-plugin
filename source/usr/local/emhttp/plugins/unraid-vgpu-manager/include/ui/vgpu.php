@@ -67,7 +67,7 @@ if (!$uvm_inventory) {
   </tbody></table></div>
   <?php foreach ($uvm_readonly_panels as $panel): ?>
   <section class="uvm-readonly-panel uvm-device-details" id="<?=uvm_h($panel['panelId'])?>-details" data-device-key="<?=uvm_h($panel['pci'] . '|' . $panel['uuid'])?>" aria-labelledby="<?=uvm_h($panel['panelId'])?>-details-title" tabindex="-1" hidden>
-    <h3 id="<?=uvm_h($panel['panelId'])?>-details-title">设备详情：<?=uvm_h($panel['pci'])?> · <?=uvm_h($panel['uuid'])?></h3>
+    <h3 id="<?=uvm_h($panel['panelId'])?>-details-title">设备详情：<code><?=uvm_h($panel['pci'])?></code> · <code><?=uvm_h($panel['uuid'])?></code></h3>
     <button type="button" class="uvm-close-readonly" data-readonly-control="<?=uvm_h($panel['panelId'])?>-details-control">关闭详情</button>
     <p>UUID：<code><?=uvm_h($panel['uuid'])?></code><br>物理 GPU / PCI：<code><?=uvm_h($panel['pci'])?></code><br>来源：<?=$panel['managed'] ? '插件配置' : '系统设备'?></p>
     <p>插件保存：<?php if ($panel['configuration'] !== null): ?><code><?=uvm_h($panel['configuration']['pci'] ?? '')?></code> · <?=uvm_h($panel['configuration']['profile'] ?? '')?> · <code><?=uvm_h(($panel['configuration']['type'] ?? '') ?: '未记录')?></code><?php else: ?>未保存<?php endif; ?></p>
@@ -78,7 +78,7 @@ if (!$uvm_inventory) {
   </section>
   <?php if ($panel['validUuid']): ?>
   <section class="uvm-readonly-panel uvm-device-xml" id="<?=uvm_h($panel['panelId'])?>-xml" data-device-key="<?=uvm_h($panel['pci'] . '|' . $panel['uuid'])?>" aria-labelledby="<?=uvm_h($panel['panelId'])?>-xml-title" tabindex="-1" hidden>
-    <h3 id="<?=uvm_h($panel['panelId'])?>-xml-title">VM XML：<?=uvm_h($panel['pci'])?> · <?=uvm_h($panel['uuid'])?></h3>
+    <h3 id="<?=uvm_h($panel['panelId'])?>-xml-title">VM XML：<code><?=uvm_h($panel['pci'])?></code> · <code><?=uvm_h($panel['uuid'])?></code></h3>
     <button type="button" class="uvm-close-readonly" data-readonly-control="<?=uvm_h($panel['panelId'])?>-xml-control">关闭 VM XML</button>
     <pre class="uvm-vm-xml"><?=uvm_h($panel['xml'])?></pre><button type="button" class="uvm-copy-xml">复制 XML</button>
   </section>
@@ -239,7 +239,11 @@ if (!$uvm_inventory) {
         row.classList.add('uvm-profile-current');
       });
       cell(row, '').appendChild(select);
-      [entry.name, entry.type, entry.framebuffer, entry.heads, entry.resolution, entry.frl, entry.available + ' / ' + (entry.maximum || '未知')].forEach(function (value) { cell(row, value); });
+      cell(row, entry.name);
+      const typeLabel = document.createElement('code');
+      typeLabel.textContent = entry.type;
+      cell(row, '').appendChild(typeLabel);
+      [entry.framebuffer, entry.heads, entry.resolution, entry.frl, entry.available + ' / ' + (entry.maximum || '未知')].forEach(function (value) { cell(row, value); });
       body.appendChild(row);
       if (current) type.value = entry.type;
     });

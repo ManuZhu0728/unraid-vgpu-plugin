@@ -25,7 +25,10 @@ $uvm_ui_assets_rendered = true;
 <?php if ($uvm_render_shared): ?>
 <style>
 .uvm-wrap [hidden] { display: none !important; }
-.uvm-wrap { max-width: 1400px; margin: 18px 0; }
+.uvm-wrap { --uvm-font-mono: bitstream, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace; max-width: 1400px; margin: 18px 0; }
+/* Keep native body/forms/buttons; only technical output and code use this stack. */
+.uvm-wrap code, .uvm-wrap pre, .uvm-wrap .uvm-field textarea { font-family: var(--uvm-font-mono); }
+.uvm-wrap code { font-size: 1em; }
 .uvm-wrap h2 { margin: 0 0 12px; font-size: 1.2em; }
 .uvm-wrap h3 { margin: 20px 0 10px; font-size: 1.05em; }
 .uvm-panel { border: 1px solid #8885; border-radius: 5px; padding: 18px; margin: 16px 0; }
@@ -39,7 +42,7 @@ $uvm_ui_assets_rendered = true;
 .uvm-field > span { display: block; margin-bottom: 5px; }
 .uvm-field input:not([type=checkbox]), .uvm-field select, .uvm-field textarea { width: 100%; box-sizing: border-box; min-height: 32px; }
 .uvm-field small { display: block; margin: 5px 0; line-height: 1.45; opacity: .8; }
-.uvm-field textarea { min-height: 180px; font-family: monospace; }
+.uvm-field textarea { min-height: 180px; }
 .uvm-wrap fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .uvm-wrap fieldset:disabled { opacity: .65; }
 .uvm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }

@@ -3,6 +3,24 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
+## Alpha 17 插件字体统一（2026-11-16）
+
+仅在 `.uvm-wrap` 声明 `--uvm-font-mono`，优先 Unraid 原生 bitstream，后接 ui-monospace、
+SFMono-Regular、Menlo、Monaco、Consolas、Liberation Mono、DejaVu Sans Mono 与 monospace。
+统一 code/pre/profile_override 编辑区；内联 code 使用 1em 保留所在层级字号。不替换 WebGUI 字体，
+不新增字体资源/网络请求，不给 body、普通 input/select、表格整列或按钮设置字体。
+
+详情/XML 标题中的 PCI/UUID、动态 profile type、在线版本表、缓存版本/内核/文件名及任务版本补齐
+语义 code。PHP 首次渲染与下载/删除后动态 DOM 使用相同标签，JS 仍仅通过 textContent/append
+插入数据，不引入 innerHTML、不改变事件、提交协议、鉴权、安全门禁、选包或设备行为。
+
+字体回归使用固定官方 7.3.4 CSS 与 Clear Sans/bitstream 普通和粗体：黑白主题 × 根字号 62.5%/
+100% × 320/360/768/1920px × 等宽字体可用/不可用共 32 组；逐项核对 20 个等宽和 16 个原生目标，
+原生对照检查字体、按钮颜色/背景/边框/内边距不受影响，插件外 code/pre/表单不泄漏。
+6 个详情/XML 控件每组开关各一次，共 384 次几何检查，覆盖多行、长代码、同 UUID 不同 PCI、
+焦点返回、键盘、草稿不变和局部滚动；模拟旧混合字体作为负对照。另行复跑原有 UI 布局/新增/
+下载/缓存及真实本机上传鉴权链。本轮不部署或操作 Unraid，不改 NVIDIA 驱动仓库。
+
 ## Alpha 16 分块上传鉴权兼容与强制 MD5（2026-11-16）
 
 Alpha 15 未处理的二进制 multipart 与纯文本 multipart 一样会在原生 `auth_request -> PHP-FPM`

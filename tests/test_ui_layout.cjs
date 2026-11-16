@@ -19,9 +19,9 @@ const defaults = JSON.parse(execFileSync(php, ['-n', '-r', 'require $argv[1]; ec
 defaults.runtime.enabled = true;
 const device = { uuid: 'ae9572f6-1259-4136-9aa4-497dda98d2db', pci: '0000:01:00.0', profile: 'NVIDIA RTXA5500-1Q', type: 'nvidia-762' };
 const commonCss = ['default-color-palette.css', 'default-base.css', 'default-dynamix.css'].map(file => readFileSync(path.join(styles, file), 'utf8')).join('\n');
-const fonts = [['clear-sans.woff', 'normal'], ['clear-sans-bold.woff', 'bold']].map(([file, weight]) =>
-    `@font-face { font-family: clear-sans; font-weight: ${weight}; src: url(data:font/woff;base64,${readFileSync(path.join(styles, file)).toString('base64')}); }`
-).join('\n');
+const fonts = ['clear-sans', 'bitstream'].flatMap(family => [['', 'normal'], ['-bold', 'bold']].map(([suffix, weight]) =>
+    `@font-face { font-family: ${family}; font-weight: ${weight}; src: url(data:font/woff;base64,${readFileSync(path.join(styles, family + suffix + '.woff')).toString('base64')}); }`
+)).join('\n');
 
 function render(active, expandedFixture = false) {
     const row = { ...device, framebuffer: '1024M', active, defined: true, managed: true, configuration: device, active_type: active ? device.type : '', defined_type: device.type, configured_type: device.type, definition_start: 'manual', iommu_group: '27' };
