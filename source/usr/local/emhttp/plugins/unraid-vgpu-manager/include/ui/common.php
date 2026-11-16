@@ -66,7 +66,7 @@ function uvm_redact($value)
 
 function uvm_cli(string $action, array $payload = []): array
 {
-    $allowed = ['status', 'logs', 'cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'];
+    $allowed = ['status', 'logs', 'cache-select', 'cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'];
     if (!in_array($action, $allowed, true)) throw new InvalidArgumentException('Unsupported action');
     // Unraid may evaluate/cache .page templates outside their installed directory.
     $entrypoint = '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/cli.php';
@@ -81,7 +81,7 @@ function uvm_cli(string $action, array $payload = []): array
     $process = proc_open(['/usr/bin/php', $entrypoint, $action], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
     if (!is_resource($process)) throw new RuntimeException('Unable to start the plugin backend.');
     foreach ($pipes as $pipe) stream_set_blocking($pipe, false);
-    $timeout = $action === 'upgrade-check' ? 3600 : (in_array($action, ['source-download', 'source-upload-finish'], true) ? 900 : (str_starts_with($action, 'source-') ? 90 : 30));
+    $timeout = $action === 'upgrade-check' ? 3600 : (in_array($action, ['source-download', 'source-upload-finish', 'cache-select', 'config-save'], true) ? 900 : (str_starts_with($action, 'source-') ? 90 : 30));
     $deadline = microtime(true) + $timeout;
     $offset = 0;
     $output = '';

@@ -35,7 +35,7 @@ function uvm_cli(string $action, array $payload=[]): array {
     global $app, $store;
     if ($action === 'status') return ['settings'=>$store->settings(),'devices'=>[],'credential_configured'=>false,'override_content'=>'','pending_restart'=>false,
         'package_cache'=>(new Vgpu\PackageCache($store))->listing(),'runtime'=>['ok'=>true,'runtime'=>['kernel'=>'6.18.58-Unraid','loaded_driver'=>'595.58.03']]];
-    if (!str_starts_with($action, 'source-upload-')) throw new RuntimeException('Only upload actions are in this fixture');
+    if (!str_starts_with($action, 'source-upload-') && $action !== 'cache-select') throw new RuntimeException('Only upload and explicit cache selection are in this fixture');
     file_put_contents(__DIR__.'/calls.jsonl', json_encode(['action'=>$action,'keys'=>array_keys($payload),'offset'=>$payload['offset']??null,'data_chars'=>strlen($payload['data']??''),
         'content_type'=>$_SERVER['CONTENT_TYPE']??'', 'upload_id'=>$payload['upload_id']??null,
         'native_consumed'=>!isset($_POST['csrf_token']), 'mirror_valid'=>($_POST['uvm_csrf_token']??'')==='fixture-upload-csrf'])."\n", FILE_APPEND);

@@ -40,7 +40,7 @@ function uvm_cli(string $action, array $payload = []): array {
     if ($case === 'missing-receipt') return ['ok'=>true];
     $identity = \Vgpu\PackageIdentity::parse($payload['filename'] ?? 'nvidia-595.58.03-6.18.58-Unraid-3.txz', '6.18.58-Unraid');
     return ['ok'=>true, 'package'=>$identity + ['md5'=>str_repeat('a',32), 'checksum_verified'=>true,
-        'path'=>'/boot/config/plugins/unraid-vgpu-manager/packages/'.$identity['filename']]];
+        'path'=>'/boot/config/plugins/unraid-vgpu-manager/driver-cache/'.$identity['filename']]];
 }
 function uvm_profile_scan(): array { throw new RuntimeException('Async downloads must not scan a GPU'); }
 function uvm_read(string $path, int $limit=65536): string { return ''; }

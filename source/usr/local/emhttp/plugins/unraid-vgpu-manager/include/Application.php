@@ -21,13 +21,22 @@ final class Application
             if (!is_string($category)) throw new \InvalidArgumentException('Invalid log category');
             return (new Logs($this->store->paths, (string)($this->store->credentials()['token'] ?? '')))->read($category);
         }
-        if (!in_array($action, ['cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove', 'ensure', 'boot', 'plan'], true)) {
+        if (!in_array($action, ['cache-select', 'cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove', 'ensure', 'boot', 'plan'], true)) {
             throw new \InvalidArgumentException('Unknown operation');
         }
         if ($action === 'plan') {
             return ['message' => 'Driver installation runs at boot. System upgrades can prepare the target-kernel package in advance.', 'pending_restart' => $this->store->settings()['pending_restart']];
         }
-        return $this->store->locked(fn() => $this->mutate($action, $input));
+        return $this->store->locked(function () use ($action, $input): array {
+            $native = new NativeBoot($this->store, $this->download);
+            $native->migrate();
+            if ($action === 'boot') $native->sync($this->store->settings(), (new Upgrade($this->store, $this->download, $this->runner))->status());
+            $result = $this->mutate($action, $input);
+            if (in_array($action, ['config-save', 'cache-select', 'upgrade-check'], true)) {
+                $native->sync($this->store->settings(), (new Upgrade($this->store, $this->download, $this->runner))->status());
+            }
+            return $result;
+        });
     }
 
     private function status(): array
@@ -56,6 +65,19 @@ final class Application
     private function mutate(string $action, array $input): array
     {
         $settings = $this->store->settings();
+        if ($action === 'cache-select') {
+            if (array_keys($input) !== ['filename'] || !is_string($input['filename'])) throw new \InvalidArgumentException('选择请求只接受完整的驱动包文件名。');
+            $native = new NativeBoot($this->store, $this->download);
+            $package = $native->cachedReceipt($input['filename']);
+            $this->assertPackagePolicy($package, $settings['source']);
+            if (($package['source'] ?? '') !== 'local') PackageHistory::assertPolicy(PackageHistory::fromPackage($package), $settings, $package['kernel']);
+            $this->download->verifyCached($package, $package['kernel']);
+            $settings['selected_package'] = $this->packageReceipt($package, $settings['source']);
+            $this->store->saveSettings($settings);
+            return ['ok' => true, 'package' => $settings['selected_package'], 'message' => $settings['driver']['enabled']
+                ? '已选择下次启动构建；由 Unraid 在下次开机安装。当前驱动和服务未改变。'
+                : '已保存构建选择；开机恢复关闭，尚未加入 Unraid 启动安装目录。当前驱动和服务未改变。'];
+        }
         if ($action === 'cache-delete') {
             if (array_keys($input) !== ['filename'] || !is_string($input['filename'])) throw new \InvalidArgumentException('删除请求只接受完整的驱动包文件名。');
             $cache = new PackageCache($this->store);
@@ -104,10 +126,9 @@ final class Application
                 $result['package']['source'] = $source['repository'];
                 $result['package']['provider'] = $source['provider'];
                 $result['package'] = $this->packageReceipt($result['package'], $settings['source']);
-                $settings['selected_package'] = $result['package'];
-                $this->store->saveSettings($settings);
+                (new NativeBoot($this->store, $this->download))->remember($result['package']);
                 $result['package_cache'] = (new PackageCache($this->store))->listing();
-                $result['message'] = 'Driver package verified and cached only. No driver was installed or reloaded.';
+                $result['message'] = 'Driver package verified and cached only. Select it explicitly for the next Unraid boot. No running driver was changed.';
             }
             return $result;
         }
@@ -342,9 +363,8 @@ final class Application
                 $result['package']['source'] = 'local';
                 $result['package']['provider'] = 'local';
                 $result['package'] = $this->packageReceipt($result['package'], $settings['source']);
-                $settings['selected_package'] = $result['package'];
-                $this->store->saveSettings($settings);
-                $result['message'] = 'Local driver package imported';
+                (new NativeBoot($this->store, $this->download))->remember($result['package']);
+                $result['message'] = 'Local driver package imported; select it explicitly for the next Unraid boot';
             }
             return $result;
         } finally {

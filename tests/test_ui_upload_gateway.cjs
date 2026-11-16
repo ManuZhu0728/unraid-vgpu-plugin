@@ -70,15 +70,23 @@ const filename = path.basename(packagePath);
             // the Python harness verifies the actual server-side beacon instead.
             if (mode !== 'beacon') assert.equal(count('source-upload-cancel'), 1, 'Cancellation is attempted once without a hidden retry');
         } else if (mode === 'success') {
-            await page.waitForFunction(name => document.getElementById('uvm-driver-cache-body').textContent.includes(name), filename);
-            assert.match(await page.locator('#uvm-driver-cache-body').innerText(), /构建 4/);
+            await page.waitForFunction(name => document.getElementById('uvm-cache-list').textContent.includes(name), filename);
+            assert.match(await page.locator('#uvm-driver-cache-body').innerText(), /构建 3/);
+            assert.match(await page.locator('#uvm-cache-list').innerText(), /构建 4/);
             assert.equal(count('source-upload-cancel'), 0);
             assert.equal(count('source-upload-begin'), 1);
             assert.ok(count('source-upload-chunk') >= 3, 'Actual PHP post_max_size must split the binary into multiple requests');
             assert.equal(count('source-upload-finish'), 1);
             await page.reload();
-            assert.match(await page.locator('#uvm-driver-cache-body').innerText(), /构建 4/);
+            assert.match(await page.locator('#uvm-driver-cache-body').innerText(), /构建 3/);
+            assert.match(await page.locator('#uvm-cache-list').innerText(), /构建 4/);
             assert.equal(count('source-upload-finish'), 1, 'Fresh GET must not replay finalization');
+            const candidate = page.locator('#uvm-cache-list tr[data-cache-filename="' + filename + '"]');
+            await candidate.locator('.uvm-submit-form button').click();
+            await page.waitForFunction(name => document.getElementById('uvm-driver-cache-body').textContent.includes(name), filename);
+            assert.match(await page.locator('#uvm-driver-cache-body').innerText(), /构建 4/);
+            assert.equal(count('cache-select'), 1, 'Only the explicit native form changes the boot selection');
+            assert.equal(count('source-upload-finish'), 1, 'Selection is not another import');
         } else if (mode === 'bad-md5') {
             await page.waitForFunction(() => document.getElementById('uvm-upload-progress').textContent === '导入未完成。' && !window.uvmUI.isBusy());
             assert.match(await page.locator('#uvm-browser-message-driver').innerText(), /MD5/);
@@ -102,7 +110,8 @@ const filename = path.basename(packagePath);
             assert.equal(count('source-upload-finish'), 1);
             assert.equal(count('source-upload-cancel'), 0, 'An unknown finish may already be committed; do not cancel or retry it');
             await page.locator('#uvm-upload-check').click();
-            await page.waitForFunction(name => document.getElementById('uvm-driver-cache-body').textContent.includes(name), filename);
+            await page.waitForFunction(name => document.getElementById('uvm-cache-list').textContent.includes(name), filename);
+            assert.match(await page.locator('#uvm-driver-cache-body').innerText(), /构建 3/);
             assert.equal(count('source-upload-finish'), 1, 'Recovery is a GET, never a second import');
         } else {
             throw new Error('Unknown upload browser test mode: ' + mode);

@@ -215,7 +215,8 @@ try {
     $result = $single->application->dispatch('source-import', ['filename' => $single->filename, 'path' => $singlePath,
         'checksum_path' => $single->phpFile(md5($single->package))]);
     import_check($result['ok'] && $result['package']['checksum_verified'] === true, 'Single-upload import must require an independently supplied MD5');
-    import_check($single->store->settings()['selected_package']['provider'] === 'local', 'Single-upload fallback must select the cached package');
+    import_check($single->store->settings()['selected_package'] === null, 'Import must not implicitly change the boot selection');
+    import_check((new Vgpu\NativeBoot($single->store, new Vgpu\Download($single->paths)))->cachedReceipt($single->filename)['provider'] === 'local', 'Import retains a separately selectable local cache receipt');
     foreach ([2, 10] as $build) {
         $revision = $fixtures[] = new ImportFixture();
         $revision->filename = "nvidia-595.58.03-6.18.58-Unraid-$build.txz";
@@ -224,7 +225,8 @@ try {
         $revisionApp->dispatch('source-upload-chunk', ['upload_id' => $started['upload_id'], 'offset' => 0, 'path' => $revision->phpFile($revision->package)]);
         $result = $revisionApp->dispatch('source-upload-finish', ['upload_id' => $started['upload_id']]);
         import_check($result['package']['build'] === $build && $result['package']['filename'] === $revision->filename, 'Chunk import must retain the chosen revision');
-        import_check($revision->store->settings()['selected_package']['build'] === $build, 'Selected local receipt must persist build');
+        import_check($revision->store->settings()['selected_package'] === null, 'Importing another build must leave boot selection unchanged');
+        import_check((new Vgpu\NativeBoot($revision->store, new Vgpu\Download($revision->paths)))->cachedReceipt($revision->filename)['build'] === $build, 'Selectable local cache receipt must persist build');
         import_check($result['package']['checksum_verified'] === true, 'Every local revision must have an independently verified checksum');
         import_check(is_file($result['package']['path']) && !is_dir($revision->paths->runtimeDir . '/upload-' . $started['upload_id']), 'New build cache is published and staging cleared');
     }

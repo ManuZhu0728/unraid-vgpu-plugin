@@ -17,7 +17,7 @@ settings.source.repository = 'owner/drivers';
 settings.source.provider = 'gitlab';
 const kernel = '6.18.58-Unraid';
 const packageInfo = build => ({ driver: '595.58.03', kernel, build, filename: `nvidia-595.58.03-${kernel}-${build}.txz`,
-    path: '/boot/config/plugins/unraid-vgpu-manager/packages/cached.txz', md5: 'a'.repeat(32), checksum_verified: true });
+    path: '/boot/config/plugins/unraid-vgpu-manager/driver-cache/cached.txz', md5: 'a'.repeat(32), checksum_verified: true });
 const commonCss = ['default-color-palette.css', 'default-base.css', 'default-dynamix.css'].map(file => readFileSync(path.join(styles, file), 'utf8')).join('\n');
 const fonts = ['clear-sans', 'bitstream'].flatMap(family => [['', 'normal'], ['-bold', 'bold']].map(([suffix, weight]) =>
     `@font-face {font-family:${family};font-weight:${weight};src:url(data:font/woff;base64,${readFileSync(path.join(styles, family + suffix + '.woff')).toString('base64')})}`)).join('\n');

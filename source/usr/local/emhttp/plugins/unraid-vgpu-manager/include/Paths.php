@@ -9,6 +9,7 @@ final class Paths
     public string $configDir;
     public string $runtimeDir;
     public string $cacheDir;
+    public string $bootPackagesDir;
     public string $settingsFile;
     public string $credentialsFile;
     public string $devicesFile;
@@ -22,7 +23,9 @@ final class Paths
         $this->root = rtrim($root, '/');
         $this->configDir = $this->path('/boot/config/plugins/unraid-vgpu-manager');
         $this->runtimeDir = $this->path('/var/run/unraid-vgpu-manager');
-        $this->cacheDir = $this->configDir . '/packages';
+        // Unraid scans packages/<kernel> at boot. Downloads must NOT live there.
+        $this->cacheDir = $this->configDir . '/driver-cache';
+        $this->bootPackagesDir = $this->configDir . '/packages';
         $this->settingsFile = $this->configDir . '/settings.json';
         $this->credentialsFile = $this->configDir . '/credentials.json';
         $this->devicesFile = $this->configDir . '/devices.json';
