@@ -76,7 +76,7 @@ echo '</main>';
             port = listener.getsockname()[1]
         cls.origin = f'http://127.0.0.1:{port}'
         cls.url = cls.origin + '/fixture.php'
-        cls.process = subprocess.Popen([cls.php, '-n', '-S', f'127.0.0.1:{port}', '-t', str(cls.directory)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.start_server(port)
         for _ in range(60):
             try:
                 with urllib.request.urlopen(cls.url, timeout=1) as response:
@@ -86,6 +86,10 @@ echo '</main>';
                 time.sleep(0.05)
         cls.process.terminate(); cls.process.wait(timeout=5); cls.temporary.cleanup()
         raise RuntimeError('HTTP fixture did not start')
+
+    @classmethod
+    def start_server(cls, port):
+        cls.process = subprocess.Popen([cls.php, '-n', '-S', f'127.0.0.1:{port}', '-t', str(cls.directory)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     @classmethod
     def tearDownClass(cls):

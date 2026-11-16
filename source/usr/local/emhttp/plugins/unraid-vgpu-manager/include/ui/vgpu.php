@@ -283,7 +283,8 @@ if (!$uvm_inventory) {
       message('请先选择 GPU 配置。', true);
       return;
     }
-    const data = new FormData(form);
+    // This form contains text only; avoid multipart at the native auth gateway.
+    const data = new URLSearchParams(new FormData(form));
     const submittedUuid = uuid.value.trim().toLowerCase();
     const controller = new AbortController();
     const timeout = window.setTimeout(function () { controller.abort(); }, 30000);

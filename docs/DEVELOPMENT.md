@@ -3,6 +3,30 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
+## 原生鉴权网关 POST 编码修复（2026-11-16，尚未发布）
+
+Alpha 14 实机删除失败不是已确认的 unlink 权限错误。用户手动复现时，浏览器约 45 秒
+没有收到 HTTP 响应，随后触发前端 Abort；经授权只读检查，PHP worker 在等待 Unix socket，
+没有启动删除 CLI，Store 操作锁的 ctime 也没有变化。未修改 NAS 配置、缓存或服务。
+
+本机保留 `auth_request -> PHP-FPM` 子请求和原生 FastCGI 参数复现相同现象：文本字段以
+`multipart/form-data` 发送时，鉴权子请求等待请求体，业务页面尚未运行；同一网关收到
+`application/x-www-form-urlencoded` 请求则立即返回。旧 PHP 内置 HTTP 服务器和拦截 fetch
+的测试没有覆盖这条链，不能作为原生网关兼容证据。
+
+删除、驱动下载、设备新增三个纯文本异步表单改为
+`new URLSearchParams(new FormData(form))`。保留重复的同值原生 CSRF 字段、插件镜像字段、
+同源凭据、精确身份、独立表单、确认、并发门禁和未知结果不重试；不延长超时，不改后台
+删除策略、下载器、设备运行管理或 Unraid 的鉴权配置。二进制上传仍使用 multipart，
+其分块协议需要单独适配，未把纯文本编码方案直接用于 File/Blob。
+
+`tests/test_webgui_gateway.py` 可通过 `NGINX_BIN` / `PHP_FPM_BIN` 启用独立 localhost
+nginx/PHP-FPM，继承真实临时文件删除和保护测试，并包含旧 multipart 超时负对照。
+设置 `PLAYWRIGHT_MODULE` 后，再执行 `tests/test_ui_gateway.cjs` 的真实浏览器链：所有请求
+实际经过鉴权、PHP、Application 和临时缓存；检查删除 TXZ/MD5、选中构建保留及刷新不复现。
+无相应二进制时明确 skip，不下载依赖或伪造网关成功。现有模拟浏览器回归另行检查三种
+表单的实际 Content-Type 与字段；此修复未更改版本元数据或触发发布。
+
 ## Alpha 14 缓存管理与下载反馈（2026-11-16）
 
 版本 `2026.11.16.3` / `v2026.11.16.3-alpha.14` 合并同页异步下载与已下载驱动的安全删除。

@@ -76,7 +76,7 @@ async function assertContained(page, label) {
         page.on('dialog', dialog => dialog.accept());
         await page.route('**/*', async route => {
             const request = route.request();
-            requests.push({ method: request.method(), url: request.url(), body: request.postData() || '', type: request.resourceType() });
+            requests.push({ method: request.method(), url: request.url(), body: request.postData() || '', type: request.resourceType(), contentType: request.headers()['content-type'] || '' });
             assert.equal(new URL(request.url()).origin, new URL(baseUrl).origin, 'Never contact a NAS or other origin');
             if (request.method() === 'GET') return route.fulfill({ contentType: 'text/html', body: render(theme, fontSize, disabled) });
             assert.equal(request.method(), 'POST');
@@ -139,8 +139,9 @@ async function assertContained(page, label) {
         assert.equal(await page.locator('#uvm-driver-mode').inputValue(), 'online', 'Mode must remain stable while downloading');
         assert.equal(requests.length, beforePending + 1, 'Double submit and other mutation forms cannot race a pending download');
         const downloadRequest = requests.at(-1);
+        assert.match(downloadRequest.contentType, /^application\/x-www-form-urlencoded\b/i, 'Downloads must use text form encoding through the native authentication gateway');
         for (const [name, value] of Object.entries({ uvm_action: 'source-download', uvm_tab: 'driver', csrf_token: 'fixture-ui-csrf', uvm_csrf_token: 'fixture-ui-csrf', uvm_download_async: '1', download_package: packageInfo(3).filename })) {
-            assert.ok(downloadRequest.body.includes(`name="${name}"\r\n\r\n${value}\r\n`), name + ' must be included in the one exact download request');
+            assert.equal(new URLSearchParams(downloadRequest.body).get(name), value, name + ' must be included in the one exact download request');
         }
         assert.ok(!downloadRequest.body.includes('unsaved.example.test') && !downloadRequest.body.includes('fixture-unsaved-secret'));
         if (process.env.DOWNLOAD_TEST_OUTPUT) await page.locator('#uvm-online-panel').screenshot({ path: path.join(process.env.DOWNLOAD_TEST_OUTPUT, 'download-pending.png') });
@@ -184,7 +185,7 @@ async function assertContained(page, label) {
         await submit(); await waitFinished();
         assert.match(await page.locator('#uvm-download-message').textContent(), /已下载并校验/);
         assert.equal(requests.length, beforeAutomatic + 1, 'Automatic package selection also stays on the page and dispatches once');
-        assert.ok(requests.at(-1).body.includes('name="download_package"\r\n\r\n\r\n'));
+        assert.equal(new URLSearchParams(requests.at(-1).body).get('download_package'), '');
         ++cases;
 
         await page.locator('#uvm-driver-cache-body').evaluate(body => { body.replaceChildren = () => { throw new Error('Simulated DOM update failure'); }; });

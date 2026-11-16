@@ -632,6 +632,9 @@ $downloadForm = ui_form($rendered, 'uvm-download-form');
 ui_check(str_contains($downloadForm, 'method="post"') && str_contains($downloadForm, 'name="uvm_csrf_token"') && !str_contains($downloadForm, 'credential_token'), 'Download keeps a standalone dual-CSRF POST fallback without source/token fields');
 ui_check(preg_match('~<progress\b[^>]*id="uvm-download-meter"[^>]*>~', $rendered['html'], $meter) === 1 && !str_contains($meter[0], 'value='), 'Download progress must be indeterminate until confirmation, not a fabricated percentage');
 ui_check(str_contains($rendered['html'], 'id="uvm-driver-cache-body"') && str_contains($rendered['html'], 'id="uvm-download-check"'), 'Async UI must update only the cache and provide explicit GET recovery for an unknown result');
+ui_check(str_contains($rendered['html'], 'new URLSearchParams(new FormData(downloadForm))'), 'Text-only downloads must avoid multipart before the Unraid PHP authentication gateway');
+ui_check(str_contains($rendered['html'], 'new URLSearchParams(new FormData(form))'), 'Text-only cache deletion must use ordinary URL-encoded form data');
+ui_check(str_contains(ui_panel($rendered, 'vgpu'), 'new URLSearchParams(new FormData(form))'), 'Text-only device creation must use the same gateway-compatible encoding');
 
 $deletePost = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver',
     'uvm_action' => 'cache-delete', 'uvm_cache_delete_async' => '1', 'cache_filename' => $downloadPackage['filename']];

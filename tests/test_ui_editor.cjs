@@ -75,13 +75,14 @@ async function actions(page) {
         page.on('dialog', dialog => dialog.dismiss());
         await page.route('**/*', async route => {
             const request = route.request();
-            requests.push({ method: request.method(), url: request.url(), body: request.postData() || '' });
+            requests.push({ method: request.method(), url: request.url(), body: request.postData() || '', contentType: request.headers()['content-type'] || '' });
             assert.equal(new URL(request.url()).origin, new URL(baseUrl).origin, 'Never contact a NAS or other origin');
             if (request.method() === 'GET') {
                 return route.fulfill({ contentType: 'text/html', body: render(created, disabled) });
             }
             assert.equal(request.method(), 'POST');
-            const uuid = request.postData().match(/name="uuid"\r\n\r\n([^\r]+)/)[1];
+            assert.match(request.headers()['content-type'], /^application\/x-www-form-urlencoded\b/i);
+            const uuid = new URLSearchParams(request.postData()).get('uuid');
             if (responseKind === 'pending') return new Promise(resolve => { releasePending = async () => { await route.fulfill({ contentType: 'text/html', body: marker({ ok: false, error: '稍后重试' }) }); resolve(); }; });
             if (responseKind === 'network') return route.abort('connectionreset');
             if (responseKind === 'timeout') return new Promise(resolve => { page.once('requestfailed', resolve); });
@@ -254,7 +255,7 @@ async function actions(page) {
         assert.deepEqual(errors, []);
         ++scenarios;
         for (const request of requests.filter(request => request.method === 'POST')) {
-            for (const [name, value] of [['uvm_action', 'device-create'], ['csrf_token', 'fixture-ui-csrf'], ['uvm_csrf_token', 'fixture-ui-csrf']]) assert.ok(request.body.includes('name="' + name + '"\r\n\r\n' + value), 'Retain ' + name);
+            for (const [name, value] of [['uvm_action', 'device-create'], ['csrf_token', 'fixture-ui-csrf'], ['uvm_csrf_token', 'fixture-ui-csrf']]) assert.equal(new URLSearchParams(request.body).get(name), value, 'Retain ' + name);
         }
         console.log(`UI create/details: ${scenarios} scenarios passed; wrapped fetch responses, failures/unknown outcomes, busy, independent drafts, CSRF, authoritative GET refresh; no NAS or GPU operation.`);
     } finally {

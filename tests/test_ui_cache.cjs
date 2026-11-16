@@ -51,10 +51,11 @@ function render(theme, fontSize, long, disabled) {
         await page.route('**/*', async route => {
             const request = route.request();
             assert.equal(new URL(request.url()).origin, new URL(base).origin, 'No NAS or external network');
-            requests.push({ method: request.method(), body: request.postData() || '', type: request.resourceType() });
+            requests.push({ method: request.method(), body: request.postData() || '', type: request.resourceType(), contentType: request.headers()['content-type'] || '' });
             if (request.method() === 'GET') return route.fulfill({ contentType: 'text/html', body: render(theme, fontSize, long, disabled) });
             assert.equal(request.method(), 'POST'); assert.equal(request.resourceType(), 'fetch');
-            if (request.postData().includes('name="uvm_action"\r\n\r\nsource-download')) return route.fulfill({ contentType: 'text/html', body: marker('uvm-download-result', {
+            assert.match(request.headers()['content-type'], /^application\/x-www-form-urlencoded\b/i, 'Text-only POST must not enter the multipart authentication deadlock');
+            if (new URLSearchParams(request.postData()).get('uvm_action') === 'source-download') return route.fulfill({ contentType: 'text/html', body: marker('uvm-download-result', {
                 ok: true, outcome: 'cached', data: { package: pkg(4), package_cache: inventory(false, true) },
             }) });
             if (responseKind === 'pending') return new Promise(resolve => { release = async () => { await route.fulfill({ contentType: 'text/html', body: marker('uvm-cache-delete-result', deleted()) }); resolve(); }; });
@@ -96,7 +97,7 @@ function render(theme, fontSize, long, disabled) {
         await row(free.filename).locator('form').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
         await page.locator('#uvm-download-form button').click();
         assert.equal(requests.length, beforePending + 1, 'Pending deletion blocks double submit and racing download');
-        for (const [key, value] of Object.entries({ uvm_action: 'cache-delete', uvm_tab: 'driver', csrf_token: 'fixture-ui-csrf', uvm_csrf_token: 'fixture-ui-csrf', cache_filename: free.filename, uvm_cache_delete_async: '1' })) assert.ok(requests.at(-1).body.includes(`name="${key}"\r\n\r\n${value}\r\n`));
+        for (const [key, value] of Object.entries({ uvm_action: 'cache-delete', uvm_tab: 'driver', csrf_token: 'fixture-ui-csrf', uvm_csrf_token: 'fixture-ui-csrf', cache_filename: free.filename, uvm_cache_delete_async: '1' })) assert.equal(new URLSearchParams(requests.at(-1).body).get(key), value);
         assert.ok(!requests.at(-1).body.includes('unsaved.example.test') && !requests.at(-1).body.includes('unsaved-fixture-secret'));
         await release(); await done();
         assert.equal(await row(free.filename).count(), 0); assert.equal(await row(selected.filename).locator('button').isDisabled(), true);

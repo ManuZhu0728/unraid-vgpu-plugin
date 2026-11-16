@@ -267,7 +267,9 @@
     if (ui.isBusy() || downloadButton.disabled || downloadNeedsCheck || !downloadForm.reportValidity()) return;
     // Capture the exact selection and both CSRF fields before disabling inputs;
     // unsaved URL/token/configuration fields are not part of this form.
-    const data = new FormData(downloadForm);
+    // Text-only POSTs must use ordinary form encoding: multipart can stall
+    // Unraid's nginx auth_request -> PHP-FPM chain before our handler runs.
+    const data = new URLSearchParams(new FormData(downloadForm));
     data.set('uvm_download_async', '1');
     const requestedFilename = downloadPicker.value;
     const pickerWasDisabled = downloadPicker.disabled;
@@ -362,7 +364,7 @@
     event.preventDefault();
     const button = form.querySelector('button');
     if (ui.isBusy() || button.disabled || document.getElementById('uvm-downloaded-panel').dataset.controls !== '1') return;
-    const data = new FormData(form);
+    const data = new URLSearchParams(new FormData(form));
     const filename = data.get('cache_filename');
     if (!window.confirm('删除缓存包 ' + filename + ' 及其同名 MD5？\n此操作不可本地撤销；需要恢复时请重新下载或上传。不会卸载当前驱动。')) return;
     data.set('uvm_cache_delete_async', '1');
