@@ -21,7 +21,7 @@ final class Application
             if (!is_string($category)) throw new \InvalidArgumentException('Invalid log category');
             return (new Logs($this->store->paths, (string)($this->store->credentials()['token'] ?? '')))->read($category);
         }
-        if (!in_array($action, ['config-save', 'source-test', 'source-versions', 'source-download', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove', 'ensure', 'boot', 'plan'], true)) {
+        if (!in_array($action, ['cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove', 'ensure', 'boot', 'plan'], true)) {
             throw new \InvalidArgumentException('Unknown operation');
         }
         if ($action === 'plan') {
@@ -48,6 +48,7 @@ final class Application
             'device_inventory' => (new Inventory($this->store->paths))->read($devices, $runtime['runtime'] ?? []),
             'upgrade' => (new Upgrade($this->store, $this->download, $this->runner))->status(),
             'driver_installation' => (new Installer($this->store, $this->download, $this->runtime, $this->runner))->state(),
+            'package_cache' => (new PackageCache($this->store))->listing(),
             'warning' => 'Driver caches contain privileged installation scripts. Only use repositories you trust. Flash-drive backups may contain download credentials.',
         ];
     }
@@ -55,6 +56,11 @@ final class Application
     private function mutate(string $action, array $input): array
     {
         $settings = $this->store->settings();
+        if ($action === 'cache-delete') {
+            if (array_keys($input) !== ['filename'] || !is_string($input['filename'])) throw new \InvalidArgumentException('删除请求只接受完整的驱动包文件名。');
+            $cache = new PackageCache($this->store);
+            return $cache->delete($input['filename']) + ['package_cache' => $cache->listing()];
+        }
         $devices = $this->store->devices();
         if ($action === 'config-save') return $this->saveConfig($settings, $input);
         if ($action === 'upgrade-check') {
@@ -100,6 +106,7 @@ final class Application
                 $result['package'] = $this->packageReceipt($result['package'], $settings['source']);
                 $settings['selected_package'] = $result['package'];
                 $this->store->saveSettings($settings);
+                $result['package_cache'] = (new PackageCache($this->store))->listing();
                 $result['message'] = 'Driver package verified and cached only. No driver was installed or reloaded.';
             }
             return $result;

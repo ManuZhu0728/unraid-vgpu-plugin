@@ -1,6 +1,9 @@
 <?php
 /* Public UI only. Configuration, credentials and device mutations belong to cli.php. */
 
+/** A started backend did not return a trustworthy terminal result. */
+class UvmUnknownResultException extends RuntimeException {}
+
 function uvm_h($value): string
 {
     return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -61,7 +64,7 @@ function uvm_redact($value)
 
 function uvm_cli(string $action, array $payload = []): array
 {
-    $allowed = ['status', 'logs', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'];
+    $allowed = ['status', 'logs', 'cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'];
     if (!in_array($action, $allowed, true)) throw new InvalidArgumentException('Unsupported action');
     // Unraid may evaluate/cache .page templates outside their installed directory.
     $entrypoint = '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/cli.php';
@@ -114,21 +117,21 @@ function uvm_cli(string $action, array $payload = []): array
     foreach ($pipes as $pipe) if (is_resource($pipe)) fclose($pipe);
     if ($expired) {
         // Do not wait forever on a kernel-stuck child or claim that an action was cancelled.
-        throw new RuntimeException('The backend did not finish within its time limit. Completion is unknown; check status before retrying.');
+        throw new UvmUnknownResultException('The backend did not finish within its time limit. Completion is unknown; check status before retrying.');
     }
     $closed = proc_close($process);
     $exitCode = $status['exitcode'] >= 0 ? $status['exitcode'] : $closed;
     $result = json_decode($output, true);
     if ($tooLarge || !is_array($result) || !array_key_exists('ok', $result) || !is_bool($result['ok'])) {
-        throw new RuntimeException('The backend returned an invalid response. Check the plugin installation and server logs.');
+        throw new UvmUnknownResultException('The backend returned an invalid response. Check the plugin installation and server logs.');
     }
     if (!$result['ok']) {
         $error = $result['error'] ?? $result['data']['error'] ?? $result['data']['message'] ?? 'The requested action failed.';
         throw new RuntimeException(is_string($error) ? uvm_redact($error) : 'The requested action failed.');
     }
-    if ($exitCode !== 0) throw new RuntimeException('The backend exited with an error; the operation was not confirmed.');
+    if ($exitCode !== 0) throw new UvmUnknownResultException('The backend exited with an error; the operation was not confirmed.');
     if (isset($result['data']) && !is_array($result['data'])) {
-        throw new RuntimeException('The backend returned an invalid data object.');
+        throw new UvmUnknownResultException('The backend returned an invalid data object.');
     }
     return $result['data'] ?? [];
 }

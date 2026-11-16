@@ -19,6 +19,7 @@ if (($argv[1] ?? '') === '--render-fixture') {
     {
         global $ui_fixture, $ui_calls;
         $ui_calls[] = ['action' => $action, 'payload' => $payload];
+        if (isset($ui_fixture['unknown_errors'][$action])) throw new UvmUnknownResultException($ui_fixture['unknown_errors'][$action]);
         if (isset($ui_fixture['errors'][$action])) throw new RuntimeException($ui_fixture['errors'][$action]);
         return $action === 'status' ? $ui_fixture['status'] : ($ui_fixture['responses'][$action] ?? ['message' => 'fixture operation completed']);
     }
@@ -585,6 +586,86 @@ $rendered = ui_render($base + [
 ]);
 ui_check(str_contains($rendered['html'], 'Download failed [redacted] &lt;script&gt;'), 'Backend errors must escape markup and redact recognized token formats');
 ui_check(!str_contains($rendered['html'], 'glpat-UIFIXTURETOKEN') && !str_contains($rendered['html'], '驱动包下载操作已完成'), 'Failed download must not leak token or claim success');
+
+$downloadPost = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf',
+    'uvm_tab' => 'driver', 'uvm_action' => 'source-download', 'uvm_download_async' => '1',
+    'download_package' => 'nvidia-595.58.03-6.18.58-Unraid-3.txz'];
+$downloadPackage = ['driver' => '595.58.03', 'kernel' => '6.18.58-Unraid', 'build' => 3,
+    'filename' => $downloadPost['download_package'], 'md5' => str_repeat('a', 32), 'checksum_verified' => true];
+$downloadResponse = static function (array $rendered): array {
+    ui_check(substr_count($rendered['html'], 'id="uvm-download-result"') === 1, 'All native tabs must emit exactly one download response');
+    ui_check(!str_contains($rendered['html'], 'id="uvm-manager-'), 'Async download must not render replacement page content');
+    ui_check($rendered['profile_scans'] === 0, 'Download responses must not perform extra GPU/profile scans');
+    ui_check(preg_match('~<script type="application/json" id="uvm-download-result">(.*?)</script>~s', $rendered['html'], $match) === 1, 'Download result must use an inert tagged JSON response');
+    return json_decode($match[1], true, 32, JSON_THROW_ON_ERROR);
+};
+foreach ([false, true] as $gatewayStrip) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'gateway_strip_csrf' => $gatewayStrip,
+        'post' => $downloadPost + ['source_url' => 'https://unsaved.example.test/not-used', 'credential_token' => 'unsaved-test-secret'],
+        'responses' => ['source-download' => ['package' => $downloadPackage + ['authorization' => 'do-not-return']]]]);
+    $result = $downloadResponse($rendered);
+    ui_check(ui_actions($rendered) === ['source-download'] && $rendered['calls'][0]['payload'] === ['filename' => $downloadPackage['filename']], 'Async download dispatches once with only the exact package selection, never unsaved configuration');
+    ui_check($result['ok'] && $result['outcome'] === 'cached' && $result['data']['package']['build'] === 3, 'Only completed downloads may report a cached build');
+    ui_check(!str_contains($rendered['html'], 'unsaved-test-secret') && !str_contains($rendered['html'], 'do-not-return'), 'Download responses must not disclose source credentials');
+}
+foreach ([['csrf_token' => 'bad'], ['uvm_csrf_token' => 'bad'], ['uvm_csrf_token' => ['bad']],
+    ['uvm_tab' => 'vgpu'], ['uvm_download_async' => '0'], ['uvm_download_async' => ['1']],
+    ['download_package' => ['bad']]] as $changes) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => array_replace($downloadPost, $changes)]);
+    $result = $downloadResponse($rendered);
+    ui_check(ui_actions($rendered) === [] && !$result['ok'] && $result['outcome'] === 'failed', 'Invalid async download fields/tab/CSRF must fail before backend dispatch');
+}
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST', 'HTTP_ORIGIN' => 'https://external.example.test'], 'post' => $downloadPost]);
+ui_check($downloadResponse($rendered)['outcome'] === 'failed' && ui_actions($rendered) === [], 'Cross-origin async download is refused without backend work');
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $downloadPost,
+    'errors' => ['source-download' => '</script><script>not-safe()</script> glpat-UIFIXTURETOKEN']]);
+$result = $downloadResponse($rendered);
+ui_check(!$result['ok'] && $result['outcome'] === 'failed' && !isset($result['data']), 'A confirmed backend failure must not claim a cached package');
+ui_check(!str_contains($rendered['html'], 'glpat-UIFIXTURETOKEN') && !str_contains($rendered['html'], '</script><script>'), 'Async errors must redact secrets and escape JSON script boundaries');
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $downloadPost,
+    'unknown_errors' => ['source-download' => 'Completion is unknown; check status before retrying.']]);
+ui_check($downloadResponse($rendered)['outcome'] === 'unknown', 'Backend timeouts or invalid terminal results must remain unknown, not a confirmed failure');
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $downloadPost]);
+ui_check($downloadResponse($rendered)['outcome'] === 'unknown', 'A backend success without a package receipt is not a confirmed download');
+$rendered = ui_render($base);
+$downloadForm = ui_form($rendered, 'uvm-download-form');
+ui_check(str_contains($downloadForm, 'method="post"') && str_contains($downloadForm, 'name="uvm_csrf_token"') && !str_contains($downloadForm, 'credential_token'), 'Download keeps a standalone dual-CSRF POST fallback without source/token fields');
+ui_check(preg_match('~<progress\b[^>]*id="uvm-download-meter"[^>]*>~', $rendered['html'], $meter) === 1 && !str_contains($meter[0], 'value='), 'Download progress must be indeterminate until confirmation, not a fabricated percentage');
+ui_check(str_contains($rendered['html'], 'id="uvm-driver-cache-body"') && str_contains($rendered['html'], 'id="uvm-download-check"'), 'Async UI must update only the cache and provide explicit GET recovery for an unknown result');
+
+$deletePost = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver',
+    'uvm_action' => 'cache-delete', 'uvm_cache_delete_async' => '1', 'cache_filename' => $downloadPackage['filename']];
+$deleteResult = ['changed' => true, 'filename' => $downloadPackage['filename'], 'removed' => [$downloadPackage['filename'], $downloadPackage['filename'] . '.md5'],
+    'package_cache' => ['available' => true, 'packages' => [], 'message' => '']];
+$deleteResponse = static function (array $rendered): array {
+    ui_check(substr_count($rendered['html'], 'id="uvm-cache-delete-result"') === 1 && !str_contains($rendered['html'], 'id="uvm-manager-'), 'Deletion emits one inert response, never a replacement native page');
+    ui_check($rendered['profile_scans'] === 0, 'Async deletion must not scan GPU profiles');
+    preg_match('~<script type="application/json" id="uvm-cache-delete-result">(.*?)</script>~s', $rendered['html'], $match);
+    return json_decode($match[1], true, 32, JSON_THROW_ON_ERROR);
+};
+foreach ([false, true] as $strip) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'gateway_strip_csrf' => $strip,
+        'post' => $deletePost + ['path' => '/must-not-use', 'credential_token' => 'unsaved-secret'], 'responses' => ['cache-delete' => $deleteResult]]);
+    $result = $deleteResponse($rendered);
+    ui_check($result['ok'] && $result['data']['changed'] && $result['data']['package_cache']['packages'] === [], 'Confirmed deletion returns exact identity and refreshed inventory');
+    ui_check(ui_actions($rendered) === ['cache-delete'] && $rendered['calls'][0]['payload'] === ['filename' => $downloadPackage['filename']], 'Deletion only dispatches one exact filename, never arbitrary paths or unsaved credentials');
+}
+foreach ([['csrf_token' => 'bad'], ['uvm_csrf_token' => 'bad'], ['uvm_tab' => 'vgpu'], ['cache_filename' => ['bad']], ['uvm_cache_delete_async' => '0']] as $changes) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => array_replace($deletePost, $changes)]);
+    ui_check(!$deleteResponse($rendered)['ok'] && ui_actions($rendered) === [], 'Invalid deletion form fields/tab/CSRF fail before dispatch');
+}
+foreach ([[], ['changed' => false], ['removed' => []], ['removed' => 'not-an-array'], ['filename' => 'different.txz']] as $changes) {
+    $response = $changes ? array_replace($deleteResult, $changes) : [];
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $deletePost, 'responses' => ['cache-delete' => $response]]);
+    ui_check($deleteResponse($rendered)['outcome'] === 'unknown', 'Incomplete or mismatching deletion receipts never claim success');
+}
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $deletePost, 'errors' => ['cache-delete' => 'Protected </script><script>unsafe()</script> glpat-FIXTUREDELETE']]);
+ui_check($deleteResponse($rendered)['outcome'] === 'failed' && !str_contains($rendered['html'], 'glpat-FIXTUREDELETE') && !str_contains($rendered['html'], '</script><script>'), 'Deletion failures are explicit, escaped and redacted');
+$cachedList = $base;
+$cachedList['status']['package_cache'] = ['available' => true, 'packages' => [$downloadPackage + ['size' => 500, 'references' => ['当前选中 <script>unsafe()</script>'], 'deletable' => false]]];
+$rendered = ui_render($cachedList);
+ui_check(str_contains($rendered['html'], 'id="uvm-downloaded-panel"') && str_contains($rendered['html'], 'name="cache_filename"'), 'Driver management renders a separate downloaded-file inventory and exact identity forms');
+ui_check(str_contains($rendered['html'], '当前选中 &lt;script&gt;unsafe()&lt;/script&gt;') && preg_match('~class="uvm-cache-delete-form".*?<button type="submit" disabled~s', $rendered['html']) === 1, 'Protected package rows escape long reasons and disable deletion');
 
 // The basic form needs a link and, for private repositories, one token input.
 $simple = array_replace($config, [

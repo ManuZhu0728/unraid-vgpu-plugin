@@ -12,6 +12,9 @@ $uvm_request_tab = 'driver';
 $uvm_preferred_tab = is_string($_GET['uvm_view'] ?? null) && in_array($_GET['uvm_view'], ['driver', 'vgpu', 'status'], true) ? $_GET['uvm_view'] : '';
 $uvm_upload_request = is_string($_POST['uvm_action'] ?? null) && in_array($_POST['uvm_action'], ['source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel'], true);
 $uvm_device_create_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['uvm_action'] ?? null) === 'device-create';
+$uvm_download_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['uvm_action'] ?? null) === 'source-download' && array_key_exists('uvm_download_async', $_POST);
+$uvm_download_unknown = false;
+$uvm_cache_delete_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['uvm_action'] ?? null) === 'cache-delete' && array_key_exists('uvm_cache_delete_async', $_POST);
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     try {
         uvm_check_post($uvm_csrf);
@@ -21,13 +24,24 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $uvm_request_tab = $targetTab;
         $uvm_preferred_tab = $targetTab;
         $allowedActions = [
-            'driver' => ['config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check'],
+            'driver' => ['cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check'],
             'vgpu' => ['config-save', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'],
             'status' => [],
         ];
         if (!in_array($uvm_action, $allowedActions[$uvm_request_tab], true)) throw new InvalidArgumentException('此操作不属于当前页面。');
+        if ($uvm_download_request && uvm_post('uvm_download_async') !== '1') throw new InvalidArgumentException('下载请求标识无效，请重新打开页面。');
+        if ($uvm_cache_delete_request && uvm_post('uvm_cache_delete_async') !== '1') throw new InvalidArgumentException('删除请求标识无效，请重新打开页面。');
         $payload = [];
         switch ($uvm_action) {
+            case 'cache-delete':
+                $payload = ['filename' => uvm_post('cache_filename')];
+                $uvm_action_data = uvm_cli($uvm_action, $payload);
+                if (($uvm_action_data['ok'] ?? true) === false) throw new RuntimeException((string)($uvm_action_data['message'] ?? '删除未完成，请核对缓存。'));
+                if (($uvm_action_data['changed'] ?? null) !== true || ($uvm_action_data['filename'] ?? null) !== $payload['filename'] || !is_array($uvm_action_data['removed'] ?? null) || !in_array($payload['filename'], $uvm_action_data['removed'], true)) {
+                    throw new UvmUnknownResultException('未确认删除结果，请重新打开页面核对缓存。');
+                }
+                $uvm_message = (string)($uvm_action_data['message'] ?? '缓存包已删除，需要时请重新下载或上传。');
+                break;
             case 'config-save':
                 $section = uvm_post('config_section');
                 if (($uvm_request_tab === 'driver' && !in_array($section, ['source', 'driver'], true)) || ($uvm_request_tab === 'vgpu' && $section !== 'runtime')) {
@@ -109,6 +123,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $uvm_versions = is_array($uvm_action_data['versions'] ?? null) ? $uvm_action_data['versions'] : [];
                     $uvm_message = count($uvm_versions) ? '已找到 ' . count($uvm_versions) . ' 个匹配版本。' : '未找到匹配当前内核的驱动。';
                 } elseif ($uvm_action === 'source-download') {
+                    if ($uvm_download_request && !is_array($uvm_action_data['package'] ?? null)) {
+                        throw new UvmUnknownResultException('未收到完整的驱动缓存结果，请重新打开页面核对缓存。');
+                    }
                     $uvm_message = '驱动已下载并校验，文件已保存到缓存。';
                 } else {
                     $uvm_message = '连接成功。';
@@ -159,6 +176,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         }
     } catch (Throwable $exception) {
         $uvm_error = uvm_redact($exception->getMessage());
+        $uvm_download_unknown = $exception instanceof UvmUnknownResultException;
         $uvm_message = '';
     }
 }
@@ -176,6 +194,22 @@ if ($uvm_device_create_request) {
         ? ['ok' => true, 'data' => ['uuid' => strtolower($payload['uuid']), 'changed' => true], 'message' => $uvm_message]
         : ['ok' => false, 'error' => $uvm_error];
     echo '<script type="application/json" id="uvm-device-create-result">' . uvm_json($result) . '</script>';
+    return;
+}
+if ($uvm_download_request) {
+    // One native-wrapped response, without re-rendering the page or reading GPU
+    // status. Never return source credentials or execute fetched response HTML.
+    $result = $uvm_error === ''
+        ? ['ok' => true, 'outcome' => 'cached', 'data' => ['package' => uvm_redact($uvm_action_data['package']), 'package_cache' => $uvm_action_data['package_cache'] ?? null], 'message' => $uvm_message]
+        : ['ok' => false, 'outcome' => $uvm_download_unknown ? 'unknown' : 'failed', 'error' => $uvm_error];
+    echo '<script type="application/json" id="uvm-download-result">' . uvm_json($result) . '</script>';
+    return;
+}
+if ($uvm_cache_delete_request) {
+    $result = $uvm_error === ''
+        ? ['ok' => true, 'data' => ['filename' => $uvm_action_data['filename'], 'changed' => true, 'removed' => $uvm_action_data['removed'], 'package_cache' => $uvm_action_data['package_cache'] ?? null], 'message' => $uvm_message]
+        : ['ok' => false, 'outcome' => $uvm_download_unknown ? 'unknown' : 'failed', 'error' => $uvm_error];
+    echo '<script type="application/json" id="uvm-cache-delete-result">' . uvm_json($result) . '</script>';
     return;
 }
 

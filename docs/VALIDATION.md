@@ -1,5 +1,63 @@
 # 本地验证记录
 
+## Alpha 14 缓存管理与下载反馈（2026-11-16）
+
+本节记录 `2026.11.16.3` / `v2026.11.16.3-alpha.14` 的本地验证与发布准备。
+本版合并前一轮未发布的同页下载与本轮明确授权的缓存删除；不操作 Unraid 或实际驱动缓存。
+
+硬件无关套件通过：UI 1040 检查、缓存清理 70 检查、UI process 27 检查、Python 45 测试。
+原下载器 42 场景、Application 332 检查以及升级、安装器、运行时与生命周期回归继续通过。
+清理测试仅用专属临时根目录；覆盖多内核/构建枚举、各类引用保护、引用过期、共享锁、
+损坏/超大/软链接记录、软/硬链接包和 MD5、缓存目录重定向、非规范/越界文件名、重复删除、
+缺失 MD5、unlink 失败及部分成功的准确报告。设置、凭据、设备、安装和历史记录逐字节保留。
+
+新增 localhost HTTP 3 项执行真实 Application 和临时文件删除，模拟 Unraid 网关消费原生 CSRF；
+检查唯一异步结果、双 CSRF/Origin/tab/输入拒绝、单次精确文件名分发、保护/过期请求和真实删除结果。
+新浏览器回归 `tests/test_ui_cache.cjs` 通过 12 组行为场景和 16 组黑白主题/字号/360–3840px 组合：
+确认取消零请求、保护按钮禁用、精确 FormData、不提交草稿、pending 并发守门、成功原地更新、
+失败/断网/超时/会话失效/异常回执不重试、GET 恢复、新下载包立即受保护，以及长原因的转义/局部滚动。
+浏览器只使用官方 WebGUI 7.3.4 CSS/字体与拦截的模拟同源请求，不依赖 NAS/GPU/外网。
+
+下载浏览器回归 20 行为 + 16 布局组合，旧详情/新增 11 场景，旧布局 60 场景 / 180 同行比较、
+展开 12 场景 / 144 稳定性检查及历史缺陷负对照也继续通过。
+日志保留在 `work/cache-delete-release-20261116.QV7Fpc1d/`：`full-tests.log`、`cache-http.log`、
+`cache-browser.log`、`download-browser.log`、`layout-browser.log`、`editor-browser.log`。
+以上不能替代用户在 Unraid 7.3.4 的实际浏览器验收；发布不包含 NAS 部署、GPU 操作或重新配置。
+
+候选目录 `dist/candidate-2026.11.16.3-alpha.14/`；TXZ 97,156 字节，MD5
+`3ee16eef62d428dcd7415186c37b0847`，SHA256
+`c0043c19f4e63c43e0df2067bdc30467341d6007a3a297a2668a5836e21ed66b`。
+载荷 36 个 root-owned 文件，只新增 `include/PackageCache.php`；Download、Installer、Upgrade、Runtime
+与 Alpha 13 字节相同。根在线 PLG 与候选生成结果完全一致，发布器 dry-run 重新构建比对通过，
+只计划发布在线 PLG、插件 TXZ、MD5 三个附件；不包含 NVIDIA 驱动或离线内嵌包。
+
+## 同页异步驱动下载开发记录（2026-11-16，后合入 Alpha 14）
+
+分支 `codex/async-driver-download`，基于 Alpha 13 / `e687b2a`。用户截图的空白正文来自普通
+下载 POST 阻塞 PHP 渲染；本次只改网页请求与反馈，并将 process 的未知完成结果单独分类。
+下载器、Application 缓存事务、安装器和启动流程未修改，未提交/合并/推送/发布，也未访问 Unraid。
+
+完整 `bash tests/run-tests.sh` 通过：UI 969 检查、UI process 传输 27 检查、Python 42 测试；
+原下载器 42 场景、Application 332 检查、升级及冷启动/运行时回归继续通过。
+新增 localhost HTTP 3 项使用原生 HTML 外壳和模拟网关消费 `csrf_token`，覆盖单次精确包名分发、
+双 CSRF/Origin/tab/异步标记拒绝、错误脱敏与惰性 JSON、明确失败/未知结果区分。进程测试执行真实
+本地 PHP 子进程，只在内存中替换固定 CLI/解释器路径和缩短超时，覆盖成功、显式失败、超大/非法
+回执、错误退出、缺失入口和超时；不调用已安装插件 CLI。
+
+`tests/test_ui_download.cjs` 用官方 WebGUI 7.3.4 CSS/字体和原生标签页外壳通过 20 组行为场景、
+16 组黑白主题 × 字号（62.5%/100%）× 360/768/1920/3840px 布局场景。所有网络均被本地拦截，
+请求只允许 `unraid.example.test`。覆盖未保存来源/Token 不提交、双 CSRF、pending 耗时与无伪百分比、
+重复提交/并发修改拦截、离页提示、显式/自动选包、无页面导航的缓存更新、恶意文本不执行、
+明确失败可手动重试、断网/真实 Abort/HTTP 错误/会话页面/重复或破损标记/错误包身份/未校验回执
+不误报成功、不自动重试；缓存 DOM 更新失败和手动 GET 核对（清除 query CSRF）也有覆盖。
+长错误和长缓存路径不造成页面级横向溢出。此为硬件无关验证，仍待用户实际 Unraid 浏览器验收。
+
+原有浏览器回归也通过：设备新增/只读详情 11 场景；基础布局 60 场景 / 180 同行比较、
+展开布局 12 场景 / 144 开关稳定性检查以及历史布局缺陷负对照。
+本轮日志及下载中截图保留在 `work/async-download-ui-20261116.rvj7UKee/`：
+`full-tests.log`、`download-http.log`、`download-browser.log`、`editor-browser.log`、
+`layout-browser.log`、`download-pending.png`。截图只来自本地模拟页面。
+
 ## Alpha 13 详情与 VM XML 展开布局（2026-11-16）
 
 本节记录 `2026.11.16.2` / `v2026.11.16.2-alpha.13` 的本地验证和发布准备，

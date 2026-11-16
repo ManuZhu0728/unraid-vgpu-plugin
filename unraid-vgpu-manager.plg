@@ -1,16 +1,16 @@
 <?xml version="1.0" standalone="yes"?>
-<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.16.2" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
+<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.16.3" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
 <CHANGES>
-Keep device details and VM XML expansion outside inventory column sizing.
-Keep action buttons stable when opening long content or multiple device panels.
-Cover expanded, narrow-screen, multi-device and long-content browser layouts.
-Preserve disabled states, independent POST forms, CSRF checks and confirmations.
-Keep page width, profile availability and driver startup behavior unchanged.
+List downloaded driver packages across kernels and delete unreferenced TXZ/MD5 pairs.
+Protect selected, prepared, installed and rollback-referenced cache packages.
+Keep downloads on the page with indeterminate progress, elapsed time and safe results.
+Preserve draft settings, CSRF checks, transaction locks and unknown-result recovery.
+Keep driver selection, installation and startup behavior unchanged.
 Use the maintenance migration steps when replacing an existing driver plugin.
 </CHANGES>
-<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.16.2-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
-<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.16.2-alpha.13/unraid-vgpu-manager-2026.11.16.2-noarch-1.txz</URL>
-<MD5>74cbe2c3f6e91301014ff2dcb1a7df88</MD5>
+<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.16.3-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
+<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.16.3-alpha.14/unraid-vgpu-manager-2026.11.16.3-noarch-1.txz</URL>
+<MD5>3ee16eef62d428dcd7415186c37b0847</MD5>
 </FILE>
 <FILE Run="/bin/bash"><INLINE><![CDATA[
 # Installation must succeed without a repository, token or NVIDIA package.

@@ -45,7 +45,7 @@
     <?php foreach ($uvm_versions as $version): if (!is_array($version)) continue; ?><tr><td><?=uvm_h($version['driver'] ?? '')?></td><td><?=uvm_h($version['build'] ?? '未记录')?></td><td><?=uvm_h($version['kernel'] ?? '')?></td><td><?=uvm_h($version['filename'] ?? '')?></td></tr><?php endforeach; ?>
     </tbody></table></div>
     <?php endif; ?>
-    <form method="post" class="uvm-submit-form uvm-inline-form">
+    <form method="post" class="uvm-submit-form uvm-inline-form" id="uvm-download-form" data-kernel="<?=uvm_h(($uvm_snapshot['kernel'] ?? '') ?: php_uname('r'))?>">
       <?php uvm_form_hidden('source-download', $uvm_csrf); ?>
       <div class="uvm-actions">
         <select name="download_package" aria-label="下载版本与构建">
@@ -55,6 +55,13 @@
         <button type="submit" <?=!$uvm_controls || ($uvm_source['url'] === '' && $uvm_source['repository'] === '') ? 'disabled' : ''?>>下载到缓存</button>
       </div>
     </form>
+    <div id="uvm-download-feedback" class="uvm-note uvm-download-feedback" role="status" aria-live="polite" tabindex="-1" hidden>
+      <p id="uvm-download-message"></p>
+      <progress id="uvm-download-meter" max="1" aria-label="驱动下载与校验进度"></progress>
+      <p id="uvm-download-elapsed" class="uvm-muted" aria-live="off"></p>
+      <p class="uvm-muted">下载仅保存到缓存，不会安装、重载驱动或重启服务。</p>
+      <a id="uvm-download-check" hidden>重新打开页面核对缓存</a>
+    </div>
   </section>
 
   <section class="uvm-panel" id="uvm-local-panel" <?=$uvm_driver_mode !== 'local' ? 'hidden' : ''?>>
@@ -89,13 +96,39 @@
   <?php if (in_array($uvm_installation['status'] ?? '', ['failed','blocked','missing_package','pending_reboot'], true)): ?><p class="uvm-muted"><?=uvm_h(uvm_redact($uvm_installation['message'] ?? ''))?></p><?php endif; ?>
 </section>
 
-<section class="uvm-panel">
+<section class="uvm-panel" id="uvm-driver-cache">
   <h2>驱动缓存</h2>
+  <div id="uvm-driver-cache-body">
   <?php if ($uvm_selected_package): ?>
   <p>NVIDIA <?=uvm_h($uvm_selected_package['driver'] ?? '')?> · 构建 <?=uvm_h($uvm_selected_package['build'] ?? '未记录')?> · <code><?=uvm_h($uvm_selected_package['kernel'] ?? '')?></code> · <?=($uvm_selected_package['source'] ?? '') === 'local' ? '本地导入' : '在线下载'?></p>
-  <p class="uvm-muted"><?=uvm_h($uvm_selected_package['filename'] ?? basename($uvm_selected_package['path'] ?? ''))?></p>
+  <p class="uvm-muted uvm-cache-filename"><?=uvm_h($uvm_selected_package['filename'] ?? basename($uvm_selected_package['path'] ?? ''))?></p>
   <details><summary>文件信息</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_selected_package), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
   <?php else: ?><p class="uvm-muted">尚无缓存，下载或上传一个匹配内核的驱动包。</p><?php endif; ?>
+  </div>
+</section>
+<section class="uvm-panel" id="uvm-downloaded-panel" data-controls="<?=$uvm_controls ? '1' : '0'?>">
+  <h2>已下载驱动</h2>
+  <p class="uvm-muted">列出所有内核的缓存包。当前选中、升级准备、上次成功安装和回退记录引用的包不可删除。删除仅清理缓存，不卸载正在运行的驱动；需要恢复时请重新下载或上传。</p>
+  <div id="uvm-cache-list">
+  <?php $uvm_cache = $uvm_status['package_cache'] ?? null; ?>
+  <?php if (!is_array($uvm_cache) || ($uvm_cache['available'] ?? null) !== true): ?>
+    <p class="uvm-muted">无法安全读取已下载列表，删除已禁用。请重新打开页面核对。</p>
+  <?php elseif (!$uvm_cache['packages']): ?><p class="uvm-muted">暂无已下载驱动。</p>
+  <?php else: ?>
+    <div class="uvm-scroll"><table class="uvm-cache-table"><thead><tr><th>文件 / 版本</th><th>内核</th><th>大小</th><th>引用 / 保护原因</th><th>操作</th></tr></thead><tbody>
+    <?php foreach ($uvm_cache['packages'] as $cached): ?>
+      <tr data-cache-filename="<?=uvm_h($cached['filename'])?>">
+        <td><?=uvm_h($cached['filename'])?><p class="uvm-muted">NVIDIA <?=uvm_h($cached['driver'])?> · 构建 <?=uvm_h($cached['build'])?></p></td>
+        <td><?=uvm_h($cached['kernel'])?></td><td><?=uvm_h(number_format($cached['size'] / 1048576, 1))?> MiB</td>
+        <td><?=uvm_h(implode('、', $cached['references']) ?: '未被引用')?></td>
+        <td><form method="post" class="uvm-cache-delete-form"><?php uvm_form_hidden('cache-delete', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls || $cached['deletable'] !== true ? 'disabled' : ''?>>删除</button></form></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody></table></div>
+  <?php endif; ?>
+  </div>
+  <div id="uvm-cache-message" class="uvm-note" role="status" tabindex="-1" hidden></div>
+  <a id="uvm-cache-check" hidden>重新打开页面核对缓存</a>
 </section>
   <section class="uvm-panel">
     <h2>升级准备</h2>
@@ -150,12 +183,231 @@
   credentialChange.addEventListener('change', credentialOptions);
   credentialOptions();
 
+  const cacheList = document.getElementById('uvm-cache-list');
+  const cacheMessage = document.getElementById('uvm-cache-message');
+  const cacheCheck = document.getElementById('uvm-cache-check');
+  const csrf = <?=uvm_json($uvm_csrf)?>;
+  function renderCacheList(inventory) {
+    cacheList.replaceChildren();
+    if (!inventory || inventory.available !== true || !Array.isArray(inventory.packages)) {
+      const note = document.createElement('p');
+      note.className = 'uvm-muted';
+      note.textContent = '无法安全读取已下载列表，删除已禁用。请重新打开页面核对。';
+      cacheList.append(note);
+      cacheCheck.hidden = false;
+      return;
+    }
+    if (!inventory.packages.length) {
+      const note = document.createElement('p'); note.className = 'uvm-muted'; note.textContent = '暂无已下载驱动。'; cacheList.append(note); return;
+    }
+    const scroll = document.createElement('div'); scroll.className = 'uvm-scroll';
+    const table = document.createElement('table'); table.className = 'uvm-cache-table';
+    const head = table.createTHead().insertRow();
+    ['文件 / 版本', '内核', '大小', '引用 / 保护原因', '操作'].forEach(function (text) { const cell = document.createElement('th'); cell.textContent = text; head.append(cell); });
+    const body = table.createTBody();
+    inventory.packages.forEach(function (item) {
+      const row = body.insertRow(); row.dataset.cacheFilename = item.filename;
+      const file = row.insertCell(); file.textContent = item.filename;
+      const identity = document.createElement('p'); identity.className = 'uvm-muted'; identity.textContent = 'NVIDIA ' + item.driver + ' · 构建 ' + item.build; file.append(identity);
+      row.insertCell().textContent = item.kernel;
+      row.insertCell().textContent = (Number(item.size) / 1048576).toFixed(1) + ' MiB';
+      row.insertCell().textContent = Array.isArray(item.references) ? (item.references.join('、') || '未被引用') : '引用状态未知';
+      const form = document.createElement('form'); form.method = 'post'; form.className = 'uvm-cache-delete-form';
+      Object.entries({uvm_action: 'cache-delete', uvm_tab: 'driver', csrf_token: csrf, uvm_csrf_token: csrf, cache_filename: item.filename}).forEach(function (entry) {
+        const field = document.createElement('input'); field.type = 'hidden'; field.name = entry[0]; field.value = entry[1]; form.append(field);
+      });
+      const button = document.createElement('button'); button.type = 'submit'; button.textContent = '删除';
+      button.disabled = item.deletable !== true || !Array.isArray(item.references) || item.references.length > 0 || document.getElementById('uvm-downloaded-panel').dataset.controls !== '1';
+      form.append(button); row.insertCell().append(form);
+    });
+    scroll.append(table); cacheList.append(scroll);
+  }
+
+  const downloadForm = document.getElementById('uvm-download-form');
+  const downloadButton = downloadForm.querySelector('button[type="submit"]');
+  const downloadPicker = downloadForm.querySelector('[name="download_package"]');
+  const downloadFeedback = document.getElementById('uvm-download-feedback');
+  const downloadMessage = document.getElementById('uvm-download-message');
+  const downloadMeter = document.getElementById('uvm-download-meter');
+  const downloadElapsed = document.getElementById('uvm-download-elapsed');
+  const downloadCheck = document.getElementById('uvm-download-check');
+  let downloadPending = false;
+  let downloadNeedsCheck = false;
+  const checkUrl = new URL(window.location.href);
+  checkUrl.searchParams.set('uvm_view', 'driver');
+  checkUrl.searchParams.delete('csrf_token');
+  checkUrl.searchParams.delete('uvm_csrf_token');
+  checkUrl.hash = '';
+  downloadCheck.href = checkUrl.toString();
+  cacheCheck.href = checkUrl.toString();
+  window.addEventListener('beforeunload', function (event) {
+    if (!downloadPending) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+  function showCachedPackage(packageInfo) {
+    const body = document.getElementById('uvm-driver-cache-body');
+    const fragment = document.createDocumentFragment();
+    const identity = document.createElement('p');
+    identity.textContent = 'NVIDIA ' + packageInfo.driver + ' · 构建 ' + packageInfo.build + ' · ' + packageInfo.kernel + ' · 在线下载';
+    const filename = document.createElement('p');
+    filename.className = 'uvm-muted uvm-cache-filename';
+    filename.textContent = packageInfo.filename;
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = '文件信息';
+    const data = document.createElement('pre');
+    data.textContent = JSON.stringify(packageInfo, null, 2);
+    details.append(summary, data);
+    fragment.append(identity, filename, details);
+    body.replaceChildren(fragment);
+  }
+  downloadForm.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    if (ui.isBusy() || downloadButton.disabled || downloadNeedsCheck || !downloadForm.reportValidity()) return;
+    // Capture the exact selection and both CSRF fields before disabling inputs;
+    // unsaved URL/token/configuration fields are not part of this form.
+    const data = new FormData(downloadForm);
+    data.set('uvm_download_async', '1');
+    const requestedFilename = downloadPicker.value;
+    const pickerWasDisabled = downloadPicker.disabled;
+    const controller = new AbortController();
+    const started = performance.now();
+    const elapsed = function () {
+      const seconds = Math.floor((performance.now() - started) / 1000);
+      downloadElapsed.textContent = '已用时 ' + Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+    };
+    // Longer than the backend's 900s bound, so it can return its own result.
+    const timeout = window.setTimeout(function () { controller.abort(); }, 930000);
+    const ticker = window.setInterval(elapsed, 1000);
+    let outcome = 'unknown';
+    ui.setBusy(true);
+    downloadPending = true;
+    downloadButton.disabled = true;
+    downloadPicker.disabled = true;
+    downloadForm.classList.add('uvm-form-busy');
+    downloadForm.setAttribute('aria-busy', 'true');
+    downloadFeedback.hidden = false;
+    downloadFeedback.className = 'uvm-note uvm-download-feedback';
+    downloadFeedback.setAttribute('role', 'status');
+    downloadMeter.hidden = false;
+    downloadMeter.removeAttribute('value');
+    downloadCheck.hidden = true;
+    downloadMessage.textContent = '正在下载并校验驱动包，请稍候…';
+    elapsed();
+    downloadFeedback.focus();
+    try {
+      const response = await window.fetch(window.location.href.split('#')[0], {
+        method: 'POST', body: data, credentials: 'same-origin', signal: controller.signal
+      });
+      const text = await response.text();
+      if (!response.ok || text.length > 1048576) throw new Error('unconfirmed response');
+      const html = new DOMParser().parseFromString(text, 'text/html');
+      const markers = html.querySelectorAll('script#uvm-download-result[type="application/json"]');
+      if (markers.length !== 1) throw new Error('unconfirmed response');
+      const result = JSON.parse(markers[0].textContent);
+      if (result && result.ok === false && result.outcome === 'failed' && typeof result.error === 'string' && result.error) {
+        outcome = 'failed';
+        downloadMessage.textContent = '下载未完成：' + result.error;
+        downloadFeedback.className = 'uvm-note uvm-error uvm-download-feedback';
+        downloadFeedback.setAttribute('role', 'alert');
+        downloadMeter.hidden = true;
+        return;
+      }
+      const packageInfo = result && result.data && result.data.package;
+      if (!result || result.ok !== true || result.outcome !== 'cached' || !packageInfo ||
+          typeof packageInfo.driver !== 'string' || !/^\d+\.\d+\.\d+$/.test(packageInfo.driver) ||
+          !Number.isSafeInteger(packageInfo.build) || packageInfo.build < 1 ||
+          packageInfo.kernel !== downloadForm.dataset.kernel ||
+          packageInfo.filename !== 'nvidia-' + packageInfo.driver + '-' + packageInfo.kernel + '-' + packageInfo.build + '.txz' ||
+          (requestedFilename && packageInfo.filename !== requestedFilename) ||
+          packageInfo.checksum_verified !== true || typeof packageInfo.md5 !== 'string' || !/^[a-f0-9]{32}$/.test(packageInfo.md5)) {
+        throw new Error('unconfirmed cache identity');
+      }
+      outcome = 'cached';
+      downloadMeter.value = 1;
+      downloadFeedback.className = 'uvm-note uvm-success uvm-download-feedback';
+      downloadMessage.textContent = '驱动已下载并校验，缓存已更新。当前加载的驱动未改变。';
+      showCachedPackage(packageInfo);
+      renderCacheList(result.data.package_cache);
+    } catch (_) {
+      downloadCheck.hidden = false;
+      if (outcome === 'cached') {
+        downloadNeedsCheck = true;
+        downloadMessage.textContent = '下载与校验已确认，但缓存界面更新未完成；请重新打开页面核对，不要重复下载。';
+      } else {
+        downloadNeedsCheck = true;
+        downloadFeedback.className = 'uvm-note uvm-warning uvm-download-feedback';
+        downloadFeedback.setAttribute('role', 'alert');
+        downloadMessage.textContent = '未能确认下载结果。请求可能仍在服务器进行，请重新打开页面核对缓存后再试。';
+        downloadMeter.hidden = true;
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      window.clearInterval(ticker);
+      downloadPending = false;
+      downloadForm.classList.remove('uvm-form-busy');
+      downloadForm.setAttribute('aria-busy', 'false');
+      if (!downloadNeedsCheck) {
+        downloadButton.disabled = false;
+        downloadPicker.disabled = pickerWasDisabled;
+        ui.setBusy(false);
+      }
+    }
+  });
+
+  cacheList.addEventListener('submit', async function (event) {
+    const form = event.target.closest('.uvm-cache-delete-form');
+    if (!form) return;
+    event.preventDefault();
+    const button = form.querySelector('button');
+    if (ui.isBusy() || button.disabled || document.getElementById('uvm-downloaded-panel').dataset.controls !== '1') return;
+    const data = new FormData(form);
+    const filename = data.get('cache_filename');
+    if (!window.confirm('删除缓存包 ' + filename + ' 及其同名 MD5？\n此操作不可本地撤销；需要恢复时请重新下载或上传。不会卸载当前驱动。')) return;
+    data.set('uvm_cache_delete_async', '1');
+    const controller = new AbortController();
+    const timeout = window.setTimeout(function () { controller.abort(); }, 45000);
+    let unknown = true;
+    ui.setBusy(true);
+    button.disabled = true;
+    cacheMessage.hidden = false; cacheMessage.className = 'uvm-note'; cacheMessage.setAttribute('role', 'status');
+    cacheMessage.textContent = '正在删除缓存包…'; cacheMessage.focus(); cacheCheck.hidden = true;
+    try {
+      const response = await fetch(window.location.href.split('#')[0], { method: 'POST', body: data, credentials: 'same-origin', signal: controller.signal });
+      const text = await response.text();
+      if (!response.ok || text.length > 1048576) throw new Error('unconfirmed response');
+      const html = new DOMParser().parseFromString(text, 'text/html');
+      const markers = html.querySelectorAll('script#uvm-cache-delete-result[type="application/json"]');
+      if (markers.length !== 1) throw new Error('unconfirmed response');
+      const result = JSON.parse(markers[0].textContent);
+      if (result && result.ok === false && result.outcome === 'failed' && typeof result.error === 'string') {
+        unknown = false;
+        renderCacheList(null);
+        cacheMessage.className = 'uvm-note uvm-error'; cacheMessage.setAttribute('role', 'alert');
+        cacheMessage.textContent = result.error + ' 请重新打开页面核对列表后再试。';
+        return;
+      }
+      if (!result || result.ok !== true || !result.data || result.data.changed !== true || result.data.filename !== filename || !Array.isArray(result.data.removed) || !result.data.removed.includes(filename)) throw new Error('unconfirmed deletion');
+      unknown = false;
+      renderCacheList(result.data.package_cache);
+      cacheMessage.className = 'uvm-note uvm-success';
+      cacheMessage.textContent = typeof result.message === 'string' ? result.message : '缓存包已删除，需要时请重新下载或上传。';
+    } catch (_) {
+      renderCacheList(null);
+      cacheMessage.className = 'uvm-note uvm-warning'; cacheMessage.setAttribute('role', 'alert');
+      cacheMessage.textContent = '未能确认删除结果。请重新打开页面核对缓存，不要重复提交。';
+    } finally {
+      window.clearTimeout(timeout);
+      if (!unknown) ui.setBusy(false);
+    }
+  });
+
   const uploadForm = document.getElementById('uvm-upload-form');
   const uploadButton = document.getElementById('uvm-upload-submit');
   const uploadCancel = document.getElementById('uvm-upload-cancel');
   const uploadProgress = document.getElementById('uvm-upload-progress');
   const uploadMeter = document.getElementById('uvm-upload-meter');
-  const csrf = <?=uvm_json($uvm_csrf)?>;
   const browserChunkSize = <?=uvm_json(uvm_upload_chunk_size())?>;
   let cancelUpload = false;
   let activeUploadId = '';
