@@ -40,12 +40,12 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-List downloaded driver packages across kernels and delete unreferenced TXZ/MD5 pairs.
-Protect selected, prepared, installed and rollback-referenced cache packages.
-Keep downloads on the page with indeterminate progress, elapsed time and safe results.
-Preserve draft settings, CSRF checks, transaction locks and unknown-result recovery.
-Keep driver selection, installation and startup behavior unchanged.
-Use the maintenance migration steps when replacing an existing driver plugin.
+Fix cache deletion requests stalling in the native nginx/PHP authentication gateway.
+Use ordinary URL-encoded text forms for cache deletion, downloads and device creation.
+Preserve exact package identities, protected caches, CSRF checks and unknown-result recovery.
+Verify real browser requests through a local nginx/PHP-FPM authentication chain.
+Keep driver installation, startup and GPU runtime behavior unchanged.
+Binary multipart uploads still need separate gateway compatibility work.
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -134,7 +134,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.16.3")
+    parser.add_argument("--version", default="2026.11.16.4")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

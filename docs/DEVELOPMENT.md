@@ -3,7 +3,13 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
-## 原生鉴权网关 POST 编码修复（2026-11-16，尚未发布）
+## Alpha 15 发布准备（2026-11-16）
+
+版本 `2026.11.16.4` / `v2026.11.16.4-alpha.15` 发布已合入 main 的 `a90c26e` 表单编码
+修复。发布提交只更新版本、PLG 变更说明、发布说明及验证记录，载荷保持该修复的代码。
+不部署或操作 Unraid，不构建 NVIDIA 驱动，不覆盖或移除旧版附件；二进制上传限制明确保留。
+
+## 原生鉴权网关 POST 编码修复开发记录（2026-11-16，后纳入 Alpha 15）
 
 Alpha 14 实机删除失败不是已确认的 unlink 权限错误。用户手动复现时，浏览器约 45 秒
 没有收到 HTTP 响应，随后触发前端 Abort；经授权只读检查，PHP worker 在等待 Unix socket，
@@ -25,7 +31,8 @@ nginx/PHP-FPM，继承真实临时文件删除和保护测试，并包含旧 mul
 设置 `PLAYWRIGHT_MODULE` 后，再执行 `tests/test_ui_gateway.cjs` 的真实浏览器链：所有请求
 实际经过鉴权、PHP、Application 和临时缓存；检查删除 TXZ/MD5、选中构建保留及刷新不复现。
 无相应二进制时明确 skip，不下载依赖或伪造网关成功。现有模拟浏览器回归另行检查三种
-表单的实际 Content-Type 与字段；此修复未更改版本元数据或触发发布。
+表单的实际 Content-Type 与字段；修复提交 `a90c26e` 本身未更改版本元数据，后由 Alpha 15
+发布提交更新版本与公开安装定义。
 
 ## Alpha 14 缓存管理与下载反馈（2026-11-16）
 
