@@ -40,12 +40,12 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-Fix binary chunk uploads stalling in the native nginx/PHP authentication gateway.
-Encode bounded binary chunks in ordinary URL-encoded forms, including cancellation.
-Require an independent MD5 file for local imports and verify it before selecting cache.
-Preserve old caches and prevent retries when upload or cancellation results are unknown.
-Verify upload, cancellation and failures through a real local browser/nginx/PHP-FPM chain.
-Audit UI typography without changing fonts, driver installation, startup or GPU runtime.
+Unify technical identifiers, versions, XML, logs and code editors with one monospace stack.
+Prefer the native WebGUI monospace font with explicit, consistent fallback fonts.
+Keep body text, ordinary form controls, tabs and buttons in their native Unraid style.
+Match initial and dynamically updated cache/profile typography without changing requests.
+Test black/white themes, font sizes, narrow screens, missing fonts and expanded layouts.
+Preserve upload MD5 enforcement, authentication, driver installation and GPU runtime behavior.
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -134,7 +134,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.16.5")
+    parser.add_argument("--version", default="2026.11.16.6")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

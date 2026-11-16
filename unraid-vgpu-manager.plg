@@ -1,16 +1,16 @@
 <?xml version="1.0" standalone="yes"?>
-<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.16.5" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
+<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.16.6" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
 <CHANGES>
-Fix binary chunk uploads stalling in the native nginx/PHP authentication gateway.
-Encode bounded binary chunks in ordinary URL-encoded forms, including cancellation.
-Require an independent MD5 file for local imports and verify it before selecting cache.
-Preserve old caches and prevent retries when upload or cancellation results are unknown.
-Verify upload, cancellation and failures through a real local browser/nginx/PHP-FPM chain.
-Audit UI typography without changing fonts, driver installation, startup or GPU runtime.
+Unify technical identifiers, versions, XML, logs and code editors with one monospace stack.
+Prefer the native WebGUI monospace font with explicit, consistent fallback fonts.
+Keep body text, ordinary form controls, tabs and buttons in their native Unraid style.
+Match initial and dynamically updated cache/profile typography without changing requests.
+Test black/white themes, font sizes, narrow screens, missing fonts and expanded layouts.
+Preserve upload MD5 enforcement, authentication, driver installation and GPU runtime behavior.
 </CHANGES>
-<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.16.5-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
-<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.16.5-alpha.16/unraid-vgpu-manager-2026.11.16.5-noarch-1.txz</URL>
-<MD5>a73cbc77663e509dc2344f997f82d922</MD5>
+<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.16.6-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
+<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.16.6-alpha.17/unraid-vgpu-manager-2026.11.16.6-noarch-1.txz</URL>
+<MD5>e1f844560d72eb75a6f8a82f459d1757</MD5>
 </FILE>
 <FILE Run="/bin/bash"><INLINE><![CDATA[
 # Installation must succeed without a repository, token or NVIDIA package.
