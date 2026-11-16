@@ -507,7 +507,7 @@ try {
     $baselineSettings['source'] = $upgradeSource;
     $baselineName = 'nvidia-595.58.03-6.18.58-Unraid-1.txz';
     $baselinePath = $upgradeFixture->paths->cacheDir . '/6.18.58/' . $baselineName;
-    $upgradeFixture->put('/boot/config/plugins/unraid-vgpu-manager/packages/6.18.58/' . $baselineName, 'application-cache-fixture');
+    $upgradeFixture->put('/boot/config/plugins/unraid-vgpu-manager/driver-cache/6.18.58/' . $baselineName, 'application-cache-fixture');
     $baselineSettings['selected_package'] = ['source' => $upgradeSource['repository'], 'provider' => $upgradeSource['provider'], 'driver' => '595.58.03',
         'kernel' => '6.18.58-Unraid', 'filename' => $baselineName, 'path' => $baselinePath,
         'md5' => hash_file('md5', $baselinePath), 'build' => 1, 'saved_boot_id' => '11111111-1111-4111-8111-111111111111',

@@ -88,7 +88,7 @@ class UploadGatewayTests(unittest.TestCase):
 
     def setUp(self):
         subprocess.run([self.php, '-n', str(self.fixture), 'reset'], check=True, capture_output=True)
-        self.cache = self.directory / 'root/boot/config/plugins/unraid-vgpu-manager/packages/6.18.58'
+        self.cache = self.directory / 'root/boot/config/plugins/unraid-vgpu-manager/driver-cache/6.18.58'
         self.config = self.cache.parent.parent
         self.before = (self.config / 'settings.json').read_bytes()
 
@@ -135,7 +135,9 @@ class UploadGatewayTests(unittest.TestCase):
         self.assertEqual((self.cache / (NAME + '.md5')).read_text(), self.md5 + '  ' + NAME + '\n')
         self.assertFalse(staged.parent.exists())
         settings = json.loads((self.config / 'settings.json').read_text())
-        self.assertEqual(settings['selected_package']['filename'], NAME)
+        self.assertEqual(settings['selected_package'], json.loads(self.before)['selected_package'])
+        cached_receipt = json.loads((self.config / 'cache-receipts' / (NAME + '.json')).read_text())
+        self.assertEqual(cached_receipt['filename'], NAME)
         for key in ['runtime', 'driver', 'source', 'upgrade']:
             self.assertEqual(settings[key], json.loads(self.before)[key])
         self.assertEqual((self.cache / OLD).read_bytes(), b'original selected cache')

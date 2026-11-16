@@ -77,7 +77,7 @@
       </fieldset>
     </form>
     <a id="uvm-upload-check" hidden>重新打开页面核对缓存</a>
-    <p class="uvm-muted">必须同时选择对应的 MD5 文件，比对通过才导入缓存。开启“开机恢复驱动”后，匹配的缓存将在下次开机安装。</p>
+    <p class="uvm-muted">必须同时选择对应的 MD5 文件，比对通过才导入缓存。导入后在“已下载驱动”明确选择下次启动构建。</p>
   </section>
 
 <section class="uvm-panel" id="uvm-driver-policy-panel">
@@ -86,7 +86,7 @@
     <?php uvm_form_hidden('config-save', $uvm_csrf, ['config_section' => 'driver']); ?>
     <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
     <div class="uvm-grid">
-      <label class="uvm-field"><span>开机恢复驱动</span><select name="driver_enabled"><option value="0" <?=empty($uvm_settings['driver']['enabled']) ? 'selected' : ''?>>关闭</option><option value="1" <?=!empty($uvm_settings['driver']['enabled']) ? 'selected' : ''?>>开启</option></select><small>每次开机从缓存安装匹配的驱动。本地导入也适用；首次启用请停用原驱动安装入口。</small></label>
+      <label class="uvm-field"><span>开机恢复驱动</span><select name="driver_enabled"><option value="0" <?=empty($uvm_settings['driver']['enabled']) ? 'selected' : ''?>>关闭</option><option value="1" <?=!empty($uvm_settings['driver']['enabled']) ? 'selected' : ''?>>开启</option></select><small>由 Unraid 在下次开机安装选中的构建，插件核验后初始化 vGPU。本地导入也适用；首次启用请停用原驱动安装入口。</small></label>
       <label class="uvm-field"><span>系统升级预下载</span><select name="upgrade_enabled"><option value="0" <?=empty($uvm_settings['upgrade']['enabled']) ? 'selected' : ''?>>关闭</option><option value="1" <?=!empty($uvm_settings['upgrade']['enabled']) ? 'selected' : ''?>>开启</option></select><small>从已配置的下载源提前准备新内核驱动。关闭后仍可从现有缓存开机恢复。</small></label>
     </div>
     <p class="uvm-muted">vGPU 初始化在“vGPU 管理”页单独设置。</p>
@@ -99,17 +99,18 @@
 
 <section class="uvm-panel" id="uvm-driver-cache">
   <h2>驱动缓存</h2>
+  <p id="uvm-selected-package">最近选择：<?php if ($uvm_selected_package): ?><code><?=uvm_h($uvm_selected_package['filename'])?></code><?php else: ?>尚未选择<?php endif; ?>。每个内核分别保存启动构建；下载或导入不会改变选择。</p>
   <div id="uvm-driver-cache-body">
   <?php if ($uvm_selected_package): ?>
   <p>NVIDIA <code><?=uvm_h($uvm_selected_package['driver'] ?? '')?></code> · 构建 <code><?=uvm_h($uvm_selected_package['build'] ?? '未记录')?></code> · <code><?=uvm_h($uvm_selected_package['kernel'] ?? '')?></code> · <?=($uvm_selected_package['source'] ?? '') === 'local' ? '本地导入' : '在线下载'?></p>
   <p class="uvm-muted uvm-cache-filename"><code><?=uvm_h($uvm_selected_package['filename'] ?? basename($uvm_selected_package['path'] ?? ''))?></code></p>
   <details><summary>文件信息</summary><pre><?=uvm_h(json_encode(uvm_redact($uvm_selected_package), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))?></pre></details>
-  <?php else: ?><p class="uvm-muted">尚无缓存，下载或上传一个匹配内核的驱动包。</p><?php endif; ?>
+  <?php else: ?><p class="uvm-muted">下载或上传驱动后，在下方选择下次启动构建。</p><?php endif; ?>
   </div>
 </section>
 <section class="uvm-panel" id="uvm-downloaded-panel" data-controls="<?=$uvm_controls ? '1' : '0'?>">
   <h2>已下载驱动</h2>
-  <p class="uvm-muted">列出所有内核的缓存包。当前选中、升级准备、上次成功安装和回退记录引用的包不可删除。删除仅清理缓存，不卸载正在运行的驱动；需要恢复时请重新下载或上传。</p>
+  <p class="uvm-muted">列出所有内核的缓存包。“Unraid 启动安装”标记表示该内核实际准备的唯一启动包。当前选中、启动安装、升级准备、上次成功安装和回退记录引用的包不可删除。删除仅清理缓存，不卸载正在运行的驱动；需要恢复时请重新下载或上传。</p>
   <div id="uvm-cache-list">
   <?php $uvm_cache = $uvm_status['package_cache'] ?? null; ?>
   <?php if (!is_array($uvm_cache) || ($uvm_cache['available'] ?? null) !== true): ?>
@@ -122,7 +123,7 @@
         <td><code><?=uvm_h($cached['filename'])?></code><p class="uvm-muted">NVIDIA <code><?=uvm_h($cached['driver'])?></code> · 构建 <code><?=uvm_h($cached['build'])?></code></p></td>
         <td><code><?=uvm_h($cached['kernel'])?></code></td><td><?=uvm_h(number_format($cached['size'] / 1048576, 1))?> MiB</td>
         <td><?=uvm_h(implode('、', $cached['references']) ?: '未被引用')?></td>
-        <td><form method="post" class="uvm-cache-delete-form"><?php uvm_form_hidden('cache-delete', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls || $cached['deletable'] !== true ? 'disabled' : ''?>>删除</button></form></td>
+        <td><form method="post" class="uvm-submit-form"><?php uvm_form_hidden('cache-select', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls ? 'disabled' : ''?>>设为下次启动构建</button></form><form method="post" class="uvm-cache-delete-form"><?php uvm_form_hidden('cache-delete', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls || $cached['deletable'] !== true ? 'disabled' : ''?>>删除</button></form></td>
       </tr>
     <?php endforeach; ?>
     </tbody></table></div>
@@ -228,7 +229,15 @@
       });
       const button = document.createElement('button'); button.type = 'submit'; button.textContent = '删除';
       button.disabled = item.deletable !== true || !Array.isArray(item.references) || item.references.length > 0 || document.getElementById('uvm-downloaded-panel').dataset.controls !== '1';
-      form.append(button); row.insertCell().append(form);
+      form.append(button);
+      const actions = row.insertCell();
+      const select = document.createElement('form'); select.method = 'post'; select.className = 'uvm-submit-form';
+      Object.entries({uvm_action: 'cache-select', uvm_tab: 'driver', csrf_token: csrf, uvm_csrf_token: csrf, cache_filename: item.filename}).forEach(function (entry) {
+        const field = document.createElement('input'); field.type = 'hidden'; field.name = entry[0]; field.value = entry[1]; select.append(field);
+      });
+      const choose = document.createElement('button'); choose.type = 'submit'; choose.textContent = '设为下次启动构建';
+      choose.disabled = document.getElementById('uvm-downloaded-panel').dataset.controls !== '1';
+      select.append(choose); actions.append(select, form);
     });
     scroll.append(table); cacheList.append(scroll);
   }
@@ -268,7 +277,8 @@
     const data = document.createElement('pre');
     data.textContent = JSON.stringify(packageInfo, null, 2);
     details.append(summary, data);
-    fragment.append(identity, filename, details);
+    const label = document.createElement('p'); label.textContent = '刚下载的缓存，尚未改变下次启动选择。';
+    fragment.append(identity, label, filename, details);
     body.replaceChildren(fragment);
   }
   downloadForm.addEventListener('submit', async function (event) {
@@ -338,7 +348,7 @@
       outcome = 'cached';
       downloadMeter.value = 1;
       downloadFeedback.className = 'uvm-note uvm-success uvm-download-feedback';
-      downloadMessage.textContent = '驱动已下载并校验，缓存已更新。当前加载的驱动未改变。';
+      downloadMessage.textContent = '驱动已下载并校验，请在已下载列表选择下次启动构建。当前选择及运行驱动未改变。';
       showCachedPackage(packageInfo);
       renderCacheList(result.data.package_cache);
     } catch (_) {

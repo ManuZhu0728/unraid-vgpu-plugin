@@ -1,16 +1,16 @@
 <?xml version="1.0" standalone="yes"?>
-<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.16.6" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
+<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.17.1" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
 <CHANGES>
-Unify technical identifiers, versions, XML, logs and code editors with one monospace stack.
-Prefer the native WebGUI monospace font with explicit, consistent fallback fonts.
-Keep body text, ordinary form controls, tabs and buttons in their native Unraid style.
-Match initial and dynamically updated cache/profile typography without changing requests.
-Test black/white themes, font sizes, narrow screens, missing fonts and expanded layouts.
-Preserve upload MD5 enforcement, authentication, driver installation and GPU runtime behavior.
+Use Unraid native driver installation; the plugin verifies it before vGPU initialization.
+Separate multi-build caches from one selected native boot package per kernel.
+Require explicit boot selection after downloads or local imports; preserve other builds.
+Verify pkgtools build/source, checksums, module fingerprints and loaded module identity.
+Keep existing plugin entrypoints and GPU usage protection; add no system startup hooks.
+Test native startup ordering, build switching, migration, initialization and WebGUI regressions.
 </CHANGES>
-<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.16.6-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
-<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.16.6-alpha.17/unraid-vgpu-manager-2026.11.16.6-noarch-1.txz</URL>
-<MD5>e1f844560d72eb75a6f8a82f459d1757</MD5>
+<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.17.1-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
+<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.17.1-alpha.18/unraid-vgpu-manager-2026.11.17.1-noarch-1.txz</URL>
+<MD5>61e9dc856f62c603f8b942f642c75225</MD5>
 </FILE>
 <FILE Run="/bin/bash"><INLINE><![CDATA[
 # Installation must succeed without a repository, token or NVIDIA package.
@@ -22,6 +22,13 @@ fi
 ]]></INLINE></FILE>
 <FILE Run="/bin/bash" Method="remove"><INLINE><![CDATA[
 # Do not kill GPU clients, undefine mdevs or remove driver packages on uninstall.
+# Withdraw only our native boot copies before removing our own backend files.
+if [ -f /usr/local/emhttp/plugins/unraid-vgpu-manager/include/cli.php ]; then
+  if ! printf '%s\n' '{"driver":{"enabled":false}}' | /usr/bin/php /usr/local/emhttp/plugins/unraid-vgpu-manager/include/cli.php config-save; then
+    echo "Cannot withdraw the plugin native boot selection; plugin files were retained. No GPU service was stopped."
+    exit 1
+  fi
+fi
 if [ -f /usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper ]; then
   /bin/bash /usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper stop
 fi
@@ -29,6 +36,6 @@ if pgrep -x nvidia-vgpu-mgr >/dev/null 2>&1; then
   echo "The NVIDIA manager remains running. Plan a maintenance reboot before using another runtime owner."
 fi
 removepkg unraid-vgpu-manager
-echo "Persistent settings, credentials, device definitions and cached drivers were retained."
+echo "Boot restoration disabled; credentials, device definitions and cached drivers were retained."
 ]]></INLINE></FILE>
 </PLUGIN>

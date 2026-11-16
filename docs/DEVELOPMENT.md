@@ -3,6 +3,28 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
+## Alpha 18 原生驱动安装分工（2026-11-17）
+
+`Paths::cacheDir` 改为 `driver-cache`，新增仅供 Unraid 现有 `rc.modules` 扫描的
+`bootPackagesDir=packages`。`NativeBoot` 在 Store 锁内迁移自己的旧包和 durable 引用，
+保留各 build 与原 MD5；以校验过的私有临时目录准备唯一构建，再撤下旧副本并发布。
+替换间隙最多暴露零个包，不会同时暴露两个 build；失败不自动安装其他缓存。
+未被引用的缓存仍由既有精确删除入口管理，原生启动选择同样提供保护原因。
+
+在线下载和本地导入只保存可选缓存 receipt；`cache-select` 是明确的独立动作。关闭恢复撤下
+启动副本，保留缓存。升级助手准备的目标内核与原内核各维持一个选择，不扫描缓存猜测最高 build。
+
+`Installer::boot` 现在只核验，不运行驱动安装器、depmod、ldconfig 或修改系统启动文件。
+核对选择在前次 boot 已准备、原生安装目录唯一性、外部 MD5、pkgtools 精确包名及来源路径、
+归档中的模块内容/版本/vermagic，并在已加载时核对 sysfs srcversion 与已验证模块元数据。
+通过后沿用 `Runtime::ensure`，不放宽既有占用/外部所有权门禁，不新增守护进程或系统钩子。
+
+原生集成以固定未修改的 Unraid `rc.modules` 与真实 Slackware `installpkg --root` 在
+bubblewrap 网络隔离的临时根中运行。`uname`、depmod 顺序、模块元数据和 GPU 服务是明确
+被动 fixture，模块均为文本，不接触真实 GPU/Unraid。覆盖多 build、切换/连续启动、升级目标、
+已有模块、原生包记录或指纹不符、迁移中断、关闭恢复及原 UUID 初始化。缺少工具时明确 skip。
+旧的插件自安装集成工具是历史事务诊断用例，不作为本版原生安装验收入口。
+
 ## Alpha 17 插件字体统一（2026-11-16）
 
 仅在 `.uvm-wrap` 声明 `--uvm-font-mono`，优先 Unraid 原生 bitstream，后接 ui-monospace、

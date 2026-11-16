@@ -24,7 +24,7 @@ class CacheDeleteHttpTests(unittest.TestCase):
         cls.php = os.environ.get('PHP_BIN') or shutil.which('php') or str(ROOT / '.tools/php/root/usr/bin/php8.4')
         cls.temporary = tempfile.TemporaryDirectory(prefix='vgpu-cache-delete-http-')
         cls.directory = Path(cls.temporary.name)
-        cls.cache = cls.directory / 'root/boot/config/plugins/unraid-vgpu-manager/packages/6.18.58'
+        cls.cache = cls.directory / 'root/boot/config/plugins/unraid-vgpu-manager/driver-cache/6.18.58'
         script = r'''<?php
 require_once BOOTSTRAP;
 require_once APPLICATION;

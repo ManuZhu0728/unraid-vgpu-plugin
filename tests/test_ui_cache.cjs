@@ -18,9 +18,9 @@ const selected = pkg(3);
 const upgraded = pkg(2, '6.18.60-Unraid');
 const inventory = (deleted = false, downloaded = false, long = false) => ({ available: true, packages: [
     ...(!deleted ? [{ ...free, deletable: true, references: [] }] : []),
-    { ...selected, deletable: downloaded, references: downloaded ? [] : ['当前选中'] },
+    { ...selected, deletable: false, references: ['当前选中'] },
     { ...upgraded, deletable: false, references: [long ? '升级预下载 ' + 'X'.repeat(500) + '<img id="injected-reason" src=x>' : '升级预下载'] },
-    ...(downloaded ? [{ ...pkg(4), deletable: false, references: ['当前选中'] }] : []),
+    ...(downloaded ? [{ ...pkg(4), deletable: true, references: [] }] : []),
 ] });
 const css = ['default-color-palette.css', 'default-base.css', 'default-dynamix.css'].map(file => readFileSync(path.join(styles, file), 'utf8')).join('\n');
 const fonts = ['clear-sans', 'bitstream'].flatMap(family => [['', 'normal'], ['-bold', 'bold']].map(([suffix, weight]) => `@font-face {font-family:${family};font-weight:${weight};src:url(data:font/woff;base64,${readFileSync(path.join(styles, family + suffix + '.woff')).toString('base64')})}`)).join('\n');
@@ -71,15 +71,15 @@ function render(theme, fontSize, long, disabled) {
         });
         const reset = async () => { await page.goto(base + '&fixture_page=' + ++pageNumber); await page.evaluate(() => document.fonts.ready); };
         const row = name => page.locator('#uvm-cache-list tr[data-cache-filename="' + name + '"]');
-        const submit = () => row(free.filename).locator('button').click();
+        const submit = () => row(free.filename).locator('.uvm-cache-delete-form button').click();
         const done = () => page.waitForFunction(() => !document.getElementById('uvm-cache-message').hidden && !document.getElementById('uvm-cache-message').textContent.includes('正在删除'));
         await reset();
         if (process.env.CACHE_TEST_OUTPUT) await page.locator('#uvm-downloaded-panel').screenshot({ path: path.join(process.env.CACHE_TEST_OUTPUT, 'cache-management.png') });
-        assert.equal(await row(free.filename).locator('button').isDisabled(), false);
-        assert.equal(await row(selected.filename).locator('button').isDisabled(), true);
-        assert.equal(await row(upgraded.filename).locator('button').isDisabled(), true);
+        assert.equal(await row(free.filename).locator('.uvm-cache-delete-form button').isDisabled(), false);
+        assert.equal(await row(selected.filename).locator('.uvm-cache-delete-form button').isDisabled(), true);
+        assert.equal(await row(upgraded.filename).locator('.uvm-cache-delete-form button').isDisabled(), true);
         const beforeProtected = requests.length;
-        await row(selected.filename).locator('form').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+        await row(selected.filename).locator('.uvm-cache-delete-form').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
         assert.equal(requests.length, beforeProtected); assert.equal(confirmations.length, 0);
         await submit();
         assert.equal(requests.length, beforeProtected, 'Cancelling confirmation must not send any POST');
@@ -93,14 +93,14 @@ function render(theme, fontSize, long, disabled) {
         const beforePending = requests.length;
         await submit();
         await page.waitForFunction(() => window.uvmUI.isBusy());
-        assert.equal(await row(free.filename).locator('button').isDisabled(), true);
-        await row(free.filename).locator('form').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+        assert.equal(await row(free.filename).locator('.uvm-cache-delete-form button').isDisabled(), true);
+        await row(free.filename).locator('.uvm-cache-delete-form').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
         await page.locator('#uvm-download-form button').click();
         assert.equal(requests.length, beforePending + 1, 'Pending deletion blocks double submit and racing download');
         for (const [key, value] of Object.entries({ uvm_action: 'cache-delete', uvm_tab: 'driver', csrf_token: 'fixture-ui-csrf', uvm_csrf_token: 'fixture-ui-csrf', cache_filename: free.filename, uvm_cache_delete_async: '1' })) assert.equal(new URLSearchParams(requests.at(-1).body).get(key), value);
         assert.ok(!requests.at(-1).body.includes('unsaved.example.test') && !requests.at(-1).body.includes('unsaved-fixture-secret'));
         await release(); await done();
-        assert.equal(await row(free.filename).count(), 0); assert.equal(await row(selected.filename).locator('button').isDisabled(), true);
+        assert.equal(await row(free.filename).count(), 0); assert.equal(await row(selected.filename).locator('.uvm-cache-delete-form button').isDisabled(), true);
         assert.equal(page.url(), currentUrl); assert.equal(requests.length, beforePending + 1);
         assert.deepEqual(await page.locator('#uvm-source-form').evaluate(form => Object.fromEntries(new FormData(form))), draft);
         assert.match(await page.locator('#uvm-driver-cache-body').textContent(), /构建 3/);
@@ -132,9 +132,11 @@ function render(theme, fontSize, long, disabled) {
         await page.locator('#uvm-download-form button').click();
         await page.waitForFunction(() => document.getElementById('uvm-download-form').getAttribute('aria-busy') === 'false');
         assert.match(await page.locator('#uvm-driver-cache-body').textContent(), /构建 4/);
-        assert.equal(await row(selected.filename).locator('button').isDisabled(), false, 'Download refreshes the old selection reference');
-        assert.equal(await row(pkg(4).filename).locator('button').isDisabled(), true, 'Newly downloaded/selected package is immediately protected');
-        assert.equal(await row(upgraded.filename).locator('button').isDisabled(), true);
+        assert.equal(await row(selected.filename).locator('.uvm-cache-delete-form button').isDisabled(), true, 'Download retains the explicit boot selection');
+        assert.equal(await row(pkg(4).filename).locator('.uvm-cache-delete-form button').isDisabled(), false, 'Downloaded but unselected package can be removed');
+        assert.match(await page.locator('#uvm-selected-package').textContent(), /-3\.txz/);
+        assert.equal(await row(pkg(4).filename).locator('[name="uvm_action"][value="cache-select"]').count(), 1, 'Dynamic cache rows offer an explicit selection action');
+        assert.equal(await row(upgraded.filename).locator('.uvm-cache-delete-form button').isDisabled(), true);
         assert.equal(await row(pkg(4).filename).locator('td:first-child > code').textContent(), pkg(4).filename);
         assert.equal(await row(pkg(4).filename).locator('td:first-child p code').count(), 2);
         ++cases;

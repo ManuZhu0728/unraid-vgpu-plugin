@@ -87,6 +87,9 @@ final class PackageCache
         $config = $this->store->paths->configDir;
         $settings = $this->record($this->store->paths->settingsFile, 131072);
         $add($settings['selected_package'] ?? null, '当前选中');
+        foreach ((new NativeBoot($this->store, new Download($this->store->paths)))->selections() as $record) {
+            $add($record['authorization']['package'] ?? null, 'Unraid 启动安装');
+        }
         $upgrade = $this->record($config . '/upgrade-state.json', 131072);
         $add($upgrade['package'] ?? null, '升级预下载');
         $add($upgrade['baseline_package'] ?? null, '升级基线/回退');

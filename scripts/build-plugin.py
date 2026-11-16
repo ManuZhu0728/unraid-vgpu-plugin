@@ -40,12 +40,12 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-Unify technical identifiers, versions, XML, logs and code editors with one monospace stack.
-Prefer the native WebGUI monospace font with explicit, consistent fallback fonts.
-Keep body text, ordinary form controls, tabs and buttons in their native Unraid style.
-Match initial and dynamically updated cache/profile typography without changing requests.
-Test black/white themes, font sizes, narrow screens, missing fonts and expanded layouts.
-Preserve upload MD5 enforcement, authentication, driver installation and GPU runtime behavior.
+Use Unraid native driver installation; the plugin verifies it before vGPU initialization.
+Separate multi-build caches from one selected native boot package per kernel.
+Require explicit boot selection after downloads or local imports; preserve other builds.
+Verify pkgtools build/source, checksums, module fingerprints and loaded module identity.
+Keep existing plugin entrypoints and GPU usage protection; add no system startup hooks.
+Test native startup ordering, build switching, migration, initialization and WebGUI regressions.
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -61,6 +61,13 @@ fi
 ]]></INLINE></FILE>
 <FILE Run="/bin/bash" Method="remove"><INLINE><![CDATA[
 # Do not kill GPU clients, undefine mdevs or remove driver packages on uninstall.
+# Withdraw only our native boot copies before removing our own backend files.
+if [ -f /usr/local/emhttp/plugins/{PLUGIN}/include/cli.php ]; then
+  if ! printf '%s\\n' '{{"driver":{{"enabled":false}}}}' | /usr/bin/php /usr/local/emhttp/plugins/{PLUGIN}/include/cli.php config-save; then
+    echo "Cannot withdraw the plugin native boot selection; plugin files were retained. No GPU service was stopped."
+    exit 1
+  fi
+fi
 if [ -f /usr/local/emhttp/plugins/{PLUGIN}/scripts/upgrade-helper ]; then
   /bin/bash /usr/local/emhttp/plugins/{PLUGIN}/scripts/upgrade-helper stop
 fi
@@ -68,7 +75,7 @@ if pgrep -x nvidia-vgpu-mgr >/dev/null 2>&1; then
   echo "The NVIDIA manager remains running. Plan a maintenance reboot before using another runtime owner."
 fi
 removepkg {PLUGIN}
-echo "Persistent settings, credentials, device definitions and cached drivers were retained."
+echo "Boot restoration disabled; credentials, device definitions and cached drivers were retained."
 ]]></INLINE></FILE>
 </PLUGIN>
 '''
@@ -85,7 +92,7 @@ def build(version, output, public_base=None, update_url=None):
         "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php",
         "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php",
         "include/Store.php", "include/StartupInventory.php", "include/Runtime.php", "include/Download.php",
-        "include/PackageIdentity.php", "include/PackageHistory.php", "include/PackageCache.php", "include/PkgtoolsMigration.php", "include/InstallContract.php",
+        "include/PackageIdentity.php", "include/PackageHistory.php", "include/PackageCache.php", "include/NativeBoot.php", "include/PkgtoolsMigration.php", "include/InstallContract.php",
         "include/InstallTimeout.php", "include/InstallConfiguration.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php",
         "include/Installer.php", "include/upgrade-watch.php",
     ]
@@ -134,7 +141,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.16.6")
+    parser.add_argument("--version", default="2026.11.17.1")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

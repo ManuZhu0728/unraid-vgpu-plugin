@@ -24,7 +24,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $uvm_request_tab = $targetTab;
         $uvm_preferred_tab = $targetTab;
         $allowedActions = [
-            'driver' => ['cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check'],
+            'driver' => ['cache-select', 'cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check'],
             'vgpu' => ['config-save', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'],
             'status' => [],
         ];
@@ -33,6 +33,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         if ($uvm_cache_delete_request && uvm_post('uvm_cache_delete_async') !== '1') throw new InvalidArgumentException('删除请求标识无效，请重新打开页面。');
         $payload = [];
         switch ($uvm_action) {
+            case 'cache-select':
+                $uvm_action_data = uvm_cli($uvm_action, ['filename' => uvm_post('cache_filename')]);
+                if (($uvm_action_data['ok'] ?? false) !== true) throw new RuntimeException((string)($uvm_action_data['message'] ?? '未能确认启动构建选择，请核对页面。'));
+                $uvm_message = (string)$uvm_action_data['message'];
+                break;
             case 'cache-delete':
                 $payload = ['filename' => uvm_post('cache_filename')];
                 $uvm_action_data = uvm_cli($uvm_action, $payload);

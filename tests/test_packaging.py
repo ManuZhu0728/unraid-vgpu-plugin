@@ -57,6 +57,9 @@ class PackagingTests(unittest.TestCase):
             self.assertIn('scripts/upgrade-helper stop', script)
             self.assertLess(script.index('scripts/rc.vgpu boot'), script.index('scripts/upgrade-helper start'))
             self.assertNotIn('/usr/bin/plugin_update_helper', script)
+            self.assertIn('cli.php config-save', script)
+            self.assertIn('"enabled":false', script)
+            self.assertLess(script.index('cli.php config-save'), script.index('removepkg unraid-vgpu-manager'))
 
     def test_public_installer_requires_explicit_credential_free_public_urls(self):
         with tempfile.TemporaryDirectory(prefix='vgpu-package-test-') as temporary:
