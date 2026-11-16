@@ -204,6 +204,8 @@ ui_check(str_contains($rendered['html'], '<summary>高级设置</summary>') && s
 ui_check(str_contains($rendered['html'], '开机恢复驱动') && str_contains($rendered['html'], '系统升级预下载') && str_contains($rendered['html'], '下次开机安装'), 'UI must distinguish cached boot installation from upgrade prefetch');
 ui_check(!str_contains($rendered['html'], '不等于完整 GPU 验收') && !str_contains($rendered['html'], '不执行 ensure'), 'Status copy must not repeat implementation caveats');
 ui_check(str_contains($rendered['html'], 'uvm-upload-package') && str_contains($rendered['html'], 'source-upload-chunk'), 'Local package upload must be exposed');
+ui_check(preg_match('/id="uvm-upload-checksum"[^>]*required/', $rendered['html']) === 1 && str_contains($rendered['html'], 'MD5 文件（必选）'), 'The independent MD5 file must be mandatory, not synthesized from the uploaded package');
+ui_check(!str_contains(ui_form($rendered, 'uvm-upload-form'), 'multipart/form-data'), 'Browser chunks must not inherit the incompatible multipart encoding');
 ui_check(str_contains($rendered['html'], 'window.location.replace(') && !str_contains($rendered['html'], 'window.location.reload('), 'Upload completion must navigate with GET rather than replaying an earlier POST');
 ui_check(substr_count($rendered['html'], 'name="upgrade_enabled"') === 1 && str_contains($rendered['html'], '升级准备'), 'Upgrade prefetch must have one setting and a preparation status panel');
 ui_check(str_contains($rendered['html'], 'name="csrf_token"') && str_contains($rendered['html'], 'name="uvm_csrf_token"'), 'Forms must include native gateway and plugin CSRF fields');
@@ -760,7 +762,7 @@ $rendered = ui_render($cachedBuild);
 ui_check(str_contains(ui_panel($rendered, 'driver'), 'NVIDIA 595.58.03 · 构建 未记录'), 'The UI must not guess build1 from a driver version or incomplete build2 receipt');
 
 $upload = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'source-upload-begin',
-    'filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz', 'total' => '200'];
+    'filename' => 'nvidia-595.58.03-6.18.58-Unraid-1.txz', 'total' => '200', 'checksum' => str_repeat('a', 32)];
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $upload,
     'responses' => ['source-upload-begin' => ['upload_id' => str_repeat('a', 32), 'offset' => 0, 'max_chunk_size' => 1048576]]]);
 ui_check(ui_actions($rendered) === ['source-upload-begin'], 'Upload AJAX must avoid repeatedly rendering status and profiles');
@@ -769,6 +771,26 @@ ui_check(str_contains($rendered['html'], 'id="uvm-upload-result"') && str_contai
 ui_check($rendered['calls'][0]['payload']['total'] === 200, 'Upload total must be validated then passed as integer');
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $upload, 'gateway_strip_csrf' => true]);
 ui_check(ui_actions($rendered) === ['source-upload-begin'] && str_contains($rendered['html'], '"ok":true'), 'Uploads must also survive the native gateway consuming csrf_token');
+foreach (['', ' ', str_repeat('a', 4097)] as $missingChecksum) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => array_replace($upload, ['checksum' => $missingChecksum])]);
+    ui_check(ui_actions($rendered) === [] && str_contains($rendered['html'], '"outcome":"failed"'), 'Missing or oversized MD5 must fail before staging or CLI execution');
+}
+$encodedChunk = ['csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver',
+    'uvm_action' => 'source-upload-chunk', 'upload_id' => str_repeat('a', 32), 'offset' => '0', 'chunk_data' => 'AP8K', 'path' => '/never-forward'];
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $encodedChunk, 'gateway_strip_csrf' => true]);
+ui_check(ui_actions($rendered) === ['source-upload-chunk'] && $rendered['calls'][0]['payload'] === ['upload_id' => str_repeat('a', 32), 'offset' => 0, 'data' => 'AP8K'], 'Encoded binary must pass the consumed-token boundary without forwarding a client filesystem path');
+foreach (['', str_repeat('a', 1398105)] as $invalidChunk) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => array_replace($encodedChunk, ['chunk_data' => $invalidChunk])]);
+    ui_check(ui_actions($rendered) === [] && str_contains($rendered['html'], '"outcome":"failed"'), 'Empty or oversized encoded chunks must fail before the CLI');
+}
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $encodedChunk,
+    'files' => ['chunk' => ['error' => UPLOAD_ERR_OK, 'tmp_name' => '/tmp/phpForged']]]);
+ui_check(ui_actions($rendered) === [], 'Mixed file and encoded-data chunks must not choose an ambiguous source');
+$finish = array_replace($encodedChunk, ['uvm_action' => 'source-upload-finish']);
+foreach (['errors' => 'failed', 'unknown_errors' => 'unknown'] as $errorKey => $outcome) {
+    $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $finish, $errorKey => ['source-upload-finish' => 'fixture result']]);
+    ui_check(substr_count($rendered['html'], 'id="uvm-upload-result"') === 1 && str_contains($rendered['html'], '"outcome":"' . $outcome . '"'), 'Failed and unknown upload outcomes must stay distinct inside the native page wrapper');
+}
 $upload['csrf_token'] = 'bad';
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => $upload]);
 ui_check(ui_actions($rendered) === [] && str_contains($rendered['html'], '"ok":false'), 'Upload CSRF failure must not invoke any backend action');

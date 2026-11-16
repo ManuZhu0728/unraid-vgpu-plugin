@@ -115,7 +115,10 @@ final class LifecycleFixture
         $filename = 'nvidia-' . $driver . '-6.18.58-Unraid-2.txz';
         $temporary = sys_get_temp_dir() . '/php' . bin2hex(random_bytes(8));
         $this->write($temporary, "\xfd7zXZ\x00fixture package " . $filename);
-        return $this->application->dispatch('source-import', ['filename' => $filename, 'path' => $this->paths->path($temporary)])['package'];
+        $checksum = sys_get_temp_dir() . '/php' . bin2hex(random_bytes(8));
+        $this->write($checksum, md5("\xfd7zXZ\x00fixture package " . $filename));
+        return $this->application->dispatch('source-import', ['filename' => $filename, 'path' => $this->paths->path($temporary),
+            'checksum_path' => $this->paths->path($checksum)])['package'];
     }
 
     public function reboot(string $boot = self::NEW_BOOT): void

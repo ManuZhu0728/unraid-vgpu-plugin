@@ -314,7 +314,7 @@ try {
     $uploadPolicyFixture = $fixtures[] = new ApplicationFixture();
     $uploadPolicyApp = $uploadPolicyFixture->application;
     $uploadPolicyFixture->put('/tmp/phpBuildPin1', 'test-bytes');
-    $uploadStarted = $uploadPolicyApp->dispatch('source-upload-begin', ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-2.txz', 'total' => 10]);
+    $uploadStarted = $uploadPolicyApp->dispatch('source-upload-begin', ['filename' => 'nvidia-595.58.03-6.18.58-Unraid-2.txz', 'total' => 10, 'checksum' => md5('test-bytes')]);
     $uploadPolicyApp->dispatch('source-upload-chunk', ['upload_id' => $uploadStarted['upload_id'], 'offset' => 0,
         'path' => $uploadPolicyFixture->paths->path('/tmp/phpBuildPin1')]);
     $uploadPolicyApp->dispatch('config-save', ['source' => array_replace($uploadPolicyFixture->source(), ['build' => '1'])]);

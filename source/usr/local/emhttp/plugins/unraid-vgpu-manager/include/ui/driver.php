@@ -66,17 +66,18 @@
 
   <section class="uvm-panel" id="uvm-local-panel" <?=$uvm_driver_mode !== 'local' ? 'hidden' : ''?>>
     <h2>本地导入</h2>
-    <form id="uvm-upload-form" enctype="multipart/form-data">
+    <form id="uvm-upload-form" data-kernel="<?=uvm_h(($uvm_snapshot['kernel'] ?? '') ?: php_uname('r'))?>">
       <fieldset <?=!$uvm_controls ? 'disabled' : ''?>>
       <div class="uvm-grid">
         <label class="uvm-field"><span>驱动包</span><input id="uvm-upload-package" type="file" accept=".txz" required></label>
-        <label class="uvm-field"><span>MD5 文件（可选）</span><input id="uvm-upload-checksum" type="file" accept=".md5,.txt"></label>
+        <label class="uvm-field"><span>MD5 文件（必选）</span><input id="uvm-upload-checksum" type="file" accept=".md5,.txt" required></label>
       </div>
       <div class="uvm-actions"><button type="submit" id="uvm-upload-submit">导入到缓存</button><button type="button" id="uvm-upload-cancel" hidden>取消</button><span id="uvm-upload-progress" role="status"></span></div>
       <progress id="uvm-upload-meter" max="100" value="0" hidden></progress>
       </fieldset>
     </form>
-    <p class="uvm-muted">上传后自动校验。开启“开机恢复驱动”后，匹配的缓存将在下次开机安装。</p>
+    <a id="uvm-upload-check" hidden>重新打开页面核对缓存</a>
+    <p class="uvm-muted">必须同时选择对应的 MD5 文件，比对通过才导入缓存。开启“开机恢复驱动”后，匹配的缓存将在下次开机安装。</p>
   </section>
 
 <section class="uvm-panel" id="uvm-driver-policy-panel">
@@ -410,12 +411,20 @@
   const uploadCancel = document.getElementById('uvm-upload-cancel');
   const uploadProgress = document.getElementById('uvm-upload-progress');
   const uploadMeter = document.getElementById('uvm-upload-meter');
+  const uploadCheck = document.getElementById('uvm-upload-check');
+  uploadCheck.href = checkUrl.toString();
   const browserChunkSize = <?=uvm_json(uvm_upload_chunk_size())?>;
   let cancelUpload = false;
   let activeUploadId = '';
+  let uploadFinalizing = false;
+  let uploadPending = false;
+  window.addEventListener('beforeunload', function (event) {
+    if (!uploadPending) return;
+    event.preventDefault(); event.returnValue = '';
+  });
   window.addEventListener('pagehide', function () {
-    if (!activeUploadId || !navigator.sendBeacon) return;
-    const data = new FormData();
+    if (!activeUploadId || uploadFinalizing || !navigator.sendBeacon) return;
+    const data = new URLSearchParams();
     data.append('uvm_action', 'source-upload-cancel');
     data.append('uvm_tab', 'driver');
     data.append('csrf_token', csrf);
@@ -428,29 +437,42 @@
     uploadProgress.textContent = '正在取消…';
     uploadCancel.disabled = true;
   });
+  function uploadError(text, unknown) {
+    const error = new Error(text); error.unknown = Boolean(unknown); return error;
+  }
+  async function encodeUploadChunk(chunk) {
+    const bytes = new Uint8Array(await chunk.arrayBuffer());
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += 16384) binary += String.fromCharCode.apply(null, bytes.subarray(index, index + 16384));
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
   async function uploadRequest(action, fields, chunk) {
-    const data = new FormData();
+    // All upload requests, including binary chunks and pagehide cancellation,
+    // use URL-encoded text so native auth subrequests never parse multipart.
+    const data = new URLSearchParams();
     data.append('uvm_action', action);
     data.append('uvm_tab', 'driver');
     data.append('csrf_token', csrf);
     data.append('uvm_csrf_token', csrf);
     Object.entries(fields).forEach(function (entry) { data.append(entry[0], String(entry[1])); });
-    if (chunk) data.append('chunk', chunk, 'chunk.bin');
+    if (chunk) data.append('chunk_data', await encodeUploadChunk(chunk));
     const controller = new AbortController();
-    const timer = window.setTimeout(function () { controller.abort(); }, action === 'source-upload-finish' ? 900000 : 90000);
+    const timer = window.setTimeout(function () { controller.abort(); }, action === 'source-upload-finish' ? 930000 : 95000);
     try {
       const response = await fetch(window.location.href.split('#')[0], {
         method: 'POST', body: data, credentials: 'same-origin', signal: controller.signal
       });
-      if (!response.ok) throw new Error('上传请求失败（HTTP ' + response.status + '）。');
-      const html = new DOMParser().parseFromString(await response.text(), 'text/html');
-      const result = html.getElementById('uvm-upload-result');
-      if (!result) throw new Error('未收到上传结果，请刷新页面检查登录状态。');
-      const parsed = JSON.parse(result.textContent);
-      if (!parsed.ok) throw new Error(parsed.error || '导入失败。');
+      const text = await response.text();
+      if (!response.ok || text.length > 1048576) throw uploadError('未能确认上传响应，请重新打开页面核对缓存。', true);
+      const html = new DOMParser().parseFromString(text, 'text/html');
+      const results = html.querySelectorAll('script#uvm-upload-result[type="application/json"]');
+      if (results.length !== 1) throw uploadError('未收到唯一的上传结果，请重新打开页面核对缓存。', true);
+      const parsed = JSON.parse(results[0].textContent);
+      if (parsed && parsed.ok === false && parsed.outcome === 'failed' && typeof parsed.error === 'string') throw uploadError(parsed.error, false);
+      if (!parsed || parsed.ok !== true || !parsed.data || typeof parsed.data !== 'object') throw uploadError('上传结果未知，请重新打开页面核对缓存。', true);
       return parsed.data;
     } catch (error) {
-      if (error.name === 'AbortError') throw new Error('上传请求超时，请刷新页面检查缓存。');
+      if (typeof error.unknown !== 'boolean') throw uploadError('上传连接中断或结果无法确认，请重新打开页面核对缓存。', true);
       throw error;
     } finally { window.clearTimeout(timer); }
   }
@@ -463,10 +485,13 @@
       message('请选择不超过 2 GiB 的 TXZ 驱动包。', true);
       return;
     }
-    if (checksum && checksum.size > 4096) { message('MD5 文件不能超过 4 KiB。', true); return; }
+    if (!checksum || checksum.size < 1 || checksum.size > 4096) { message('必须同时选择非空且不超过 4 KiB 的 MD5 文件。', true); return; }
     if (browserChunkSize < 65536) { message('服务器的 PHP 上传限制过小，无法上传。', true); return; }
     window.uvmUI.setBusy(true);
+    uploadPending = true;
+    uploadFinalizing = false;
     cancelUpload = false;
+    uploadCheck.hidden = true;
     uploadButton.disabled = true;
     uploadCancel.hidden = false;
     uploadCancel.disabled = false;
@@ -475,53 +500,71 @@
     uploadProgress.textContent = '准备上传…';
     let uploadId = '';
     let finished = false;
+    let cancelAttempted = false;
+    let needsCheck = false;
     try {
+      const checksumText = (await checksum.text()).trim();
+      const checksumMatch = checksumText.match(/^([a-fA-F0-9]{32})(?:[ \t]+\*?([^\r\n]+))?$/);
+      if (!checksumMatch || (checksumMatch[2] && checksumMatch[2] !== file.name)) throw uploadError('MD5 格式无效或文件名与所选驱动包不匹配。', false);
       const begun = await uploadRequest('source-upload-begin', {
-        filename: file.name, total: file.size, checksum: checksum ? await checksum.text() : ''
+        filename: file.name, total: file.size, checksum: checksumText
       });
+      if (!/^[a-f0-9]{32}$/.test(begun.upload_id) || begun.offset !== 0 || begun.total !== file.size || !Number.isSafeInteger(begun.max_chunk_size) || begun.max_chunk_size < 1 || begun.max_chunk_size > 1048576) throw uploadError('上传初始化结果无效，请核对缓存。', true);
       uploadId = begun.upload_id;
       activeUploadId = uploadId;
       let offset = Number(begun.offset);
       const chunkSize = Math.min(browserChunkSize, Number(begun.max_chunk_size));
-      if (!uploadId || !Number.isInteger(offset) || offset !== 0 || !Number.isInteger(chunkSize) || chunkSize < 1) throw new Error('上传初始化结果无效。');
       while (offset < file.size) {
         if (cancelUpload) break;
         const nextOffset = Math.min(offset + chunkSize, file.size);
         const chunk = await uploadRequest('source-upload-chunk', {upload_id: uploadId, offset: offset}, file.slice(offset, nextOffset));
-        if (Number(chunk.offset) !== nextOffset) throw new Error('上传进度不一致，请重新导入。');
+        if (chunk.upload_id !== uploadId || chunk.offset !== nextOffset || chunk.total !== file.size) throw uploadError('上传进度回执不一致，请核对缓存。', true);
         offset = nextOffset;
         const percentage = Math.floor(offset * 100 / file.size);
         uploadMeter.value = percentage;
         uploadProgress.textContent = percentage + '% · ' + (offset / 1048576).toFixed(1) + ' / ' + (file.size / 1048576).toFixed(1) + ' MiB';
       }
       if (cancelUpload) {
-        await uploadRequest('source-upload-cancel', {upload_id: uploadId});
+        cancelAttempted = true;
+        const cancelled = await uploadRequest('source-upload-cancel', {upload_id: uploadId});
+        if (cancelled.ok !== true || cancelled.upload_id !== uploadId) throw uploadError('未确认取消结果，请核对缓存。', true);
         uploadId = '';
         activeUploadId = '';
         uploadProgress.textContent = '已取消。';
       } else {
         uploadCancel.hidden = true;
+        uploadFinalizing = true;
         uploadProgress.textContent = '上传完成，正在校验…';
-        await uploadRequest('source-upload-finish', {upload_id: uploadId});
+        const imported = await uploadRequest('source-upload-finish', {upload_id: uploadId});
+        const pkg = imported.package;
+        if (!pkg || pkg.filename !== file.name || pkg.kernel !== uploadForm.dataset.kernel || pkg.checksum_verified !== true || typeof pkg.md5 !== 'string' || pkg.md5.toLowerCase() !== checksumMatch[1].toLowerCase()) throw uploadError('未确认导入包或 MD5 校验回执，请核对缓存。', true);
         uploadId = '';
         activeUploadId = '';
         finished = true;
         uploadProgress.textContent = '导入完成。';
-        window.location.replace(window.location.href.split('#')[0]);
+        window.location.replace(checkUrl.toString());
       }
     } catch (error) {
+      needsCheck = error.unknown === true || cancelAttempted;
       message(error.message || '导入失败。', true);
-      uploadProgress.textContent = '导入未完成。';
+      uploadProgress.textContent = needsCheck ? '结果未确认；请核对缓存，不要重复提交。' : '导入未完成。';
     } finally {
-      if (uploadId) {
-        try { await uploadRequest('source-upload-cancel', {upload_id: uploadId}); } catch (_) {}
+      if (uploadId && !cancelAttempted && !(uploadFinalizing && needsCheck)) {
+        cancelAttempted = true;
+        try {
+          const cleared = await uploadRequest('source-upload-cancel', {upload_id: uploadId});
+          if (cleared.ok !== true || cleared.upload_id !== uploadId) throw uploadError('取消回执无效。', true);
+        } catch (_) { needsCheck = true; uploadProgress.textContent = '临时上传清理未确认；请核对缓存，不要重复提交。'; }
       }
       activeUploadId = '';
-      if (!finished) {
+      uploadPending = false;
+      uploadCheck.hidden = !needsCheck;
+      if (!finished && !needsCheck) {
         window.uvmUI.setBusy(false);
         uploadButton.disabled = false;
         uploadCancel.hidden = true;
       }
+      if (needsCheck) { uploadCancel.hidden = true; uploadButton.disabled = true; }
     }
   });
 

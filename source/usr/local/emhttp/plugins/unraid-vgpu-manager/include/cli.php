@@ -29,8 +29,9 @@ try {
     // A plain interactive source-download keeps its saved version. Web requests
     // may supply an explicit driver over stdin without changing saved settings.
     $readPayload = in_array($action, $payloadActions, true) || (in_array($action, ['source-download', 'upgrade-check', 'logs'], true) && !$stdinIsTty);
-    $raw = $readPayload ? stream_get_contents(STDIN, 131073) : '';
-    if (strlen($raw) > 131072) throw new InvalidArgumentException('Request is too large');
+    $inputLimit = $action === 'source-upload-chunk' ? 2097152 : 131072;
+    $raw = $readPayload ? stream_get_contents(STDIN, $inputLimit + 1) : '';
+    if (strlen($raw) > $inputLimit) throw new InvalidArgumentException('Request is too large');
     $input = trim($raw) === '' ? [] : json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
     if (!is_array($input)) throw new InvalidArgumentException('Request must be a JSON object');
     $paths = new Paths();

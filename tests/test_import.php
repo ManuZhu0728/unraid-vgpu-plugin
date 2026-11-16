@@ -140,7 +140,10 @@ try {
     import_rejects(fn() => $upload->cancel('../outside'), 'upload ID');
 
     $app = $fixture->application;
-    $started = $app->dispatch('source-upload-begin', ['filename' => $fixture->filename, 'total' => 6]);
+    foreach ([null, '', " \n", str_repeat('x', 4097)] as $missing) {
+        import_rejects(fn() => $upload->begin(['filename' => $fixture->filename, 'total' => 6, 'checksum' => $missing], '6.18.58'), 'MD5');
+    }
+    $started = $app->dispatch('source-upload-begin', ['filename' => $fixture->filename, 'total' => 6, 'checksum' => md5('abcabc')]);
     $id = $started['upload_id'];
     import_check($started['offset'] === 0 && $started['max_chunk_size'] === Upload::MAX_CHUNK, 'Begin must advertise a bounded chunk size');
     import_check($fixture->commands === [], 'Begin must not contact a source or GPU');
@@ -152,7 +155,7 @@ try {
     $chunk = $app->dispatch('source-upload-chunk', ['upload_id' => $id, 'offset' => 3, 'path' => $path]);
     import_check($chunk['offset'] === 6, 'Second chunk must complete the declared size');
     import_rejects(fn() => $app->dispatch('source-upload-chunk', ['upload_id' => $id, 'offset' => 6, 'path' => $path]), 'exceeds');
-    $other = $app->dispatch('source-upload-begin', ['filename' => $fixture->filename, 'total' => 1]);
+    $other = $app->dispatch('source-upload-begin', ['filename' => $fixture->filename, 'total' => 1, 'checksum' => md5('x')]);
     $app->dispatch('source-upload-cancel', ['upload_id' => $id]);
     import_check(!is_dir($fixture->paths->runtimeDir . '/upload-' . $id), 'Cancel must remove only the selected staging session');
     import_check(is_dir($fixture->paths->runtimeDir . '/upload-' . $other['upload_id']), 'Cancel must retain other sessions');
@@ -160,7 +163,7 @@ try {
     $app->dispatch('source-upload-cancel', ['upload_id' => $other['upload_id']]);
     import_check($fixture->commands === [], 'Chunk and cancel must remain command-free');
 
-    $bounded = $app->dispatch('source-upload-begin', ['filename' => $fixture->filename, 'total' => Upload::MAX_CHUNK * 2]);
+    $bounded = $app->dispatch('source-upload-begin', ['filename' => $fixture->filename, 'total' => Upload::MAX_CHUNK * 2, 'checksum' => md5('x')]);
     import_rejects(fn() => $app->dispatch('source-upload-chunk', ['upload_id' => $bounded['upload_id'], 'offset' => 0, 'path' => $fixture->phpFile(str_repeat('x', Upload::MAX_CHUNK + 1))]), 'too large');
     import_rejects(fn() => $app->dispatch('source-upload-chunk', ['upload_id' => $bounded['upload_id'], 'offset' => -1, 'path' => $path]), 'upload offset');
     $staged = $fixture->paths->runtimeDir . '/upload-' . $bounded['upload_id'] . '/data.tmp';
@@ -170,12 +173,12 @@ try {
     import_check(file_get_contents($staged) === 'unexpected bytes', 'Staging tamper rejection must not overwrite data');
     $app->dispatch('source-upload-cancel', ['upload_id' => $bounded['upload_id']]);
 
-    $boundary = $app->dispatch('source-upload-begin', ['filename' => $fixture->filename, 'total' => Upload::MAX_PACKAGE]);
+    $boundary = $app->dispatch('source-upload-begin', ['filename' => $fixture->filename, 'total' => Upload::MAX_PACKAGE, 'checksum' => md5('x')]);
     import_check($boundary['total'] === Upload::MAX_PACKAGE, 'The declared size limit must be accepted without preallocating the entire file');
     $app->dispatch('source-upload-cancel', ['upload_id' => $boundary['upload_id']]);
 
     $invalid = $fixtures[] = new ImportFixture();
-    $bad = $invalid->application->dispatch('source-upload-begin', ['filename' => $invalid->filename, 'total' => 3]);
+    $bad = $invalid->application->dispatch('source-upload-begin', ['filename' => $invalid->filename, 'total' => 3, 'checksum' => md5('bad')]);
     $invalid->application->dispatch('source-upload-chunk', ['upload_id' => $bad['upload_id'], 'offset' => 0, 'path' => $invalid->phpFile('bad')]);
     import_rejects(fn() => $invalid->application->dispatch('source-upload-finish', ['upload_id' => $bad['upload_id']]), 'XZ');
     import_check(!is_dir($invalid->paths->runtimeDir . '/upload-' . $bad['upload_id']), 'Failed verification must clear only its own staging session');
@@ -206,24 +209,45 @@ try {
     import_check(!array_filter($valid->commands, fn($argv) => !in_array($argv[0], ['xz', 'tar', 'modinfo'], true)), 'Local import only permits passive package checks');
 
     $single = $fixtures[] = new ImportFixture();
-    $result = $single->application->dispatch('source-import', ['filename' => $single->filename, 'path' => $single->phpFile($single->package)]);
-    import_check($result['ok'] && $result['package']['checksum_verified'] === false, 'No-MD5 single upload must clearly identify a locally computed checksum');
+    $singlePath = $single->phpFile($single->package);
+    import_rejects(fn() => $single->application->dispatch('source-import', ['filename' => $single->filename, 'path' => $singlePath]), 'MD5');
+    import_check(!is_file($single->paths->settingsFile) && !is_dir($single->paths->cacheDir), 'Missing MD5 must fail before cache or selection changes');
+    $result = $single->application->dispatch('source-import', ['filename' => $single->filename, 'path' => $singlePath,
+        'checksum_path' => $single->phpFile(md5($single->package))]);
+    import_check($result['ok'] && $result['package']['checksum_verified'] === true, 'Single-upload import must require an independently supplied MD5');
     import_check($single->store->settings()['selected_package']['provider'] === 'local', 'Single-upload fallback must select the cached package');
     foreach ([2, 10] as $build) {
         $revision = $fixtures[] = new ImportFixture();
         $revision->filename = "nvidia-595.58.03-6.18.58-Unraid-$build.txz";
         $revisionApp = $revision->application;
-        $started = $revisionApp->dispatch('source-upload-begin', ['filename' => $revision->filename, 'total' => strlen($revision->package)]);
+        $started = $revisionApp->dispatch('source-upload-begin', ['filename' => $revision->filename, 'total' => strlen($revision->package), 'checksum' => md5($revision->package)]);
         $revisionApp->dispatch('source-upload-chunk', ['upload_id' => $started['upload_id'], 'offset' => 0, 'path' => $revision->phpFile($revision->package)]);
         $result = $revisionApp->dispatch('source-upload-finish', ['upload_id' => $started['upload_id']]);
         import_check($result['package']['build'] === $build && $result['package']['filename'] === $revision->filename, 'Chunk import must retain the chosen revision');
         import_check($revision->store->settings()['selected_package']['build'] === $build, 'Selected local receipt must persist build');
-        import_check($result['package']['checksum_verified'] === false, 'Revision metadata must not imply independently verified checksum');
+        import_check($result['package']['checksum_verified'] === true, 'Every local revision must have an independently verified checksum');
         import_check(is_file($result['package']['path']) && !is_dir($revision->paths->runtimeDir . '/upload-' . $started['upload_id']), 'New build cache is published and staging cleared');
     }
     foreach (['0', '02', '-1'] as $badBuild) {
         import_rejects(fn() => $single->upload->filename("nvidia-595.58.03-6.18.58-Unraid-$badBuild.txz", '6.18.58'), 'current kernel');
     }
+    $encoded = static fn(string $bytes): string => rtrim(strtr(base64_encode($bytes), '+/', '-_'), '=');
+    $bytes = implode('', array_map('chr', range(0, 255))) . "\0\xff\r\n";
+    $encodedSession = $app->dispatch('source-upload-begin', ['filename' => $valid->filename, 'total' => strlen($bytes), 'checksum' => md5($bytes)]);
+    $encodedId = $encodedSession['upload_id'];
+    foreach (['', 'A', 'YR', 'AA==', 'a+b/', str_repeat('x', Upload::MAX_ENCODED_CHUNK + 1)] as $badData) {
+        import_rejects(fn() => $app->dispatch('source-upload-chunk', ['upload_id' => $encodedId, 'offset' => 0, 'data' => $badData]), 'encoded upload chunk');
+    }
+    import_rejects(fn() => $app->dispatch('source-upload-chunk', ['upload_id' => $encodedId, 'offset' => 0, 'data' => $encoded($bytes), 'path' => '/must-not-read']), 'Ambiguous');
+    $receipt = $app->dispatch('source-upload-chunk', ['upload_id' => $encodedId, 'offset' => 0, 'data' => $encoded($bytes)]);
+    import_check($receipt['offset'] === strlen($bytes) && file_get_contents($valid->paths->runtimeDir . '/upload-' . $encodedId . '/data.tmp') === $bytes, 'Encoded chunks must preserve NUL and every binary byte exactly');
+    $cancelled = $app->dispatch('source-upload-cancel', ['upload_id' => $encodedId]);
+    import_check($cancelled['upload_id'] === $encodedId && !is_dir($valid->paths->runtimeDir . '/upload-' . $encodedId), 'Cancellation must acknowledge the exact cleared session');
+    $maximum = str_repeat("\xff", Upload::MAX_CHUNK);
+    $maxSession = $app->dispatch('source-upload-begin', ['filename' => $valid->filename, 'total' => strlen($maximum), 'checksum' => md5($maximum)]);
+    $maxReceipt = $app->dispatch('source-upload-chunk', ['upload_id' => $maxSession['upload_id'], 'offset' => 0, 'data' => $encoded($maximum)]);
+    import_check($maxReceipt['offset'] === Upload::MAX_CHUNK, 'Maximum-size encoded chunks must fit the bounded binary buffer');
+    $app->dispatch('source-upload-cancel', ['upload_id' => $maxSession['upload_id']]);
     echo 'Local import/upload: ' . $importChecks . " checks passed (mock package inspection; no GPU or network)\n";
 } finally {
     foreach (array_reverse($fixtures) as $fixture) $fixture->close();

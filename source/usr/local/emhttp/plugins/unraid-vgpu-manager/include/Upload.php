@@ -8,6 +8,7 @@ final class Upload
 {
     public const MAX_PACKAGE = 2147483648;
     public const MAX_CHUNK = 1048576;
+    public const MAX_ENCODED_CHUNK = 1398104;
 
     public function __construct(private Paths $paths) {}
 
@@ -45,12 +46,7 @@ final class Upload
         $filename = $this->filename($input['filename'] ?? null, $kernel);
         $total = $this->integer($input['total'] ?? null, 'upload size');
         if ($total < 1 || $total > self::MAX_PACKAGE) throw new \InvalidArgumentException('Package upload must be between 1 byte and 2 GiB');
-        $checksum = $input['checksum'] ?? '';
-        if (!is_string($checksum) || strlen($checksum) > 4096) throw new \InvalidArgumentException('Invalid MD5 file');
-        $checksum = trim($checksum);
-        if ($checksum !== '' && !preg_match('/^[a-fA-F0-9]{32}(?:[ \t]+\*?' . preg_quote($filename, '/') . ')?$/D', $checksum)) {
-            throw new \InvalidArgumentException('MD5 must contain a hash and, optionally, this package filename');
-        }
+        $checksum = $this->checksum($input['checksum'] ?? null, $filename);
         $this->privateDirectory($this->paths->runtimeDir);
         $id = bin2hex(random_bytes(16));
         $directory = $this->directory($id);
@@ -74,12 +70,36 @@ final class Upload
         [$directory, $record] = $this->record($input['upload_id'] ?? null, $kernel);
         $offset = $this->integer($input['offset'] ?? null, 'upload offset');
         if ($offset !== $record['offset']) throw new \RuntimeException('Upload offset differs; retry the upload');
-        $path = $this->uploadedFile($input['path'] ?? null, self::MAX_CHUNK);
-        $size = filesize($path);
-        if ($size === false || $offset + $size > $record['total']) throw new \RuntimeException('Upload chunk exceeds the declared package size');
+        if (array_key_exists('data', $input)) {
+            if (array_key_exists('path', $input)) throw new \InvalidArgumentException('Ambiguous upload chunk');
+            $encoded = $input['data'];
+            if (!is_string($encoded) || $encoded === '' || strlen($encoded) > self::MAX_ENCODED_CHUNK || !preg_match('/^[A-Za-z0-9_-]+$/D', $encoded)) {
+                throw new \InvalidArgumentException('Invalid or oversized encoded upload chunk');
+            }
+            $bytes = base64_decode(strtr($encoded, '-_', '+/'), true);
+            if ($bytes === false || strlen($bytes) < 1 || strlen($bytes) > self::MAX_CHUNK || rtrim(strtr(base64_encode($bytes), '+/', '-_'), '=') !== $encoded) {
+                throw new \InvalidArgumentException('Invalid or oversized encoded upload chunk');
+            }
+            $size = strlen($bytes);
+            $source = fopen('php://memory', 'w+b');
+            if ($source === false) throw new \RuntimeException('Cannot buffer upload chunk');
+            if (fwrite($source, $bytes) !== $size || !rewind($source)) {
+                fclose($source);
+                throw new \RuntimeException('Cannot buffer upload chunk');
+            }
+        } else {
+            // Keep the existing root CLI/PHP-upload path, never an HTTP path field.
+            $path = $this->uploadedFile($input['path'] ?? null, self::MAX_CHUNK);
+            $size = filesize($path);
+            $source = fopen($path, 'rb');
+        }
+        if ($size === false || $offset + $size > $record['total']) {
+            if (is_resource($source)) fclose($source);
+            throw new \RuntimeException('Upload chunk exceeds the declared package size');
+        }
         $data = $directory . '/data.tmp';
-        $this->stagedFile($data, $record['offset']);
-        $source = fopen($path, 'rb');
+        try { $this->stagedFile($data, $record['offset']); }
+        catch (\Throwable $error) { if (is_resource($source)) fclose($source); throw $error; }
         $destination = fopen($data, 'r+b');
         if ($source === false || $destination === false) {
             if (is_resource($source)) fclose($source);
@@ -107,15 +127,12 @@ final class Upload
         [$directory, $record] = $this->record($id, $kernel);
         if ($record['offset'] !== $record['total']) throw new \RuntimeException('Upload is incomplete');
         $this->stagedFile($directory . '/data.tmp', $record['total']);
-        $checksumPath = null;
-        if ($record['checksum'] !== '') {
-            $checksumPath = $directory . '/package.md5';
-            if (is_link($checksumPath) || (file_exists($checksumPath) && !$this->regularOwnedFile(@lstat($checksumPath)))) throw new \RuntimeException('Invalid staged MD5 file');
-            if (file_put_contents($checksumPath, $record['checksum'] . "\n") !== strlen($record['checksum']) + 1) {
-                throw new \RuntimeException('Cannot prepare MD5 verification');
-            }
-            chmod($checksumPath, 0600);
+        $checksumPath = $directory . '/package.md5';
+        if (is_link($checksumPath) || (file_exists($checksumPath) && !$this->regularOwnedFile(@lstat($checksumPath)))) throw new \RuntimeException('Invalid staged MD5 file');
+        if (file_put_contents($checksumPath, $record['checksum'] . "\n") !== strlen($record['checksum']) + 1) {
+            throw new \RuntimeException('Cannot prepare MD5 verification');
         }
+        chmod($checksumPath, 0600);
         return ['path' => $directory . '/data.tmp', 'filename' => $record['filename'], 'checksum_path' => $checksumPath];
     }
 
@@ -128,7 +145,7 @@ final class Upload
             $this->privateDirectory($directory);
             $this->removeDirectory($directory);
         }
-        return ['ok' => true, 'message' => 'Upload staging cleared'];
+        return ['ok' => true, 'upload_id' => $id, 'message' => 'Upload staging cleared'];
     }
 
     private function record(mixed $id, string $kernel): array
@@ -142,12 +159,25 @@ final class Upload
         $record = json_decode((string)file_get_contents($metadata), true, 32, JSON_THROW_ON_ERROR);
         if (!is_array($record) || ($record['kernel'] ?? '') !== $kernel) throw new \RuntimeException('Upload belongs to another kernel');
         $this->filename($record['filename'] ?? null, $kernel);
+        $this->checksum($record['checksum'] ?? null, $record['filename']);
         if (!is_int($record['total'] ?? null) || $record['total'] < 1 || $record['total'] > self::MAX_PACKAGE ||
             !is_int($record['offset'] ?? null) || $record['offset'] < 0 || $record['offset'] > $record['total'] ||
             !is_string($record['checksum'] ?? null) || strlen($record['checksum']) > 4096) {
             throw new \RuntimeException('Invalid upload metadata');
         }
         return [$directory, $record];
+    }
+
+    private function checksum(mixed $value, string $filename): string
+    {
+        if (!is_string($value) || trim($value) === '' || strlen($value) > 4096) {
+            throw new \InvalidArgumentException('必须提供非空且不超过 4 KiB 的 MD5 文件。');
+        }
+        $value = trim($value);
+        if (!preg_match('/^[a-fA-F0-9]{32}(?:[ \t]+\*?' . preg_quote($filename, '/') . ')?$/D', $value)) {
+            throw new \InvalidArgumentException('MD5 must contain a hash and, optionally, this package filename');
+        }
+        return $value;
     }
 
     private function directory(mixed $id): string

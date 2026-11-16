@@ -328,10 +328,11 @@ final class Application
         } else {
             $filename = $upload->filename($input['filename'] ?? null, $kernel);
             $this->assertPackagePolicy(PackageIdentity::parse($filename, $kernel), $settings['source']);
+            if (!is_string($input['checksum_path'] ?? null) || $input['checksum_path'] === '') throw new \InvalidArgumentException('本地导入必须同时提供 MD5 文件。');
             $candidate = [
                 'filename' => $filename,
                 'path' => $upload->uploadedFile($input['path'] ?? null, Upload::MAX_PACKAGE),
-                'checksum_path' => isset($input['checksum_path']) ? $upload->uploadedFile($input['checksum_path'], 4096) : null,
+                'checksum_path' => $upload->uploadedFile($input['checksum_path'], 4096),
             ];
         }
         try {

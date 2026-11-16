@@ -52,7 +52,12 @@ class WebGuiGatewayTests(cache_http.CacheDeleteHttpTests):
     echo '</main>'; return;
 }''')
         cls.fixture.write_text(script)
-        (cls.directory / 'auth.php').write_text('<?php http_response_code(204);')
+        cls.start_gateway(port)
+
+    @classmethod
+    def start_gateway(cls, port):
+        directory = str(cls.directory)
+        (cls.directory / 'auth.php').write_text(getattr(cls, 'auth_script', '<?php http_response_code(204);'))
         fpm_conf = cls.directory / 'fpm.conf'
         fpm_conf.write_text(f'''[global]
 daemonize = no
@@ -63,6 +68,7 @@ pm = ondemand
 pm.max_children = 6
 pm.process_idle_timeout = 5s
 catch_workers_output = yes
+php_admin_value[post_max_size] = {getattr(cls, 'fpm_post_limit', '2M')}
 ''' + ('user = root\ngroup = root\n' if os.geteuid() == 0 else ''))
         cls.fpm = subprocess.Popen([cls.fpm_binary, '-n', '-F', '-y', str(fpm_conf)] + (['-R'] if os.geteuid() == 0 else []),
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -83,6 +89,7 @@ http {{
   {paths}
   fastcgi_keep_conn on;
   fastcgi_read_timeout 5s;
+  client_max_body_size 3m;
   auth_request /auth.php;
   server {{
     listen 127.0.0.1:{port};

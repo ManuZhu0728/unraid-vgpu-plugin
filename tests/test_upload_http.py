@@ -1,5 +1,7 @@
 """Exercise the real PHP upload boundary over localhost, with a fake backend."""
 
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -34,6 +37,9 @@ require_once UI_TEMPLATE;
 function uvm_cli(string $action, array $payload = []): array {
     if ($action === 'status') return ['settings' => \Vgpu\Store::defaults(), 'devices' => [], 'runtime' => []];
     if ($action === 'source-upload-chunk') {
+        if (isset($payload['data'])) return ['action'=>$action, 'offset'=>$payload['offset'] + strlen(base64_decode(strtr($payload['data'], '-_', '+/'), true)),
+            'md5'=>md5(base64_decode(strtr($payload['data'], '-_', '+/'), true)), 'has_path'=>isset($payload['path']),
+            'native_csrf_present'=>array_key_exists('csrf_token', $_POST)];
         return ['action' => $action, 'offset' => $payload['offset'] + filesize($payload['path']),
             'http_uploaded' => is_uploaded_file($payload['path']), 'native_csrf_present' => array_key_exists('csrf_token', $_POST)];
     }
@@ -91,7 +97,7 @@ echo '</main>';
         cls.temporary.cleanup()
 
     def post(self, fields, chunk=None, origin=None):
-        fields = {"uvm_tab": "driver", **fields}
+        fields = {"uvm_tab": "driver", "checksum": "a" * 32, **fields}
         boundary = "upload-fixture-multipart-boundary"
         body = bytearray()
         for key, value in fields.items():
@@ -129,7 +135,7 @@ echo '</main>';
     def test_browser_chunk_size_respects_php_upload_limits(self):
         with urllib.request.urlopen(self.url, timeout=10) as response:
             html = response.read().decode()
-        self.assertIn("const browserChunkSize = 458752;", html)
+        self.assertIn("const browserChunkSize = 737280;", html)
 
     def test_real_multipart_file_passes_php_uploaded_file_boundary(self):
         chunk = b"real multipart fixture\x00" * 16384
@@ -139,6 +145,22 @@ echo '</main>';
         self.assertTrue(result["data"]["http_uploaded"])
         self.assertFalse(result["data"]["native_csrf_present"])
         self.assertEqual(result["data"]["offset"], 7 + len(chunk))
+
+    def test_encoded_binary_exceeds_upload_file_limit_without_multipart(self):
+        # 600K raw > upload_max_filesize=512K, but the encoded form fits post_max_size=1M.
+        chunk = bytes(range(256)) * 2400
+        fields = {'uvm_action': 'source-upload-chunk', 'uvm_tab': 'driver', 'csrf_token': 'http-upload-fixture-csrf',
+                  'uvm_csrf_token': 'http-upload-fixture-csrf', 'upload_id': 'a' * 32, 'offset': '7',
+                  'chunk_data': base64.urlsafe_b64encode(chunk).rstrip(b'=').decode(), 'path': '/never-forward'}
+        request = urllib.request.Request(self.url, data=urllib.parse.urlencode(fields).encode(), headers={'Origin': self.origin})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode()
+        markers = re.findall(r'<script type="application/json" id="uvm-upload-result">(.*?)</script>', body, re.S)
+        self.assertEqual(len(markers), 1)
+        result = json.loads(markers[0]); self.assertTrue(result['ok'])
+        self.assertEqual(result['data']['offset'], 7 + len(chunk))
+        self.assertEqual(result['data']['md5'], hashlib.md5(chunk).hexdigest())
+        self.assertFalse(result['data']['has_path']); self.assertFalse(result['data']['native_csrf_present'])
 
     def test_forged_path_and_bad_csrf_are_rejected_before_backend(self):
         for change in ({"path": "/tmp/phpForged"}, {"csrf_token": "wrong"}):

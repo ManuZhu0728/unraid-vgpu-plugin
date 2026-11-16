@@ -17,6 +17,7 @@ if ($case === 'missing-ok') { echo '{"data":{}}'; exit; }
 if ($case === 'nonboolean-ok') { echo '{"ok":"true","data":{}}'; exit; }
 if ($case === 'invalid-data') { echo '{"ok":true,"data":"invalid"}'; exit; }
 if ($case === 'failure') { echo '{"ok":false,"error":"MD5 mismatch glpat-FIXTUREONLY"}'; exit(1); }
+if ($case === 'large') { echo json_encode(['ok'=>true,'data'=>['bytes'=>strlen($input['data']),'sha256'=>hash('sha256',$input['data'])]]); exit; }
 echo json_encode(['ok'=>true, 'data'=>['action'=>$argv[1], 'received'=>$input]]);
 if ($case === 'failed-exit') exit(1);
 PHP;
@@ -33,12 +34,20 @@ try {
     $common = (string)file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/ui/common.php');
     $common = str_replace("'/usr/local/emhttp/plugins/unraid-vgpu-manager/include/cli.php'", var_export($entrypoint, true), $common, $entryCount);
     $common = str_replace("'/usr/bin/php'", var_export(PHP_BINARY, true), $common, $phpCount);
-    $common = str_replace('$deadline = microtime(true) + $timeout;', '$deadline = microtime(true) + 0.2;', $common, $deadlineCount);
+    $common = str_replace('$deadline = microtime(true) + $timeout;', '$deadline = microtime(true) + (($payload["case"] ?? "") === "large" ? 5 : 0.2);', $common, $deadlineCount);
     transport_check($entryCount === 1 && $phpCount === 2 && $deadlineCount === 1, 'Only the fixed process paths/deadline are replaced in this local fixture');
     eval('?>' . $common);
     $payload = ['case'=>'success', 'filename'=>'nvidia-595.58.03-6.18.58-Unraid-3.txz'];
     $result = uvm_cli('source-download', $payload);
     transport_check($result === ['action'=>'source-download', 'received'=>$payload], 'A successful zero-exit CLI returns its exact data and receives JSON stdin');
+    $large = str_repeat('_', 1398102);
+    $receipt = uvm_cli('source-upload-chunk', ['case'=>'large', 'data'=>$large]);
+    transport_check($receipt === ['bytes'=>strlen($large),'sha256'=>hash('sha256',$large)], 'Maximum encoded binary chunk must survive the real bounded stdin pipe');
+    foreach (['source-download'=>str_repeat('x',131073), 'source-upload-chunk'=>str_repeat('x',2097153)] as $action=>$data) {
+        $caught = null;
+        try { uvm_cli($action, ['data'=>$data]); } catch (Throwable $error) { $caught = $error; }
+        transport_check($caught instanceof InvalidArgumentException, 'Only upload chunks may exceed 128 KiB; even chunks retain a 2 MiB IPC bound');
+    }
     foreach (['malformed', 'oversized', 'missing-ok', 'nonboolean-ok', 'invalid-data', 'failed-exit', 'timeout', 'failure'] as $case) {
         $caught = null;
         try { uvm_cli('source-download', ['case'=>$case]); }

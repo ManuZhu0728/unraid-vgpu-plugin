@@ -30,14 +30,16 @@ function uvm_post(string $key, string $default = ''): string
 
 function uvm_upload_chunk_size(): int
 {
-    $limit = 1048576;
-    foreach (['upload_max_filesize', 'post_max_size'] as $option) {
+    $limit = 2097152;
+    // Base64url uses at most 4 bytes per 3 binary bytes and needs no percent
+    // escaping. It is a text POST, so upload_max_filesize is not its limit.
+    foreach (['post_max_size'] as $option) {
         $value = trim((string)ini_get($option));
         if (!preg_match('/^([0-9]+)\s*([KMG]?)$/i', $value, $match) || (int)$match[1] === 0) continue;
         $bytes = (int)$match[1] * (1024 ** (int)strpos(' KMGT', strtoupper($match[2] ?: ' ')));
         $limit = min($limit, max(0, $bytes - 65536));
     }
-    return $limit;
+    return min(1048576, intdiv($limit, 4) * 3);
 }
 
 function uvm_redact($value)
@@ -72,7 +74,8 @@ function uvm_cli(string $action, array $payload = []): array
         throw new RuntimeException('The plugin backend is not installed completely (include/cli.php or /usr/bin/php is missing).');
     }
     $input = json_encode($payload, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
-    if (strlen($input) > 131072) throw new InvalidArgumentException('The request exceeds 128 KiB.');
+    $inputLimit = $action === 'source-upload-chunk' ? 2097152 : 131072;
+    if (strlen($input) > $inputLimit) throw new InvalidArgumentException('The request exceeds its bounded input limit.');
     $pipes = [];
     // argv array: no shell, and credentials are delivered only over stdin.
     $process = proc_open(['/usr/bin/php', $entrypoint, $action], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
@@ -107,7 +110,8 @@ function uvm_cli(string $action, array $payload = []): array
             proc_terminate($process, 15);
             break;
         }
-        usleep(20000);
+        // Keep bounded binary-to-text chunk IPC from waiting 20ms per pipe write.
+        usleep($offset < strlen($input) ? 1000 : 20000);
     }
     $chunk = stream_get_contents($pipes[1]);
     if ($chunk !== false) {

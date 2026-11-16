@@ -3,6 +3,38 @@
 基线为 novidio `2026.07.13c` / `299af973bf564036e978eff9dc2e8e3e2f65da9d`。
 插件源码位于 `source/usr/local/emhttp/plugins/unraid-vgpu-manager/`。
 
+## Alpha 16 分块上传鉴权兼容与强制 MD5（2026-11-16）
+
+Alpha 15 未处理的二进制 multipart 与纯文本 multipart 一样会在原生 `auth_request -> PHP-FPM`
+链上等待请求体。Alpha 16 将每个二进制块显式转为规范 base64url（无 padding），所有 begin/chunk/
+finish/cancel 和 pagehide beacon 均使用 URLSearchParams。保留正常原生 POST CSRF 字段及插件
+镜像、同源凭据和来源核对，不改变 nginx、鉴权配置，也不依赖额外认证头。
+base64url 避免普通 base64 的 `+`/`/` 被百分号编码扩大，编码开销约三分之一。
+
+原始块上限 1 MiB，编码字段上限 1,398,104 字符，后端同时校验规范编码与解码大小、连续偏移和总量。
+页面按实际 PHP post_max_size 留 64 KiB 余量并扣除编码开销；二进制不再经过 upload_max_filesize。
+仅 chunk 动作的 UI→CLI JSON stdin 上限提升至 2 MiB，其他动作仍为 128 KiB；大 stdin 的轮询写入
+不再每次固定等待 20ms。页面不读写临时文件，仍只通过固定 argv、固定 CLI 和事务锁进入后端。
+旧 PHP 上传文件通道保留 is_uploaded_file/私有临时路径限制，客户端 path 字段不传入 CLI。
+
+本地导入必须提供独立 MD5 文件：HTML required、客户端内容检查、PHP 请求边界、Upload begin/
+metadata、旧 Application source-import 各层都拒绝缺失输入。预期值来自所选 MD5 文件，不以包自身
+计算值冒充校验来源；实际摘要仍由导入器计算后比较。成功回执须匹配文件名、内核、外部 MD5 与
+checksum_verified。已知失败清理本会话；取消只提交一次且核对 upload_id；未知完成不再提交 finish
+或清理可能已提交的缓存。保留 GET 核对、busy 门禁和离页警告；离页取消是尽力通知，不保证断网时送达。
+
+新增 `tests/test_upload_gateway.py` / `tests/test_ui_upload_gateway.cjs` / `tests/upload_gateway_fixture.php`，
+使用本机真实 nginx auth_request、PHP-FPM、浏览器、Upload/Application 和临时缓存，tar/xz 真实执行，
+仅模块元数据使用被动 fixture，禁止 GPU/安装器/外网命令。覆盖旧二进制 multipart 超时负对照、
+真实多块上传、MD5 必填/不符、损坏归档/同名冲突、偏移/编码/大小/CSRF/来源、取消及 pagehide beacon、
+取消拒绝、网关 401、以及真实提交后回执丢失。默认套件缺少 nginx/FPM 时明确 skip，设置对应环境变量
+启用网关；PLAYWRIGHT_MODULE 启用同网关的真实浏览器测试，不以模拟 fetch 替代。
+
+字体仅审计未改样式。`tests/test_ui_typography.cjs` 使用固定官方 7.3.4 CSS、四个 WOFF 和真实插件
+模板，记录 computed style 与浏览器平台字体，覆盖黑白主题/两档根字号的 21 个节点。
+详见 [字体核对](UI-TYPOGRAPHY.md)。本地 Linux 字体结果不能当作 Windows Edge 的实际字体证明。
+本轮不连接或操作 Unraid，不改 NVIDIA 构建仓库，也不打驱动包。
+
 ## Alpha 15 发布准备（2026-11-16）
 
 版本 `2026.11.16.4` / `v2026.11.16.4-alpha.15` 发布已合入 main 的 `a90c26e` 表单编码
@@ -334,9 +366,9 @@ status/logs/plan 只读，其余加锁。
 `force: true` 跳过失败后的重试等待；页面“检查升级准备”使用此选项。
 助手不持有事务锁，子 CLI 使用同一把锁，忙时重试。
 
-上传请求通过本页 POST 和原生 CSRF 校验。PHP 确认分块来自 HTTP 上传后传给 CLI，
-CLI 校验临时路径和所有者，再写入独立上传会话。每块最多 1 MiB，总量最多 2 GiB。
-页面从 Unraid 外层 HTML 中提取带标识的 JSON 结果；导入完成以 GET 导航更新页面。
+上传请求通过本页 URL 编码 POST 和原生 CSRF 校验。二进制先编码为 base64url，CLI 严格解码后
+写入独立上传会话，不接受 HTTP 客户端指定的临时路径。每块最多 1 MiB，总量最多 2 GiB。
+页面从 Unraid 外层 HTML 中提取唯一惰性 JSON 结果；导入完成核对外部 MD5 后以 GET 更新页面。
 
 表单和上传同时发送原生 `csrf_token` 与插件字段 `uvm_csrf_token`。Unraid 网关可在校验后
 移除原生字段，页面仍核对插件字段；若原生字段仍在，两者都必须匹配。HTTP 测试模拟网关消费字段。

@@ -134,16 +134,26 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'source-upload-begin':
                 $total = uvm_post('total');
                 if (!preg_match('/^[1-9][0-9]*$/D', $total) || strlen($total) > 10) throw new InvalidArgumentException('文件大小无效。');
-                $uvm_action_data = uvm_cli($uvm_action, ['filename' => uvm_post('filename'), 'total' => (int)$total, 'checksum' => uvm_post('checksum')]);
+                $checksum = uvm_post('checksum');
+                if (trim($checksum) === '' || strlen($checksum) > 4096) throw new InvalidArgumentException('必须同时上传非空且不超过 4 KiB 的 MD5 文件。');
+                $uvm_action_data = uvm_cli($uvm_action, ['filename' => uvm_post('filename'), 'total' => (int)$total, 'checksum' => $checksum]);
                 break;
             case 'source-upload-chunk':
-                $chunk = $_FILES['chunk'] ?? null;
-                if (!is_array($chunk) || ($chunk['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_string($chunk['tmp_name'] ?? null) || !is_uploaded_file($chunk['tmp_name'])) {
-                    throw new InvalidArgumentException('上传分块失败，请检查服务器上传限制。');
-                }
                 $offset = uvm_post('offset');
                 if (!preg_match('/^(0|[1-9][0-9]*)$/D', $offset) || strlen($offset) > 10) throw new InvalidArgumentException('上传位置无效。');
-                $uvm_action_data = uvm_cli($uvm_action, ['upload_id' => uvm_post('upload_id'), 'offset' => (int)$offset, 'path' => $chunk['tmp_name']]);
+                $payload = ['upload_id' => uvm_post('upload_id'), 'offset' => (int)$offset];
+                if (array_key_exists('chunk_data', $_POST)) {
+                    $data = uvm_post('chunk_data');
+                    if ($_FILES || $data === '' || strlen($data) > 1398104) throw new InvalidArgumentException('上传分块为空、过大或协议不明确。');
+                    $payload['data'] = $data;
+                } else {
+                    $chunk = $_FILES['chunk'] ?? null;
+                    if (!is_array($chunk) || ($chunk['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_string($chunk['tmp_name'] ?? null) || !is_uploaded_file($chunk['tmp_name'])) {
+                        throw new InvalidArgumentException('上传分块失败，请重新打开页面检查上传协议和限制。');
+                    }
+                    $payload['path'] = $chunk['tmp_name'];
+                }
+                $uvm_action_data = uvm_cli($uvm_action, $payload);
                 break;
             case 'source-upload-finish':
             case 'source-upload-cancel':
@@ -184,7 +194,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 // Unraid wraps .page responses in its own HTML. A small tagged response works
 // with that wrapper without a second public endpoint or filesystem writer.
 if ($uvm_upload_request) {
-    echo '<script type="application/json" id="uvm-upload-result">' . uvm_json($uvm_error === '' ? ['ok' => true, 'data' => $uvm_action_data] : ['ok' => false, 'error' => $uvm_error]) . '</script>';
+    echo '<script type="application/json" id="uvm-upload-result">' . uvm_json($uvm_error === '' ? ['ok' => true, 'data' => $uvm_action_data] : ['ok' => false, 'outcome' => $uvm_download_unknown ? 'unknown' : 'failed', 'error' => $uvm_error]) . '</script>';
     return;
 }
 if ($uvm_device_create_request) {
