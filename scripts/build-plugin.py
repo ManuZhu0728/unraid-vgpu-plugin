@@ -17,6 +17,8 @@ from xml.sax.saxutils import escape, quoteattr
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = "unraid-vgpu-manager"
+AUTHOR = "lbcz"
+ICON = "nvidia-driver.png"
 PREFIX = Path("usr/local/emhttp/plugins") / PLUGIN
 POST_HOOK = Path("usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks") / PLUGIN
 
@@ -29,7 +31,7 @@ def https_url(value):
 
 
 def definition(version, filename, md5, *, inline=None, public_base=None, update_url=None):
-    attributes = f'name="{PLUGIN}" author="unraid-vgpu-manager contributors" version={quoteattr(version)} launch="Settings/{PLUGIN}" min="7.0.0"'
+    attributes = f'name="{PLUGIN}" author={quoteattr(AUTHOR)} version={quoteattr(version)} launch="Settings/{PLUGIN}" icon={quoteattr(ICON)} min="7.0.0"'
     if update_url:
         attributes += f" pluginURL={quoteattr(update_url)}"
     if inline is not None:
@@ -41,14 +43,9 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-Use Unraid native driver installation; the plugin verifies it before vGPU initialization.
-Separate multi-build caches from one selected native boot package per kernel.
-Require explicit boot selection after downloads or local imports; preserve other builds.
-Verify pkgtools build/source, checksums, module fingerprints and loaded module identity.
-Use the existing Unraid OS post-hook to synchronously prepare target-kernel drivers.
-Read the target from changes.txt and retain the independent timed fallback.
-Notify readiness only after the selected startup package and MD5 are verified.
-Add only a plugin-owned post-hook; never modify Unraid core or the shared helper.
+Add a concise Chinese plugin description and reuse the Settings NVIDIA icon.
+Set the plugin author to lbcz.
+Publish as a stable release; driver and vGPU startup behavior is unchanged.
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -89,6 +86,7 @@ def build(version, output, public_base=None, update_url=None):
         raise ValueError("Plugin version must be YYYY.MM.DD.N")
     source = ROOT / "source" / PREFIX
     required = [
+        "README.md", "images/" + ICON,
         "unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page",
         "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page",
         "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php",
@@ -150,7 +148,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.17.2")
+    parser.add_argument("--version", default="2026.11.17.3")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

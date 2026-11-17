@@ -65,16 +65,17 @@ PHP_BIN=.tools/php/root/usr/bin/php8.4 \
 ## 离线预览包
 
 ```bash
-python3 scripts/build-plugin.py --version 2026.11.17.2
+python3 scripts/build-plugin.py --version 2026.11.17.3
 ```
 
-`dist/2026.11.17.2/` 包含 TXZ、MD5 和内嵌同一 TXZ 的 `offline/unraid-vgpu-manager.plg`。
+`dist/2026.11.17.3/` 包含 TXZ、MD5 和内嵌同一 TXZ 的 `offline/unraid-vgpu-manager.plg`。
 在线安装定义使用 `--public-base` 和 `--update-url` 指定无凭据的公开 HTTPS 地址。
 使用新版本或新输出目录可避免覆盖旧成品。
 
 ## 发布
 
 1. 更新 `.github/release.json` 的版本、tag 和 prerelease，并准备 `docs/releases/TAG.md`。
+   正式版使用 `v版本号` 和 `prerelease: false`，发布后设为 Latest；预发布必须使用 `v版本号-alpha.N` 和 `prerelease: true`。
 2. 构建在线 PLG，核对后同步到根目录 `unraid-vgpu-manager.plg`。
 3. 执行本地测试和 `python3 scripts/publish-github.py --dry-run`，再提交并推送。
 4. `main` 上的发布清单或工作流发生变更时触发 GitHub Actions。测试通过后发布在线 PLG、插件 TXZ 和 MD5。

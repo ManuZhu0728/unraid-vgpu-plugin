@@ -20,7 +20,8 @@ builder = importlib.util.module_from_spec(BUILD_SPEC)
 BUILD_SPEC.loader.exec_module(builder)
 
 COMMIT = "a" * 40
-RELEASE = {"version": "2026.11.02.3", "tag": "v2026.11.02.3-alpha.1", "prerelease": True}
+RELEASE = {"version": "2026.11.02.3", "tag": "v2026.11.02.3", "prerelease": False}
+ALPHA_RELEASE = {**RELEASE, "tag": "v2026.11.02.3-alpha.1", "prerelease": True}
 
 
 class FakeAPI:
@@ -78,7 +79,6 @@ class PublishTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / ".github").mkdir()
-        (self.root / ".github/release.json").write_text(json.dumps(RELEASE))
         (self.root / "scripts").mkdir()
         (self.root / "scripts/build-plugin.py").write_bytes((ROOT / "scripts/build-plugin.py").read_bytes())
         source = self.root / "source/usr/local/emhttp/plugins/unraid-vgpu-manager"
@@ -92,18 +92,25 @@ class PublishTests(unittest.TestCase):
         hook = self.root / "source" / builder.POST_HOOK
         hook.parent.mkdir(parents=True)
         hook.write_text("#!/bin/bash\nexit 0\n")
+        (source / "README.md").write_text("**NVIDIA vGPU Manager**\n\nPassive plugin description fixture.\n")
+        (source / "images").mkdir()
+        (source / "images/nvidia-driver.png").write_bytes(b"passive icon fixture")
         for name in ["unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page", "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page", "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php", "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/PackageIdentity.php", "include/PackageHistory.php", "include/PkgtoolsMigration.php", "include/InstallContract.php", "include/InstallTimeout.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]:
             path = source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("passive packaging fixture\n")
-        notes = self.root / "docs/releases" / (RELEASE["tag"] + ".md")
-        notes.parent.mkdir(parents=True)
-        notes.write_text("Alpha only. Not installed or tested on an Unraid server.\n")
+        self.configure_release(RELEASE, "reference")
+
+    def configure_release(self, release, directory):
+        (self.root / ".github/release.json").write_text(json.dumps(release))
+        notes = self.root / "docs/releases" / (release["tag"] + ".md")
+        notes.parent.mkdir(parents=True, exist_ok=True)
+        notes.write_text("Passive release fixture. Not installed or tested on an Unraid server.\n")
         with patch.object(builder, "ROOT", self.root), redirect_stdout(io.StringIO()):
-            builder.build(RELEASE["version"], self.root / "reference",
-                "https://github.com/owner/repo/releases/download/" + RELEASE["tag"],
+            builder.build(release["version"], self.root / directory,
+                "https://github.com/owner/repo/releases/download/" + release["tag"],
                 "https://raw.githubusercontent.com/owner/repo/main/unraid-vgpu-manager.plg")
-        (self.root / "unraid-vgpu-manager.plg").write_bytes((self.root / "reference/unraid-vgpu-manager.plg").read_bytes())
+        (self.root / "unraid-vgpu-manager.plg").write_bytes((self.root / directory / "unraid-vgpu-manager.plg").read_bytes())
 
     def prepare(self):
         with redirect_stdout(io.StringIO()):
@@ -122,9 +129,11 @@ class PublishTests(unittest.TestCase):
         api = FakeAPI()
         url = self.publish(api, release, assets, notes)
         self.assertEqual(api.target, COMMIT)
-        self.assertTrue(api.release["prerelease"])
+        self.assertFalse(api.release["prerelease"])
         self.assertFalse(api.release["draft"])
-        self.assertEqual(api.release["make_latest"], "false")
+        self.assertEqual(api.release["make_latest"], "true")
+        self.assertEqual(api.release["name"], "Unraid vGPU Manager " + RELEASE["tag"])
+        self.assertNotIn("alpha", api.release["name"].lower())
         self.assertEqual(set(api.public), set(assets))
         self.assertEqual(len(api.verifications), 3)
         self.assertTrue(url.endswith(RELEASE["tag"]))
@@ -150,13 +159,48 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(marker.read_text(), "first attempt evidence")
 
     def test_invalid_release_metadata_and_repository_fail(self):
-        for change in ({"prerelease": False}, {"tag": "v2026.11.02.3"}, {"version": "../../etc"}, {"extra": "unexpected"}):
+        for change in ({"prerelease": True}, {"prerelease": "false"}, {"prerelease": 0}, {"prerelease": None},
+                       {"tag": "v2026.11.02.3-alpha.1"}, {"tag": "v2026.11.02.3-beta.1"},
+                       {"tag": "v2026.11.02.4"}, {"tag": None}, {"version": "../../etc"}, {"extra": "unexpected"}):
             (self.root / ".github/release.json").write_text(json.dumps({**RELEASE, **change}))
             with self.assertRaises(ValueError):
                 pub.metadata(self.root)
         for repository in ("../owner/repo", "https://example.test/owner/repo", "owner/repo?token=bad"):
             with self.assertRaises(ValueError):
                 pub.prepare(repository, self.root)
+
+    def test_alpha_releases_remain_explicit_prereleases_and_never_latest(self):
+        self.configure_release(ALPHA_RELEASE, "alpha-reference")
+        release, assets, notes = self.prepare()
+        self.assertEqual(release, ALPHA_RELEASE)
+        api = FakeAPI()
+        self.publish(api, release, assets, notes)
+        self.assertTrue(api.release["prerelease"])
+        self.assertFalse(api.release["draft"])
+        self.assertEqual(api.release["make_latest"], "false")
+        self.assertTrue(api.release["name"].endswith(" (alpha)"))
+        self.assertEqual(len(api.verifications), 3)
+
+    def test_invalid_release_type_is_rejected_before_network(self):
+        release, assets, notes = self.prepare()
+        for change in ({"prerelease": True}, {"prerelease": "false"}, {"prerelease": 1},
+                       {"tag": ALPHA_RELEASE["tag"]}, {"tag": "v2026.11.02.4"}):
+            api = FakeAPI()
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.publish(api, {**release, **change}, assets, notes)
+            self.assertEqual(api.calls, [])
+
+    def test_existing_release_type_title_draft_and_commit_are_never_changed(self):
+        release, assets, notes = self.prepare()
+        for change in ({"prerelease": True}, {"name": "unexpected alpha title"}, {"draft": True},
+                       {"target_commitish": "b" * 40}):
+            api = FakeAPI()
+            self.publish(api, release, assets, notes)
+            api.release.update(change)
+            api.calls = []
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "same reviewed"):
+                self.publish(api, release, assets, notes)
+            self.assertTrue(all(call[0] == "GET" for call in api.calls))
 
     def test_existing_different_tag_is_never_moved(self):
         release, assets, notes = self.prepare()
