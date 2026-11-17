@@ -135,7 +135,8 @@
   <section class="uvm-panel">
     <h2>升级准备</h2>
     <p>系统升级预下载：<?=!empty($uvm_settings['upgrade']['enabled']) ? '开启' : '关闭'?></p>
-    <?php $uvm_upgrade_label = ['idle'=>'尚无升级任务','current'=>'当前内核缓存已就绪','disabled'=>'升级预下载已关闭','downloading'=>'正在下载驱动','ready'=>'驱动已准备好','missing'=>'目标内核驱动尚未发布','error'=>'准备失败','blocked'=>'等待处理启动入口冲突']; ?>
+    <?php $uvm_upgrade_label = ['idle'=>'尚无升级任务','current'=>'当前内核缓存已就绪','disabled'=>'升级预下载已关闭','downloading'=>'正在下载驱动','staging'=>'正在核验启动安装包','ready'=>'驱动已准备好','missing'=>'目标内核驱动尚未发布','error'=>'准备失败','blocked'=>'等待处理启动入口冲突'];
+    if (($uvm_upgrade['status'] ?? '') === 'ready' && ($uvm_upgrade['boot_ready'] ?? null) === false) $uvm_upgrade_label['ready'] = '驱动已缓存，未准备启动安装包'; ?>
     <p><?=uvm_h($uvm_upgrade_label[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?><?php if (!empty($uvm_upgrade['target_kernel'])): ?> · <code><?=uvm_h($uvm_upgrade['target_kernel'])?></code><?php endif; ?><?php if (!empty($uvm_upgrade['package']['driver'])): ?> · NVIDIA <code><?=uvm_h($uvm_upgrade['package']['driver'])?></code> · 构建 <code><?=uvm_h($uvm_upgrade['package']['build'] ?? '未记录')?></code><?php endif; ?></p>
     <?php if (in_array($uvm_upgrade['status'] ?? '', ['error','missing','blocked'], true) && !empty($uvm_upgrade['message'])): ?><p class="uvm-muted"><?=uvm_h(uvm_redact($uvm_upgrade['message']))?></p><?php endif; ?>
     <form method="post" class="uvm-submit-form"><?php uvm_form_hidden('upgrade-check', $uvm_csrf); ?><button type="submit" <?=!$uvm_controls || empty($uvm_settings['upgrade']['enabled']) ? 'disabled' : ''?>>检查升级准备</button></form>

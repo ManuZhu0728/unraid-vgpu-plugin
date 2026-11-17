@@ -52,7 +52,7 @@ try {
             $credentialStamp = $credentialStat === false ? [] : [$credentialStat['ino'], $credentialStat['mtime'], $credentialStat['size']];
             $fingerprint = hash('sha256', json_encode([$changesHash, $settingsHash, $credentialStamp], JSON_THROW_ON_ERROR));
             $state = $upgrade->status();
-            $retry = in_array($state['status'] ?? '', ['missing', 'error', 'downloading'], true) &&
+            $retry = in_array($state['status'] ?? '', ['missing', 'error', 'downloading', 'staging'], true) &&
                 (int)($state['last_attempt'] ?? 0) + Upgrade::RETRY_SECONDS <= time();
             if ($previous !== $fingerprint || $retry) {
                 $result = $runner(['/usr/bin/php', __DIR__ . '/cli.php', 'upgrade-check'], 3600, null);

@@ -1,16 +1,18 @@
 <?xml version="1.0" standalone="yes"?>
-<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.17.1" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
+<PLUGIN name="unraid-vgpu-manager" author="unraid-vgpu-manager contributors" version="2026.11.17.2" launch="Settings/unraid-vgpu-manager" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
 <CHANGES>
 Use Unraid native driver installation; the plugin verifies it before vGPU initialization.
 Separate multi-build caches from one selected native boot package per kernel.
 Require explicit boot selection after downloads or local imports; preserve other builds.
 Verify pkgtools build/source, checksums, module fingerprints and loaded module identity.
-Keep existing plugin entrypoints and GPU usage protection; add no system startup hooks.
-Test native startup ordering, build switching, migration, initialization and WebGUI regressions.
+Use the existing Unraid OS post-hook to synchronously prepare target-kernel drivers.
+Read the target from changes.txt and retain the independent timed fallback.
+Notify readiness only after the selected startup package and MD5 are verified.
+Add only a plugin-owned post-hook; never modify Unraid core or the shared helper.
 </CHANGES>
-<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.17.1-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
-<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.17.1-alpha.18/unraid-vgpu-manager-2026.11.17.1-noarch-1.txz</URL>
-<MD5>61e9dc856f62c603f8b942f642c75225</MD5>
+<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.17.2-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
+<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.17.2-alpha.19/unraid-vgpu-manager-2026.11.17.2-noarch-1.txz</URL>
+<MD5>292d0ae6af406ac47240974c78271e9b</MD5>
 </FILE>
 <FILE Run="/bin/bash"><INLINE><![CDATA[
 # Installation must succeed without a repository, token or NVIDIA package.

@@ -906,4 +906,15 @@ JS;
     $checked = (new Process())([$node, '-e', str_replace('LOG_SCRIPT', $logJson, $js)], 5);
     ui_check($checked['code'] === 0, 'Log GET navigation must exclude native-injected CSRF tokens and unrelated URL parameters: ' . $checked['stderr']);
 }
+foreach ([['status' => 'staging', 'boot_ready' => false], ['status' => 'ready', 'boot_ready' => false]] as $upgradeState) {
+    $upgradeFixture = $base;
+    $upgradeFixture['status']['upgrade'] = $upgradeState;
+    $rendered = ui_render($upgradeFixture);
+    ui_check(str_contains($rendered['html'], $upgradeState['status'] === 'staging' ? '正在核验启动安装包' : '驱动已缓存，未准备启动安装包'), 'Upgrade UI must distinguish startup verification from cache-only completion');
+}
+$rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
+    'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'upgrade-check',
+], 'responses' => ['upgrade-check' => ['ok' => true, 'status' => 'ready', 'boot_ready' => false]]]);
+ui_check(str_contains($rendered['html'], '目标内核驱动已缓存；开机恢复关闭，未准备启动安装包。') &&
+    !str_contains($rendered['html'], '目标内核的驱动已准备好。'), 'Manual cache-only preparation must not announce startup readiness');
 echo 'UI integration: ' . $uiChecks . " checks passed (mock CLI/sysfs; no GPU or network)\n";

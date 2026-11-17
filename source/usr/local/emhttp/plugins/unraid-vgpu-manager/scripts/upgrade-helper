@@ -19,5 +19,9 @@ case "${1:-start}" in
   stop)
     "$PHP" "$WATCH" --stop
     ;;
-  *) echo 'Usage: upgrade-helper [start|stop]' >&2; exit 2 ;;
+  check)
+    # Native OS post-hook waits for this result; never background the check.
+    exec "$PHP" "$BASE/include/upgrade-check.php"
+    ;;
+  *) echo 'Usage: upgrade-helper [start|stop|check]' >&2; exit 2 ;;
 esac

@@ -112,7 +112,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'upgrade-check':
                 $uvm_action_data = uvm_cli($uvm_action, ['force' => true]);
                 $upgradeCode = (string)($uvm_action_data['status'] ?? '');
-                $uvm_message = $upgradeCode === 'ready' ? '目标内核的驱动已准备好。' : '升级准备检查完成，请查看系统升级状态。';
+                $uvm_message = $upgradeCode === 'ready'
+                    ? (($uvm_action_data['boot_ready'] ?? null) === false
+                        ? '目标内核驱动已缓存；开机恢复关闭，未准备启动安装包。'
+                        : '目标内核的驱动已准备好。')
+                    : '升级准备检查完成，请查看系统升级状态。';
                 break;
             case 'source-test':
             case 'source-versions':
