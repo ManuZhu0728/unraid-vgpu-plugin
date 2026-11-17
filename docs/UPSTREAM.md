@@ -1,24 +1,17 @@
 # 上游来源
 
-- 仓库：https://github.com/novidio/unraid-novidio-vgpu-driver
-- 基线：`2026.07.13c`
-- 提交：`299af973bf564036e978eff9dc2e8e3e2f65da9d`
-- 开发分支：`codex/plugin-integration`
+本插件源自 Novidio Unraid vGPU Driver `2026.07.13c`，基线提交为
+`299af973bf564036e978eff9dc2e8e3e2f65da9d`。原 README、PLG、升级助手和软件包均可从该提交查阅，
+`upstream` remote 和 Git 历史保留了原始来源。
+[上游基线](https://github.com/novidio/unraid-novidio-vgpu-driver/tree/299af973bf564036e978eff9dc2e8e3e2f65da9d) ·
+[原 README](https://github.com/novidio/unraid-novidio-vgpu-driver/blob/299af973bf564036e978eff9dc2e8e3e2f65da9d/README.md)
 
-开发分支保留上游 Git 历史，公开推送沿用该历史和旧文件供比较。
-`upstream/` 中的旧 `.plg`/helper、旧包及 `source/.../novidio-vgpu-driver/`
-不进入新插件构建。新 ID 为 `unraid-vgpu-manager`，但不能与旧插件/User Script 同时
-管理同一 GPU；独立 ID 本身不消除双入口。
+沿用上游的插件结构、sysfs profile 展示与 mdev/XML 管理思路。`unraid-vgpu-manager` 使用自己的下载器、
+事务入口和设备操作流程，发布包中只含插件程序。迁移时，同一 GPU 只使用一个启动管理入口。
+[迁移步骤](OS-UPGRADES.md#首次迁移)
 
-复用上游结构、界面组织、sysfs profile 展示和 mdev/XML 管理思路；下载层、统一事务
-入口和安全运行控制为本次改造。NVIDIA 驱动本体不包含在插件包中。
+上游致谢 stl88083365、mbuchel、LIL'pingu、DualCoder、snowman 和 midi。
 
-上游致谢：stl88083365、mbuchel、LIL'pingu、DualCoder、snowman、midi。
-原 README 保留于 [UPSTREAM-README](UPSTREAM-README.md)，来源也可由 upstream remote 追溯。
-
-分页组织参考 [Appdata Backup](https://github.com/Commifreak/unraid-appdata.backup) 的原生标签页。
-加载与切换行为核对了 [Unraid WebGUI 的分页实现](https://github.com/unraid/webgui/blob/master/emhttp/plugins/dynamix/include/DefaultPageLayout/MainContentTabbed.php)；
-三页内容在同一请求中载入，插件自行隔离表单处理与页面状态。
-
-公开仓库：https://github.com/ManuZhu0728/unraid-vgpu-plugin 。首版为 Alpha，分发内容
-仅限插件程序，不包含 NVIDIA 驱动。记录来源不代表任意第三方驱动或输入包可再分发。
+原生标签页参考 Appdata Backup 与 Unraid WebGUI。三个子页同次载入，由插件分别处理表单和页面状态。
+[Appdata Backup](https://github.com/Commifreak/unraid-appdata.backup) ·
+[Unraid WebGUI 分页实现](https://github.com/unraid/webgui/blob/master/emhttp/plugins/dynamix/include/DefaultPageLayout/MainContentTabbed.php)

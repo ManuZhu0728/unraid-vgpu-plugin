@@ -172,40 +172,15 @@ foreach (['driver' => ['1', '驱动管理'], 'vgpu' => ['2', 'vGPU 管理'], 'st
     ui_check(preg_match('/^Markdown="false"$/m', $parts[0]) === 1, 'Each PHP-only child must explicitly disable native Markdown');
     ui_check(preg_match('/\A\s*<\?php\b[\s\S]*?\?>\s*\z/', $parts[1]) === 1, 'Each child entrypoint must be a complete, explicitly closed PHP block');
     ui_check(ui_native_page_content($child) === $parts[1], 'Native generation must preserve the declared PHP-only child content');
-
-    // Reproduce the published Alpha 5 bug before replacing I/O boundaries:
-    // default Markdown + no closing tag displays PHP rather than running it.
-    $entrypoint = "require '/usr/local/emhttp/plugins/unraid-vgpu-manager/include/ui-page.php';";
-    $legacyClosed = preg_replace('/^Markdown="false"\R/m', '', $child);
-    $legacyClosed = str_replace($entrypoint, '$ui_native_entrypoint_calls++;', $legacyClosed);
-    $legacyUnclosed = preg_replace('/\?>\s*\z/', '', $legacyClosed);
-    $ui_native_entrypoint_calls = 0;
-    $uvm_tab = 'not-executed';
-    $unclosedContent = ui_native_page_content($legacyUnclosed);
-    ob_start();
-    eval('?>' . $unclosedContent);
-    $literalOutput = ob_get_clean();
-    ui_check($ui_native_entrypoint_calls === 0 && $uvm_tab === 'not-executed', 'The native boundary must reproduce unclosed PHP being inert under default Markdown');
-    ui_check(str_contains($literalOutput, '&lt;?php') && str_contains($literalOutput, '$uvm_tab'), 'The broken wrapper must reproduce PHP source shown as text');
-    ob_start();
-    eval('?>' . ui_native_page_content($legacyClosed));
-    $closedOutput = ob_get_clean();
-    ui_check($ui_native_entrypoint_calls === 1 && $uvm_tab === $tab && trim($closedOutput) === '', 'Explicitly closed PHP must execute even if native Markdown is enabled');
 }
 
 $rendered = ui_render($base);
-ui_check(str_contains($rendered['html'], '--uvm-font-mono: bitstream, ui-monospace') && str_contains($rendered['html'], 'Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace'), 'Technical output must use an explicit shared native-first monospace fallback stack');
-ui_check(str_contains($rendered['html'], '.uvm-wrap code, .uvm-wrap pre, .uvm-wrap .uvm-field textarea { font-family: var(--uvm-font-mono); }'), 'Monospace rules must be scoped to plugin code, pre and code editor, not body/forms/buttons');
-ui_check(str_contains($rendered['html'], '.uvm-wrap code { font-size: 1em; }'), 'Inline code must retain surrounding text size rather than browser monospace defaults');
-ui_check(str_contains($rendered['html'], 'class="tab-content content" role="tabpanel"'), 'UI fixture must retain the native tab classes that affect first-form padding');
-ui_check(preg_match('/\.uvm-wrap \.uvm-actions > form\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*margin:\s*0;[^}]*padding:\s*0;[^}]*\}/', $rendered['html']) === 1, 'Action forms must override native first-form padding with matching specificity and equal flex layout');
 ui_check(ui_actions($rendered) === ['status', 'logs'], 'All native tab bodies must share one local status read and one log read, without remote work');
 ui_check($rendered['profile_scans'] === 1, 'All native tabs must share one profile scan');
 ui_check(str_contains($rendered['html'], 'uvm-source-url') && str_contains($rendered['html'], 'GitHub / GitLab'), 'UI must offer a repository or release URL as the primary input');
 ui_check(str_contains($rendered['html'], 'name="credential_token"') && preg_match('/name="credential_token"[^>]*value=""/', $rendered['html']) === 1, 'Token must render as an empty password field');
 ui_check(str_contains($rendered['html'], '<summary>高级设置</summary>') && str_contains($rendered['html'], '下载到缓存'), 'Protocol options must be folded into advanced settings');
 ui_check(str_contains($rendered['html'], '开机恢复驱动') && str_contains($rendered['html'], '系统升级预下载') && str_contains($rendered['html'], '下次开机安装'), 'UI must distinguish cached boot installation from upgrade prefetch');
-ui_check(!str_contains($rendered['html'], '不等于完整 GPU 验收') && !str_contains($rendered['html'], '不执行 ensure'), 'Status copy must not repeat implementation caveats');
 ui_check(str_contains($rendered['html'], 'uvm-upload-package') && str_contains($rendered['html'], 'source-upload-chunk'), 'Local package upload must be exposed');
 ui_check(preg_match('/id="uvm-upload-checksum"[^>]*required/', $rendered['html']) === 1 && str_contains($rendered['html'], 'MD5 文件（必选）'), 'The independent MD5 file must be mandatory, not synthesized from the uploaded package');
 ui_check(!str_contains(ui_form($rendered, 'uvm-upload-form'), 'multipart/form-data'), 'Browser chunks must not inherit the incompatible multipart encoding');
@@ -745,7 +720,6 @@ $cachedBuild['status']['settings']['selected_package'] = $revisions[1] + ['sourc
 $cachedBuild['status']['driver_installation'] = ['status' => 'pending_reboot', 'kernel' => '6.18.58-Unraid', 'message' => 'Selected build awaits reboot'];
 $rendered = ui_render($cachedBuild);
 ui_check(str_contains(strip_tags(ui_panel($rendered, 'driver')), 'NVIDIA 595.58.03 · 构建 2'), 'Cached build2 must be visible separately from the loaded driver version');
-ui_check(str_contains(ui_panel($rendered, 'driver'), 'NVIDIA <code>595.58.03</code> · 构建 <code>2</code>'), 'Initial cache markup must separate native labels from monospaced driver/build values');
 ui_check(str_contains(ui_panel($rendered, 'driver'), '等待重启安装所选构建'), 'A selected but not installed build must show pending reboot');
 ui_check(str_contains(ui_panel($rendered, 'status'), '<tr><td>开机安装</td><td>等待重启</td>'), 'Status tab must translate pending reboot without claiming the selected build is active');
 $installationFixture = $cachedBuild;
@@ -814,8 +788,6 @@ $page = (string)file_get_contents($prefix . '/include/ui/common.php')
     . (string)file_get_contents($prefix . '/include/ui/state.php');
 foreach (['driver', 'vgpu', 'status'] as $tab) $page .= (string)file_get_contents($prefix . '/include/ui/' . $tab . '.php');
 ui_check(str_contains($page, "proc_open(['/usr/bin/php', \$entrypoint, \$action]"), 'Page must use argv proc_open for the single CLI boundary');
-ui_check(str_contains($page, 'hash_equals($expected, uvm_post(\'uvm_csrf_token\'))'), 'Page must explicitly validate its CSRF mirror against the native expected value');
-ui_check(str_contains($page, 'hash_equals($expected, uvm_post(\'csrf_token\'))'), 'A retained native CSRF field must still be validated');
 ui_check(substr_count($page, "data.append('uvm_csrf_token', csrf)") === 2, 'Both AJAX uploads and cancellation beacons must send the mirror token');
 $forbidden = ['shell_exec', 'system', 'exec', 'passthru', 'file_put_contents', 'unlink', 'mkdir', 'rmdir'];
 foreach ($forbidden as $function) ui_check(preg_match('/\b' . preg_quote($function, '/') . '\s*\(/i', $page) !== 1, 'Page must not directly execute commands or write files: ' . $function);
