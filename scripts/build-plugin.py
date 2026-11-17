@@ -18,6 +18,7 @@ from xml.sax.saxutils import escape, quoteattr
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = "unraid-vgpu-manager"
 PREFIX = Path("usr/local/emhttp/plugins") / PLUGIN
+POST_HOOK = Path("usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks") / PLUGIN
 
 
 def https_url(value):
@@ -44,8 +45,10 @@ Use Unraid native driver installation; the plugin verifies it before vGPU initia
 Separate multi-build caches from one selected native boot package per kernel.
 Require explicit boot selection after downloads or local imports; preserve other builds.
 Verify pkgtools build/source, checksums, module fingerprints and loaded module identity.
-Keep existing plugin entrypoints and GPU usage protection; add no system startup hooks.
-Test native startup ordering, build switching, migration, initialization and WebGUI regressions.
+Use the existing Unraid OS post-hook to synchronously prepare target-kernel drivers.
+Read the target from changes.txt and retain the independent timed fallback.
+Notify readiness only after the selected startup package and MD5 are verified.
+Add only a plugin-owned post-hook; never modify Unraid core or the shared helper.
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -94,11 +97,14 @@ def build(version, output, public_base=None, update_url=None):
         "include/Store.php", "include/StartupInventory.php", "include/Runtime.php", "include/Download.php",
         "include/PackageIdentity.php", "include/PackageHistory.php", "include/PackageCache.php", "include/NativeBoot.php", "include/PkgtoolsMigration.php", "include/InstallContract.php",
         "include/InstallTimeout.php", "include/InstallConfiguration.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php",
-        "include/Installer.php", "include/upgrade-watch.php",
+        "include/Installer.php", "include/upgrade-watch.php", "include/upgrade-check.php",
     ]
     for name in required:
         if not (source / name).is_file():
             raise ValueError(f"Missing component: {name}")
+    hook = ROOT / "source" / POST_HOOK
+    if not hook.is_file() or hook.is_symlink():
+        raise ValueError("Missing or unsafe plugin-owned OS post-hook")
     if bool(public_base) != bool(update_url):
         raise ValueError("Set both --public-base and --update-url for a public installer")
     output.mkdir(parents=True, exist_ok=True)
@@ -107,19 +113,22 @@ def build(version, output, public_base=None, update_url=None):
     if package.exists():
         raise ValueError("Output already exists; use a new version or a different output directory")
     with tarfile.open(package, "w:xz", format=tarfile.PAX_FORMAT) as archive:
-        for path in sorted(source.rglob("*")):
+        payload = [(path, PREFIX / path.relative_to(source)) for path in sorted(source.rglob("*"))]
+        # One explicit plugin-owned extension; never archive the system directory.
+        payload.append((hook, POST_HOOK))
+        for path, target in payload:
             if path.is_symlink():
                 raise ValueError(f"Refusing source symlink: {path}")
             if not path.is_file():
                 continue
-            relative = path.relative_to(source)
+            relative = path.relative_to(source) if target != POST_HOOK else Path("post-hook")
             if any(part.startswith(".") for part in relative.parts) or path.suffix in {".token", ".pyc"} or path.name == "credentials.json":
                 raise ValueError(f"Private or generated file in payload: {relative}")
             data = path.read_bytes()
-            member = tarfile.TarInfo((PREFIX / relative).as_posix())
+            member = tarfile.TarInfo(target.as_posix())
             member.uid = member.gid = 0
             member.uname = member.gname = "root"
-            member.mode = 0o755 if relative.parts[0] == "scripts" else 0o644
+            member.mode = 0o755 if relative.parts[0] == "scripts" or target == POST_HOOK else 0o644
             member.mtime = 0
             member.size = len(data)
             archive.addfile(member, io.BytesIO(data))
@@ -141,7 +150,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.17.1")
+    parser.add_argument("--version", default="2026.11.17.2")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

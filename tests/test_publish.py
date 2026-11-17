@@ -88,6 +88,10 @@ class PublishTests(unittest.TestCase):
         (source / "include/StartupInventory.php").write_text("passive packaging fixture\n")
         (source / "include/PackageCache.php").write_text("passive packaging fixture\n")
         (source / "include/NativeBoot.php").write_text("passive native boot fixture\n")
+        (source / "include/upgrade-check.php").write_text("passive native update fixture\n")
+        hook = self.root / "source" / builder.POST_HOOK
+        hook.parent.mkdir(parents=True)
+        hook.write_text("#!/bin/bash\nexit 0\n")
         for name in ["unraid-vgpu-manager.page", "unraid-vgpu-manager-driver.page", "unraid-vgpu-manager-vgpu.page", "unraid-vgpu-manager-status.page", "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php", "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php", "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php", "include/Store.php", "include/Runtime.php", "include/PackageIdentity.php", "include/PackageHistory.php", "include/PkgtoolsMigration.php", "include/InstallContract.php", "include/InstallTimeout.php", "include/Download.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php", "include/Installer.php", "include/upgrade-watch.php"]:
             path = source / name
             path.parent.mkdir(parents=True, exist_ok=True)

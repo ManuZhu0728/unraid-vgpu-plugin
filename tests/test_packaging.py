@@ -22,10 +22,14 @@ class PackagingTests(unittest.TestCase):
             with tarfile.open(package, 'r:xz') as archive:
                 names = archive.getnames()
                 self.assertTrue(names)
-                self.assertTrue(all(name.startswith('usr/local/emhttp/plugins/unraid-vgpu-manager/') for name in names))
+                hook = 'usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/unraid-vgpu-manager'
+                self.assertTrue(all(name.startswith('usr/local/emhttp/plugins/unraid-vgpu-manager/') or name == hook for name in names))
+                self.assertIn(hook, names)
+                self.assertEqual(archive.getmember(hook).mode, 0o755)
+                self.assertEqual(archive.extractfile(hook).read(), (ROOT / 'source' / hook).read_bytes())
                 self.assertFalse(any('novidio-vgpu-driver/' in name or 'credentials.json' in name for name in names))
                 self.assertTrue(all(member.uid == 0 and member.gid == 0 for member in archive.getmembers()))
-                for component in ['include/Upgrade.php', 'include/Installer.php', 'include/upgrade-watch.php', 'scripts/upgrade-helper', 'include/Logs.php', 'include/Inventory.php', 'include/ui-page.php', 'include/ui/common.php', 'include/ui/state.php', 'include/ui/driver.php', 'include/ui/vgpu.php', 'include/ui/status.php']:
+                for component in ['include/Upgrade.php', 'include/Installer.php', 'include/upgrade-watch.php', 'include/upgrade-check.php', 'scripts/upgrade-helper', 'include/Logs.php', 'include/Inventory.php', 'include/ui-page.php', 'include/ui/common.php', 'include/ui/state.php', 'include/ui/driver.php', 'include/ui/vgpu.php', 'include/ui/status.php']:
                     self.assertIn('usr/local/emhttp/plugins/unraid-vgpu-manager/' + component, names)
                 prefix = 'usr/local/emhttp/plugins/unraid-vgpu-manager/'
                 self.assertIn(prefix + 'include/PackageIdentity.php', names)

@@ -32,7 +32,8 @@ final class Application
             $native->migrate();
             if ($action === 'boot') $native->sync($this->store->settings(), (new Upgrade($this->store, $this->download, $this->runner))->status());
             $result = $this->mutate($action, $input);
-            if (in_array($action, ['config-save', 'cache-select', 'upgrade-check'], true)) {
+            if (in_array($action, ['config-save', 'cache-select'], true) ||
+                ($action === 'upgrade-check' && !array_key_exists('boot_ready', $result))) {
                 $native->sync($this->store->settings(), (new Upgrade($this->store, $this->download, $this->runner))->status());
             }
             return $result;

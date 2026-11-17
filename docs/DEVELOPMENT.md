@@ -11,7 +11,8 @@ Python 用于开发测试和打包。插件源代码位于 `source/usr/local/emh
 | `Application.php`、`Store.php`、`cli.php` | CLI 调用、事务及配置锁。网页通过 CLI 操作，守护进程不继承配置锁。 |
 | `Source.php`、`Download.php`、`Upload.php` | 下载源、包校验与分块导入。 |
 | `PackageIdentity.php`、`PackageHistory.php`、`NativeBoot.php` | 解析包名和构建号，按内核保存缓存回执、选择与原生安装副本。旧回执缺失构建号时仅兼容 `-1.txz`。 |
-| `Upgrade.php`、`Installer.php`、`Runtime.php` | 准备升级缓存、核验 Unraid 原生安装、启动 vGPU 服务与设备。 |
+| `Upgrade.php`、`Installer.php`、`Runtime.php` | 准备升级缓存与启动副本、核验 Unraid 原生安装、启动 vGPU 服务与设备。 |
+| 原生 `post-hooks/unraid-vgpu-manager`、`include/upgrade-check.php` | 系统更新成功后同步复用 CLI 准备驱动；与保留的定时兜底共享事务锁。 |
 | `Inventory.php`、`StartupInventory.php`、`Logs.php` | 汇总设备、识别已知启动入口、读取分类日志并过滤凭据。 |
 
 `.page` 的 PHP 入口用完整的 `<?php ... ?>`，并设置 `Markdown="false"`。
@@ -64,10 +65,10 @@ PHP_BIN=.tools/php/root/usr/bin/php8.4 \
 ## 离线预览包
 
 ```bash
-python3 scripts/build-plugin.py --version 2026.11.17.1
+python3 scripts/build-plugin.py --version 2026.11.17.2
 ```
 
-`dist/2026.11.17.1/` 包含 TXZ、MD5 和内嵌同一 TXZ 的 `offline/unraid-vgpu-manager.plg`。
+`dist/2026.11.17.2/` 包含 TXZ、MD5 和内嵌同一 TXZ 的 `offline/unraid-vgpu-manager.plg`。
 在线安装定义使用 `--public-base` 和 `--update-url` 指定无凭据的公开 HTTPS 地址。
 使用新版本或新输出目录可避免覆盖旧成品。
 
@@ -92,7 +93,8 @@ python3 scripts/build-plugin.py --version 2026.11.17.1
   上传经 URL 编码表单分块提交，网关消耗 `csrf_token` 后页面仍校验 `uvm_csrf_token`。
 - `device-create` 只接受新 UUID，`device-save` 兼容旧客户端的幂等保存；其余设备操作为
   `device-start`、`device-stop`、`device-remove`。
-- `upgrade-check` 从系统元数据识别目标内核，CLI 可传 `target_kernel`，`force: true` 可跳过重试等待。
+- `upgrade-check` 从 `changes.txt` 第一段版本说明识别目标内核，CLI 可传 `target_kernel`，`force: true`
+  可跳过重试等待。通知就绪前必须完成启动包核验；`boot_ready=false` 明确表示仅缓存或准备失败。
 - `boot` 核验原生安装后按设置初始化 vGPU。`ensure` 只处理 vGPU 运行时。
 
 发布前后的开发记录见 [各版本说明](releases/) 和

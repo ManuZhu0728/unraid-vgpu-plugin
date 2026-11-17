@@ -17,3 +17,15 @@ coverage, not physical GPU or Unraid acceptance evidence.
 No native `rc.modules`, `rc.local`, other plugin, service, or kernel hook is
 modified or deployed. Missing tools/namespaces produce an explicit test skip,
 never an attempt to execute native startup on the host or NAS.
+
+## Native OS post-hook dispatch
+
+`post-hooks-7.3.4.php` and `post-hooks-7.4.0.php` contain the exact `post_hooks`
+function from the native plugin manager at commits
+[`31c22f8327cca774dcbddd573dc76f70e87b2f10`](https://github.com/unraid/webgui/blob/31c22f8327cca774dcbddd573dc76f70e87b2f10/emhttp/plugins/dynamix.plugin.manager/scripts/plugin)
+and [`b135287c706a30da44f71cc7820615209e83e9a0`](https://github.com/unraid/webgui/blob/b135287c706a30da44f71cc7820615209e83e9a0/emhttp/plugins/dynamix.plugin.manager/scripts/plugin).
+The test maps only the hook directory and our backend command into a disposable
+root, then executes the actual Bash hook. The rest of the OS updater, network,
+GPU commands and services are not executed. These excerpts never enter the TXZ.
+They check synchronous hook dispatch, not ordering against the independent
+shared Update Helper's notifications.

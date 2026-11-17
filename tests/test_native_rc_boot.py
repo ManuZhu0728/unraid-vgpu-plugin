@@ -30,7 +30,8 @@ class NativeStartupContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='native-payload-contract-') as temporary, contextlib.redirect_stdout(io.StringIO()):
             package, _ = builder.build('2026.11.17.1', Path(temporary))
             with tarfile.open(package) as archive:
-                self.assertTrue(all(p.name.startswith('usr/local/emhttp/plugins/unraid-vgpu-manager/') for p in archive))
+                self.assertTrue(all(p.name.startswith('usr/local/emhttp/plugins/unraid-vgpu-manager/') or
+                    p.name == 'usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/unraid-vgpu-manager' for p in archive))
         code = (ROOT / 'source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/Installer.php').read_text()
         self.assertNotIn("['upgradepkg'", code)
         self.assertNotIn("['installpkg'", code)

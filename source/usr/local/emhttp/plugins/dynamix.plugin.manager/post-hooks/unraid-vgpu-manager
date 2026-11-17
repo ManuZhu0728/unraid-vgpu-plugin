@@ -1,0 +1,14 @@
+#!/bin/bash
+# Plugin-owned extension called by the existing Unraid plugin manager.
+# Arguments: plugin method plugin-name error (empty on success).
+[ "${1:-}" = plugin ] && [ -z "${4:-}" ] || exit 0
+case "${2:-}" in install|update) ;; *) exit 0 ;; esac
+case "${3##*/}" in unRAIDServer.plg|unRAIDServer-*.plg) ;; *) exit 0 ;; esac
+HELPER=/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper
+if [ ! -x "$HELPER" ]; then
+  echo 'unraid-vgpu-manager: GPU driver preparation entry is missing; check the plugin before rebooting.' >&2
+elif ! "$HELPER" check; then
+  echo 'unraid-vgpu-manager: GPU driver preparation is not confirmed; check the plugin before rebooting.' >&2
+fi
+# Driver failure must not misreport a successful OS update as failed.
+exit 0

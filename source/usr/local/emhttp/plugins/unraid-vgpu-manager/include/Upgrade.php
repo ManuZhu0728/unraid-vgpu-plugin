@@ -92,7 +92,7 @@ final class Upgrade
             $candidate = $this->baselineCandidate($settings, $source, $current, $branch, $previous, $record);
             $currentReady = $targetError === null && $target['kernel'] === $current && $candidate !== null;
             if (!$force && !$currentReady && $targetKernel === null && $same && ($previous['credential_stamp'] ?? '') === $record['credential_stamp'] &&
-                in_array($previous['status'] ?? '', ['missing', 'error', 'downloading'], true) &&
+                in_array($previous['status'] ?? '', ['missing', 'error', 'downloading', 'staging'], true) &&
                 (int)($previous['last_attempt'] ?? 0) + self::RETRY_SECONDS > time()) {
                 return ['ok' => false, 'deferred' => true] + $previous;
             }
@@ -132,7 +132,10 @@ final class Upgrade
                     if (isset($record['history_warning'])) $previous['history_warning'] = $record['history_warning'];
                     $this->store->write($this->store->paths->configDir . '/upgrade-state.json', $previous);
                 }
-                return ['ok' => true, 'unchanged' => true] + $previous;
+                // Cache readiness does not prove that the startup copy is intact.
+                $record = $previous;
+                $record['boot_ready'] = false;
+                return ['ok' => true, 'unchanged' => true] + $this->finishPreparation($record, $settings);
             }
 
             $this->requireSource($source);
@@ -144,9 +147,7 @@ final class Upgrade
             $package = $this->fetchKernelPackage($effective, $credentials, $target['kernel'], $branch, $reference, $source['driver']);
             $package = $this->receipt($package, $source, $record['prepared_boot_id']);
             $record['package'] = $package;
-            $record['status'] = 'ready';
-            $record['message'] = $target['kernel'] . ' · NVIDIA ' . $package['driver'] . ' 已下载并校验。';
-            $record = $this->saveAndNotify($record, 'ready', '新内核驱动已准备', $record['message']);
+            $record = $this->finishPreparation($record, $settings);
             return ['ok' => true] + $record;
         } catch (\Throwable $error) {
             $message = self::redact($error->getMessage(), $token);
@@ -154,10 +155,44 @@ final class Upgrade
                 str_contains($message, 'No canonical') || str_contains($message, 'No driver package matches') ||
                 str_contains($message, 'selected driver is unavailable');
             $record['status'] = $missing ? 'missing' : 'error';
+            if (($record['phase'] ?? '') === 'boot') $record['boot_ready'] = false;
             $record['message'] = $message;
             $record = $this->saveAndNotify($record, 'error', $missing ? '目标内核驱动暂未发布' : '驱动准备失败', $message);
             return ['ok' => false] + $record;
         }
+    }
+
+    /** Caller holds the transaction lock shared by hook, manual and timed checks. */
+    private function finishPreparation(array &$record, array $settings): array
+    {
+        $record['status'] = 'staging';
+        $record['phase'] = 'boot';
+        $record['boot_ready'] = false;
+        $record['message'] = '正在核验目标内核的启动安装包。';
+        $this->store->write($this->store->paths->configDir . '/upgrade-state.json', $record);
+        // Preparing the baseline may have changed the current-kernel selection.
+        $settings['selected_package'] = $this->store->settings()['selected_package'];
+        $native = new NativeBoot($this->store, $this->download);
+        $native->sync($settings, array_replace($record, ['status' => 'ready']));
+        if (($settings['driver']['enabled'] ?? false) === true) {
+            $selection = $native->selection($record['target_kernel']);
+            if ($selection === null) throw new \RuntimeException('目标内核启动包尚未选中。');
+            $published = $native->verifyPublished($selection);
+            foreach (['filename', 'kernel', 'driver', 'build', 'md5'] as $field) {
+                if (($published[$field] ?? null) !== ($record['package'][$field] ?? null)) {
+                    throw new \RuntimeException('目标内核启动包与升级准备的构建不一致。');
+                }
+            }
+            $record['boot_ready'] = true;
+        }
+        $record['status'] = 'ready';
+        $record['phase'] = 'target';
+        $record['message'] = $record['target_kernel'] . ' · NVIDIA ' . $record['package']['driver'] .
+            ' · 构建 ' . $record['package']['build'] . ($record['boot_ready']
+                ? ' 缓存及唯一启动安装包均已校验。请同时确认 Unraid 系统更新完成。'
+                : ' 缓存已校验；开机恢复关闭，未准备启动安装包。');
+        return $this->saveAndNotify($record, $record['boot_ready'] ? 'ready' : 'cached',
+            $record['boot_ready'] ? '新内核驱动已准备' : '新内核驱动已缓存（未启用开机恢复）', $record['message']);
     }
 
     private function baselineCandidate(array $settings, array $source, string $current, string $branch, array $prepared, array $record): ?array
@@ -370,6 +405,9 @@ final class Upgrade
         $file = $this->store->paths->configDir . '/upgrade-state.json';
         $key = hash('sha256', json_encode([$phase, $record['target_kernel'] ?? '', $record['source_fingerprint'] ?? '', $message], JSON_THROW_ON_ERROR));
         $history = is_array($record['notifications'] ?? null) ? $record['notifications'] : [];
+        // Publish the verified state before announcing it. A failed state write
+        // must never produce a readiness notification with no durable receipt.
+        $this->store->write($file, $record);
         if (!isset($history[$key])) {
             try {
                 $result = ($this->runner)(['/usr/local/emhttp/plugins/dynamix/scripts/notify', '-e', 'NVIDIA vGPU Manager',

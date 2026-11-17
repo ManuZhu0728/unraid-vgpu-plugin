@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/bootstrap.php';
 require_once __DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/Upgrade.php';
+require_once __DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/Application.php';
 
 use Vgpu\Download;
 use Vgpu\Paths;
@@ -39,6 +40,7 @@ final class UpgradeFixture
     public string $activeKernel = '6.18.60';
     public string $target = '6.18.60';
     public string $throwMessage = '';
+    public $observer = null;
 
     public function __construct()
     {
@@ -114,6 +116,7 @@ final class UpgradeFixture
         mkdir(dirname($path), 0700, true);
         $body = "\xfd7zXZ\x00package-" . $filename;
         file_put_contents($path, $body);
+        file_put_contents($path . '.md5', md5($body) . '  ' . $filename . "\n");
         return ['path' => $path, 'filename' => $filename, 'kernel' => '6.18.58-Unraid', 'driver' => '595.58.03',
             'md5' => md5($body), 'checksum_verified' => true, 'source' => $this->settings['source']['repository'],
             'provider' => $this->settings['source']['provider'], 'source_id' => Store::sourceIdentity($this->settings['source']),
@@ -124,6 +127,7 @@ final class UpgradeFixture
     public function run(array $argv, int $timeout = 15, ?string $stdin = null): array
     {
         $this->calls[] = ['argv' => $argv, 'stdin' => $stdin];
+        if ($this->observer !== null) ($this->observer)($argv);
         upgrade_check(!str_contains(implode(' ', $argv), 'upgrade-fixture-secret'), 'Token must not enter command arguments');
         if (str_ends_with($argv[0], '/notify')) return ['code' => 0, 'stdout' => '', 'stderr' => ''];
         if ($argv[0] === 'curl') {
@@ -544,6 +548,72 @@ try {
     $f->routes = [];
     $result = $f->check('6.18.58-Unraid');
     upgrade_check($result['ok'] && $f->count('curl') === 0 && $f->store->settings()['selected_package']['md5'] === $old['md5'], 'A current-policy history receipt restores the helper baseline without networking');
+
+    $f = $fixture();
+    $f->settings['driver']['enabled'] = true;
+    $f->store->saveSettings($f->settings);
+    $f->addVersions(['595.58.03'], null, [2, 3]);
+    $initialCache = $f->settings['selected_package']['path'];
+    $initialHash = hash_file('sha256', $initialCache);
+    $readyNotices = 0;
+    $stagingSeen = false;
+    $f->observer = static function (array $argv) use ($f, &$readyNotices, &$stagingSeen): void {
+        if (($f->upgrade->status()['status'] ?? '') === 'staging') $stagingSeen = true;
+        if (!str_ends_with($argv[0], '/notify') || $argv[array_search('-s', $argv, true) + 1] !== '新内核驱动已准备') return;
+        ++$readyNotices;
+        $state = $f->upgrade->status();
+        $native = new \Vgpu\NativeBoot($f->store, $f->download);
+        $published = $native->verifyPublished($native->selection('6.18.60-Unraid'));
+        upgrade_check($state['status'] === 'ready' && $state['boot_ready'] === true, 'The durable state must be ready before its notification');
+        upgrade_check($published['build'] === 3 && $published['md5'] === $state['package']['md5'], 'Readiness requires the exact published startup build and checksum');
+    };
+    $app = new \Vgpu\Application($f->store, new \Vgpu\Runtime($f->paths, $f->run(...)), $f->download, $f->run(...));
+    $result = $app->dispatch('upgrade-check');
+    upgrade_check($result['ok'] && $result['boot_ready'] && $stagingSeen && $readyNotices === 1, 'Hook/manual/timed CLI preparation must verify staging before the only readiness notification');
+    upgrade_check($result['target_kernel'] === '6.18.60-Unraid' && $result['package']['build'] === 3, 'Use only the first changes.txt kernel and highest eligible build');
+    upgrade_check(hash_file('sha256', $initialCache) === $initialHash && $f->store->settings()['selected_package']['kernel'] === '6.18.58-Unraid', 'Target preparation must preserve the current-kernel cache and selection');
+    $requests = $f->count('curl');
+    $result = $app->dispatch('upgrade-check');
+    upgrade_check($result['unchanged'] && $f->count('curl') === $requests && $readyNotices === 1, 'Repeated hook/fallback checks reverify boot copies without downloading or notifying twice');
+    $native = new \Vgpu\NativeBoot($f->store, $f->download);
+    $boot = $native->verifyPublished($native->selection('6.18.60-Unraid'))['boot_path'];
+    file_put_contents($boot . '.md5', str_repeat('0', 32) . '  ' . basename($boot) . "\n");
+    $result = $app->dispatch('upgrade-check');
+    upgrade_check(!$result['ok'] && !$result['boot_ready'] && $result['phase'] === 'boot' && $readyNotices === 1, 'Damaged startup MD5 must invalidate ready state without announcing success or retrying publication in Application');
+    upgrade_check(is_file($result['package']['path']) && $f->count('curl') === $requests, 'A startup verification failure must retain the verified download');
+    file_put_contents($boot . '.md5', $result['package']['md5'] . '  ' . basename($boot) . "\n");
+    $f->addVersions(['595.58.03'], '6.18.58', [2, 3]);
+    $f->settings = $f->store->settings();
+    $f->settings['source']['driver'] = '595.58.03';
+    $f->settings['source']['build'] = '2';
+    $f->store->saveSettings($f->settings);
+    $f->observer = null;
+    $result = $app->dispatch('upgrade-check', ['force' => true]);
+    $published = $native->verifyPublished($native->selection('6.18.60-Unraid'));
+    upgrade_check($result['ok'] && $result['boot_ready'] && $published['build'] === 2, 'An explicit build switch must publish and verify only the requested target build');
+    upgrade_check(is_file(dirname($result['package']['path']) . '/nvidia-595.58.03-6.18.60-Unraid-3.txz'), 'Switching target startup build must retain the other cached build');
+
+    $f = $fixture();
+    $notices = [];
+    $f->observer = static function (array $argv) use (&$notices): void {
+        if (str_ends_with($argv[0], '/notify')) $notices[] = $argv[array_search('-s', $argv, true) + 1];
+    };
+    $result = $f->check();
+    upgrade_check($result['ok'] && $result['boot_ready'] === false && !in_array('新内核驱动已准备', $notices, true), 'Prefetch-only mode may announce a cached package, never startup readiness');
+    upgrade_check(str_contains($result['message'], '开机恢复关闭') && !is_dir($f->paths->bootPackagesDir . '/6.18.60'), 'Do not create startup packages or implicitly enable restoration in cache-only mode');
+
+    $f = $fixture();
+    $f->settings['driver']['enabled'] = true;
+    $f->store->saveSettings($f->settings);
+    mkdir($f->paths->bootPackagesDir, 0700, true);
+    $sentinel = $f->root . '/unrelated-driver-data';
+    mkdir($sentinel, 0700);
+    file_put_contents($sentinel . '/keep', 'never change');
+    symlink($sentinel, $f->paths->bootPackagesDir . '/6.18.60');
+    $result = $f->check();
+    upgrade_check(!$result['ok'] && $result['boot_ready'] === false && $result['status'] === 'error', 'Unsafe startup target must fail before readiness');
+    upgrade_check(file_get_contents($sentinel . '/keep') === 'never change' && is_file($result['package']['path']), 'A publication failure must not alter unrelated files or discard its cache');
+    upgrade_check($f->count('upgradepkg') === 0 && $f->count('modprobe') === 0, 'Upgrade preparation must never install packages or touch GPU runtime');
 
     $watch = file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/upgrade-watch.php');
     $shell = file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper');

@@ -15,6 +15,7 @@ export PHP_BIN="$PHP"
 for script in "$ROOT/source/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/"*; do
     bash -n "$script"
 done
+bash -n "$ROOT/source/usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/unraid-vgpu-manager"
 while IFS= read -r -d '' file; do
     "$PHP" -n -l "$file" >/dev/null
 done < <(find "$ROOT/source/usr/local/emhttp/plugins/unraid-vgpu-manager" -type f \( -name '*.php' -o -name '*.page' \) -print0)
