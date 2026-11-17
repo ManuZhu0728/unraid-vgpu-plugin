@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the public plugin alpha, never a NVIDIA driver or offline installer.
+"""Publish the public plugin release, never a NVIDIA driver or offline installer.
 
 GitHub Actions supplies GITHUB_TOKEN. No credential files or Git credential
 helpers are read. --dry-run performs the complete local build without a token.
@@ -35,18 +35,27 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def metadata(root=ROOT):
-    data = json.loads((Path(root) / ".github/release.json").read_text())
-    if set(data) != {"version", "tag", "prerelease"}:
+def validate_metadata(data):
+    if not isinstance(data, dict) or set(data) != {"version", "tag", "prerelease"}:
         raise ValueError("release.json must contain version, tag and prerelease only")
     version = data["version"]
     if not isinstance(version, str) or not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+", version):
         raise ValueError("Invalid plugin version")
-    if not isinstance(data["tag"], str) or not re.fullmatch(re.escape("v" + version) + r"-alpha\.[1-9][0-9]*", data["tag"]):
-        raise ValueError("The release tag must explicitly identify this version as alpha")
-    if data["prerelease"] is not True:
-        raise ValueError("Only an explicit prerelease alpha may be published")
+    if not isinstance(data["prerelease"], bool):
+        raise ValueError("prerelease must be an explicit JSON boolean")
+    tag = data["tag"]
+    if not isinstance(tag, str):
+        raise ValueError("Invalid release tag")
+    if data["prerelease"]:
+        if not re.fullmatch(re.escape("v" + version) + r"-alpha\.[1-9][0-9]*", tag):
+            raise ValueError("A prerelease tag must explicitly identify this version as alpha")
+    elif tag != "v" + version:
+        raise ValueError("A stable release tag must be v followed by the exact plugin version")
     return data
+
+
+def metadata(root=ROOT):
+    return validate_metadata(json.loads((Path(root) / ".github/release.json").read_text()))
 
 
 def prepare(repository, root=ROOT, *, runner=subprocess.run):
@@ -77,7 +86,7 @@ def prepare(repository, root=ROOT, *, runner=subprocess.run):
         raise ValueError("Generated TXZ/MD5 pair is inconsistent")
     notes = root / "docs/releases" / (release["tag"] + ".md")
     if notes.is_symlink() or not notes.is_file() or not notes.read_text().strip():
-        raise ValueError("Committed alpha release notes are required")
+        raise ValueError("Committed release notes are required")
     return release, assets, notes.read_text()
 
 
@@ -167,27 +176,32 @@ def resolved_tag(api, tag):
 
 
 def publish(api, release, assets, notes, commit):
+    release = validate_metadata(release)
     if not SHA.fullmatch(commit):
         raise ValueError("GITHUB_SHA must be a complete commit SHA")
     commit = commit.lower()
     tag = release["tag"]
+    prerelease = release["prerelease"]
+    title = f"Unraid vGPU Manager {tag}" + (" (alpha)" if prerelease else "")
     expected_names = {f"{PLUGIN}.plg", f"{PLUGIN}-{release['version']}-noarch-1.txz", f"{PLUGIN}-{release['version']}-noarch-1.txz.md5"}
-    if set(assets) != expected_names or release["prerelease"] is not True:
-        raise ValueError("Only the three reviewed public alpha assets may be published")
+    if set(assets) != expected_names:
+        raise ValueError("Only the three reviewed public plugin assets may be published")
     target = resolved_tag(api, tag)
     if target is not None and target != commit:
         raise ValueError("Existing tag points to another commit; tags are never moved")
     path = api.prefix + "/releases/tags/" + urllib.parse.quote(tag, safe="")
     current = api.request("GET", path, missing=True)
     if current is not None:
-        if target != commit or current.get("target_commitish") != commit or current.get("prerelease") is not True or current.get("draft"):
+        if target != commit or current.get("target_commitish") != commit or current.get("prerelease") is not prerelease or current.get("draft") or current.get("name") != title:
             raise ValueError("Existing release is not the same reviewed commit/prerelease")
         if current.get("body") != notes:
             raise ValueError("Existing release notes differ; not overwriting a published release")
     else:
         current = api.request("POST", api.prefix + "/releases", {"tag_name": tag, "target_commitish": commit,
-            "name": f"Unraid vGPU Manager {tag} (alpha)", "body": notes, "draft": False, "prerelease": True,
-            "make_latest": "false"})
+            "name": title, "body": notes, "draft": False, "prerelease": prerelease,
+            "make_latest": "false" if prerelease else "true"})
+    if current.get("prerelease") is not prerelease or current.get("draft") or current.get("name") != title:
+        raise RuntimeError("Published release metadata does not match the reviewed release type/title")
     if not isinstance(current.get("id"), int) or current["id"] < 1:
         raise ValueError("Invalid GitHub release identifier")
     existing = {}
@@ -234,7 +248,7 @@ def main(argv=None, *, root=ROOT, env=None):
     env = dict(os.environ if env is None else env)
     repository = env.get("GITHUB_REPOSITORY", "ManuZhu0728/unraid-vgpu-plugin")
     release, assets, notes = prepare(repository, root)
-    print("Alpha release:", release["tag"])
+    print("Prerelease:" if release["prerelease"] else "Stable release:", release["tag"])
     for name, path in assets.items():
         print(f"Asset: {name} ({path.stat().st_size} bytes, SHA256 {digest(path)})")
     if args.dry_run:
