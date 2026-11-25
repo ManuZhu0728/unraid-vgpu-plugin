@@ -9,6 +9,7 @@ use Vgpu\Process;
 use Vgpu\Store;
 use Vgpu\Upgrade;
 use Vgpu\Download;
+use Vgpu\UpgradeWatch;
 
 if (PHP_SAPI !== 'cli' || !is_file('/etc/unraid-version')) exit(1);
 $uid = function_exists('posix_geteuid') ? posix_geteuid() : null;
@@ -18,10 +19,16 @@ $paths = new Paths();
 $store = new Store($paths);
 $stop = $paths->runtimeDir . '/upgrade-watch.stop';
 if (is_link($paths->runtimeDir)) exit(1);
+if (($argv[1] ?? '') === '--request-start') {
+    echo UpgradeWatch::requestStart($store) . "\n";
+    exit(0);
+}
 if (in_array($argv[1] ?? '', ['--stop', '--reset-stop'], true)) {
     if (($argv[1] ?? '') === '--stop' && is_dir($paths->runtimeDir)) {
         if (is_link($stop)) exit(1);
         file_put_contents($stop, 'stop');
+        $request = $paths->runtimeDir . '/upgrade-watch.start.json';
+        if (is_file($request) && !is_link($request)) unlink($request);
     } elseif (is_file($stop) && !is_link($stop)) unlink($stop);
     exit(0);
 }
@@ -30,14 +37,27 @@ if (!is_dir($paths->runtimeDir) && !mkdir($paths->runtimeDir, 0700, true)) exit(
 $lockFile = $paths->runtimeDir . '/upgrade-watch.lock';
 if (is_link($lockFile)) exit(1);
 $lock = fopen($lockFile, 'ce');
-if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) exit(0);
+if (!$lock) exit(1);
+$generation = ($argv[1] ?? '') === '--generation' ? ($argv[2] ?? '') : '';
+if ($generation !== '') {
+    if (!preg_match('/^[a-f0-9]{32}$/D', $generation)) exit(1);
+    $deadline = microtime(true) + 3610;
+    while (!flock($lock, LOCK_EX | LOCK_NB)) {
+        if (!UpgradeWatch::isLatest($store, $generation) || microtime(true) >= $deadline) exit(0);
+        usleep(250000);
+        clearstatcache();
+    }
+    if (!UpgradeWatch::isLatest($store, $generation) || ($store->settings()['upgrade']['enabled'] ?? false) !== true) exit(0);
+    if (is_link($stop)) exit(1);
+    if (is_file($stop)) unlink($stop);
+} elseif (!flock($lock, LOCK_EX | LOCK_NB)) exit(0);
 chmod($paths->runtimeDir . '/upgrade-watch.lock', 0600);
 $pidFile = $paths->runtimeDir . '/upgrade-watch.json';
 $self = getmypid();
 $stat = (string)file_get_contents('/proc/self/stat');
 $fields = preg_split('/\s+/', trim(substr($stat, strrpos($stat, ')') + 1)));
 $store->write($pidFile, ['pid' => $self, 'start_time' => $fields[19] ?? '', 'script' => __FILE__]);
-$previous = null;
+$poll = new UpgradeWatch();
 $runner = new Process();
 $upgrade = new Upgrade($store, new Download($paths));
 try {
@@ -45,30 +65,22 @@ try {
         try {
             clearstatcache();
             if (($store->settings()['upgrade']['enabled'] ?? false) !== true) break;
-            $changes = '/boot/changes.txt';
+            $changes = $paths->path('/boot/changes.txt');
             $changesHash = is_file($changes) ? hash_file('sha256', $changes) : '';
             $settingsHash = is_file($paths->settingsFile) ? hash_file('sha256', $paths->settingsFile) : '';
             $credentialStat = @stat($paths->credentialsFile);
             $credentialStamp = $credentialStat === false ? [] : [$credentialStat['ino'], $credentialStat['mtime'], $credentialStat['size']];
             $fingerprint = hash('sha256', json_encode([$changesHash, $settingsHash, $credentialStamp], JSON_THROW_ON_ERROR));
             $state = $upgrade->status();
-            $retry = in_array($state['status'] ?? '', ['missing', 'error', 'downloading', 'staging'], true) &&
-                (int)($state['last_attempt'] ?? 0) + Upgrade::RETRY_SECONDS <= time();
-            if ($previous !== $fingerprint || $retry) {
+            if ($poll->due($fingerprint, $state, time())) {
                 $result = $runner(['/usr/bin/php', __DIR__ . '/cli.php', 'upgrade-check'], 3600, null);
-                $response = json_decode($result['stdout'], true);
-                if (is_array($response) && array_key_exists('ok', $response) && !str_contains((string)($response['error'] ?? ''), 'Another plugin operation')) {
-                    $previous = $fingerprint;
-                }
-                $status = $response['data']['status'] ?? 'error';
-                if (!is_string($status) || !preg_match('/^[a-z_-]+$/D', $status)) $status = 'error';
-                echo gmdate('c') . ' update-check ' . $status . "\n";
-                flush();
+                $line = $poll->observe($fingerprint, $result, time(), (string)($store->credentials()['token'] ?? ''));
+                if ($line !== null) { echo $line . "\n"; flush(); }
             }
         } catch (Throwable $error) {
-            // Only a fixed message is logged; credentials stay in the CLI stdin transport.
-            echo gmdate('c') . " update-check failed\n";
-            flush();
+            // Never print raw exceptions, request details or credentials.
+            $line = $poll->observe($fingerprint ?? '', ['code' => 1, 'stdout' => ''], time());
+            if ($line !== null) { echo $line . "\n"; flush(); }
         }
         sleep(5);
         clearstatcache();

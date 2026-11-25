@@ -8,6 +8,7 @@ final class Download
 {
     private Paths $paths;
     private $runner;
+    private ?DownloadTask $task = null;
     private const MAX_PACKAGE = 2147483648;
 
     public function __construct(Paths $paths, ?callable $runner = null)
@@ -15,6 +16,8 @@ final class Download
         $this->paths = $paths;
         $this->runner = $runner ?? new Process();
     }
+
+    public function track(?DownloadTask $task): void { $this->task = $task; }
 
     public function test(array $source, array $credentials, string $kernel): array
     {
@@ -36,6 +39,7 @@ final class Download
 
     public function fetch(array $source, array $credentials, string $kernel): array
     {
+        $this->task?->stage('resolving');
         $context = $this->context($source, $credentials, $kernel);
         $candidates = $context['mode'] === 'auto' || $context['link']['kind'] !== 'repository'
             ? $this->automaticCandidates($context) : $this->candidates($context);
@@ -56,6 +60,7 @@ final class Download
         if ($selected === null) throw new \RuntimeException('The selected driver is unavailable; no fallback was attempted');
         $context['driver'] = $selected['driver'];
         $context['build'] = $selected['build'];
+        $this->task?->stage('resolving', ['filename' => $selected['filename'], 'kernel' => $selected['kernel']]);
         $md5 = $this->checksum($context, $selected);
         $directory = $this->paths->cacheDir . '/' . $context['kernel'];
         $this->directory($directory);
@@ -134,6 +139,7 @@ final class Download
 
     private function cacheFile(string $temporary, string $filename, array $context, string $md5, bool $checksumVerified): array
     {
+        $this->task?->stage('verifying');
         $identity = $this->filename($filename, $context['kernel']);
         if ($identity['driver'] !== $context['driver'] || $identity['build'] !== ($context['build'] ?? 1)) {
             throw new \RuntimeException('Downloaded package identity differs from the selection');
@@ -145,9 +151,13 @@ final class Download
         if (is_file($destination)) {
             if (hash_file('md5', $destination) !== $md5) throw new \RuntimeException('Existing cached package differs; it was preserved');
             $this->validateArchive($destination, $context);
+            $this->task?->stage('publishing', [], false);
         } else {
             if (hash_file('md5', $temporary) !== $md5) throw new \RuntimeException('Package MD5 mismatch; existing packages were preserved');
             $this->validateArchive($temporary, $context);
+            // Check cancellation once more before the TXZ/MD5 commit boundary.
+            // The pair must not be interrupted halfway through publication.
+            $this->task?->stage('publishing', [], false);
             if (file_exists($destination) || is_link($destination) || !@rename($temporary, $destination)) throw new \RuntimeException('Cannot publish package cache without overwriting another download');
             chmod($destination, 0600);
         }
@@ -406,11 +416,14 @@ final class Download
     private function request(string $url, array $context, int $limit, ?string $directory = null, string $accept = 'application/octet-stream'): string
     {
         $temporary = $this->temporary($directory ?? $this->paths->runtimeDir);
+        $headers = null;
         $authenticated = $this->origin($url) === $context['authOrigin'];
         $authType = $context['type'];
         $deployTried = false;
         try {
+            $headers = $this->task !== null ? $this->temporary($this->paths->runtimeDir) : null;
             for ($redirect = 0; $redirect <= 5; ++$redirect) {
+                $this->task?->checkpoint();
                 $url = $this->url($url);
                 $config = 'url = ' . $this->quote($url) . "\n";
                 $config .= 'header = ' . $this->quote('Accept: ' . $accept) . "\n";
@@ -421,10 +434,21 @@ final class Download
                     $config .= 'header = ' . $this->quote($header . $context['token']) . "\n";
                 }
                 $timeout = $limit > 8388608 ? 900 : 30;
-                $result = ($this->runner)(['curl', '--disable', '--silent', '--show-error', '--proto', '=https', '--connect-timeout', '8',
+                $argv = ['curl', '--disable', '--silent', '--show-error', '--proto', '=https', '--connect-timeout', '8',
                     '--max-time', (string)$timeout, '--max-filesize', (string)$limit, '--output', $temporary,
-                    '--write-out', "%{http_code}\n%{content_type}\n%{redirect_url}\n", '--config', '-'], $timeout + 5, $config);
+                    '--write-out', "%{http_code}\n%{content_type}\n%{redirect_url}\n", '--config', '-'];
+                if ($headers !== null) {
+                    $argv = array_merge($argv, ['--dump-header', $headers]);
+                    $payload = $limit > 8388608;
+                    if ($payload) $this->task->stage('downloading');
+                    $result = ($this->runner)($argv, $timeout + 5, $config,
+                        fn(): bool => $this->task->observe($temporary, $headers, $payload));
+                    if (($result['code'] ?? -1) === 125) throw new DownloadCancelled('下载已手动取消。未完成文件已清理，已有缓存保留。');
+                } else {
+                    $result = ($this->runner)($argv, $timeout + 5, $config);
+                }
                 if (($result['code'] ?? -1) !== 0) throw new \RuntimeException('Download transport failed (code ' . (int)($result['code'] ?? -1) . '); credentials and response details omitted');
+                $this->task?->checkpoint();
                 $fields = explode("\n", (string)($result['stdout'] ?? ''), 4);
                 $status = (int)($fields[0] ?? 0);
                 if (in_array($status, [401, 403], true) && $authenticated && ($context['autoAuth'] ?? false) &&
@@ -455,6 +479,7 @@ final class Download
             }
             throw new \RuntimeException('Too many source redirects');
         } catch (\Throwable $error) { @unlink($temporary); throw $error; }
+        finally { if ($headers !== null) @unlink($headers); }
     }
 
     private function validateArchive(string $path, array $context): array
@@ -563,7 +588,9 @@ final class Download
 
     private function command(array $argv, int $timeout = 30): string
     {
+        $this->task?->checkpoint();
         $result = ($this->runner)($argv, $timeout, null);
+        $this->task?->checkpoint();
         if (($result['code'] ?? -1) !== 0) throw new \RuntimeException('Passive package verification failed: ' . basename($argv[0]));
         return (string)($result['stdout'] ?? '');
     }

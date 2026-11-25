@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-PKGTOOLS = ROOT.parent / 'unraid-vgpu/inputs/packages/pkgtools-15.0-noarch-42.txz'
+PKGTOOLS = Path(os.environ.get('VGPU_TEST_PKGTOOLS', ROOT.parent / 'unraid-vgpu/inputs/packages/pkgtools-15.0-noarch-42.txz'))
 
 
 class NativeStartupContractTests(unittest.TestCase):

@@ -910,8 +910,20 @@ foreach ([['status' => 'staging', 'boot_ready' => false], ['status' => 'ready', 
     $upgradeFixture = $base;
     $upgradeFixture['status']['upgrade'] = $upgradeState;
     $rendered = ui_render($upgradeFixture);
-    ui_check(str_contains($rendered['html'], $upgradeState['status'] === 'staging' ? '正在核验启动安装包' : '驱动已缓存，未准备启动安装包'), 'Upgrade UI must distinguish startup verification from cache-only completion');
+    ui_check(str_contains($rendered['html'], $upgradeState['status'] === 'staging' ? '正在核验新内核启动安装包' : '驱动已缓存，未准备启动安装包'), 'Upgrade UI must distinguish startup verification from cache-only completion');
 }
+foreach (['baseline' => ['正在准备当前内核恢复缓存', '6.18.58-Unraid'], 'target' => ['正在预下载新内核驱动', '6.18.64-Unraid']] as $phase => [$label, $shownKernel]) {
+    $upgradeFixture = $base;
+    $upgradeFixture['status']['upgrade'] = ['status' => 'downloading', 'phase' => $phase,
+        'current_kernel' => '6.18.58-Unraid', 'target_kernel' => '6.18.64-Unraid'];
+    $rendered = ui_render($upgradeFixture);
+    preg_match('~<p id="uvm-upgrade-state">(.*?)</p>~s', $rendered['html'], $stateLine);
+    ui_check(str_contains($stateLine[1], $label) && str_contains($stateLine[1], $shownKernel), 'Each preparation phase must display the kernel it is actually preparing');
+}
+$cancelledFixture = $base;
+$cancelledFixture['status']['upgrade'] = ['status' => 'cancelled', 'phase' => 'baseline'];
+$rendered = ui_render($cancelledFixture);
+ui_check(str_contains($rendered['html'], '准备已手动取消，不会自动重试') && str_contains($rendered['html'], '>继续准备</button>'), 'A manual cancellation must require an explicit resume');
 $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => [
     'csrf_token' => 'fixture-ui-csrf', 'uvm_csrf_token' => 'fixture-ui-csrf', 'uvm_tab' => 'driver', 'uvm_action' => 'upgrade-check',
 ], 'responses' => ['upgrade-check' => ['ok' => true, 'status' => 'ready', 'boot_ready' => false]]]);

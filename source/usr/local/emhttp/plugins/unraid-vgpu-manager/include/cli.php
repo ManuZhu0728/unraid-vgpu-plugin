@@ -21,7 +21,7 @@ try {
     $effectiveUid = function_exists('posix_geteuid') ? posix_geteuid() : null;
     if ($effectiveUid === null && preg_match('/^Uid:\s+\d+\s+(\d+)/m', (string)file_get_contents('/proc/self/status'), $uid)) $effectiveUid = (int)$uid[1];
     if ($effectiveUid !== 0) throw new RuntimeException('Run the backend as root through the Unraid WebGUI or CLI');
-    $payloadActions = ['cache-select', 'cache-delete', 'config-save', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'];
+    $payloadActions = ['download-cancel', 'cache-select', 'cache-delete', 'config-save', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'];
     $stdinIsTty = function_exists('stream_isatty') && stream_isatty(STDIN);
     if (in_array($action, $payloadActions, true) && $stdinIsTty) {
         throw new InvalidArgumentException('This operation requires a JSON request on stdin');

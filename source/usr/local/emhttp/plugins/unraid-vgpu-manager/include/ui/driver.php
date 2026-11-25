@@ -58,7 +58,9 @@
     <div id="uvm-download-feedback" class="uvm-note uvm-download-feedback" role="status" aria-live="polite" tabindex="-1" hidden>
       <p id="uvm-download-message"></p>
       <progress id="uvm-download-meter" max="1" aria-label="驱动下载与校验进度"></progress>
+      <p id="uvm-download-stats" class="uvm-muted"></p>
       <p id="uvm-download-elapsed" class="uvm-muted" aria-live="off"></p>
+      <button type="button" id="uvm-download-cancel" hidden>取消下载</button>
       <p class="uvm-muted">下载仅保存到缓存，不会安装、重载驱动或重启服务。</p>
       <a id="uvm-download-check" hidden>重新打开页面核对缓存</a>
     </div>
@@ -135,11 +137,21 @@
   <section class="uvm-panel">
     <h2>升级准备</h2>
     <p>系统升级预下载：<?=!empty($uvm_settings['upgrade']['enabled']) ? '开启' : '关闭'?></p>
-    <?php $uvm_upgrade_label = ['idle'=>'尚无升级任务','current'=>'当前内核缓存已就绪','disabled'=>'升级预下载已关闭','downloading'=>'正在下载驱动','staging'=>'正在核验启动安装包','ready'=>'驱动已准备好','missing'=>'目标内核驱动尚未发布','error'=>'准备失败','blocked'=>'等待处理启动入口冲突'];
+    <?php $uvm_baseline_phase = ($uvm_upgrade['phase'] ?? '') === 'baseline';
+    $uvm_upgrade_button = ['cancelled' => '继续准备', 'interrupted' => '核对后重试'][$uvm_upgrade['status'] ?? ''] ?? '检查升级准备';
+    $uvm_upgrade_kernel = $uvm_baseline_phase ? ($uvm_upgrade['current_kernel'] ?? '') : ($uvm_upgrade['target_kernel'] ?? '');
+    $uvm_upgrade_label = ['idle'=>'尚无升级任务','current'=>'当前内核缓存已就绪','disabled'=>'升级预下载已关闭','downloading'=>$uvm_baseline_phase ? '正在准备当前内核恢复缓存' : '正在预下载新内核驱动','staging'=>'正在核验新内核启动安装包','ready'=>'驱动已准备好','missing'=>'所需内核驱动尚未发布','error'=>'准备失败','cancelled'=>'准备已手动取消，不会自动重试','blocked'=>'等待处理启动入口冲突'];
+    $uvm_upgrade_label['interrupted'] = '停止结果未确认，自动重试已暂停';
     if (($uvm_upgrade['status'] ?? '') === 'ready' && ($uvm_upgrade['boot_ready'] ?? null) === false) $uvm_upgrade_label['ready'] = '驱动已缓存，未准备启动安装包'; ?>
-    <p><?=uvm_h($uvm_upgrade_label[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?><?php if (!empty($uvm_upgrade['target_kernel'])): ?> · <code><?=uvm_h($uvm_upgrade['target_kernel'])?></code><?php endif; ?><?php if (!empty($uvm_upgrade['package']['driver'])): ?> · NVIDIA <code><?=uvm_h($uvm_upgrade['package']['driver'])?></code> · 构建 <code><?=uvm_h($uvm_upgrade['package']['build'] ?? '未记录')?></code><?php endif; ?></p>
-    <?php if (in_array($uvm_upgrade['status'] ?? '', ['error','missing','blocked'], true) && !empty($uvm_upgrade['message'])): ?><p class="uvm-muted"><?=uvm_h(uvm_redact($uvm_upgrade['message']))?></p><?php endif; ?>
-    <form method="post" class="uvm-submit-form"><?php uvm_form_hidden('upgrade-check', $uvm_csrf); ?><button type="submit" <?=!$uvm_controls || empty($uvm_settings['upgrade']['enabled']) ? 'disabled' : ''?>>检查升级准备</button></form>
+    <p id="uvm-upgrade-state"><?=uvm_h($uvm_upgrade_label[$uvm_upgrade['status'] ?? 'idle'] ?? ($uvm_upgrade['status'] ?? '尚无升级任务'))?><?php if ($uvm_upgrade_kernel !== ''): ?> · <code><?=uvm_h($uvm_upgrade_kernel)?></code><?php endif; ?><?php if (!empty($uvm_upgrade['package']['driver'])): ?> · NVIDIA <code><?=uvm_h($uvm_upgrade['package']['driver'])?></code> · 构建 <code><?=uvm_h($uvm_upgrade['package']['build'] ?? '未记录')?></code><?php endif; ?></p>
+    <p id="uvm-upgrade-detail" class="uvm-muted"><?=uvm_h(uvm_redact($uvm_upgrade['message'] ?? ''))?></p>
+    <div id="uvm-upgrade-progress" role="status" aria-live="polite" hidden>
+      <p id="uvm-upgrade-progress-phase"></p>
+      <progress id="uvm-upgrade-meter" max="1" aria-label="后台驱动下载进度"></progress>
+      <p id="uvm-upgrade-stats" class="uvm-muted"></p>
+      <button type="button" id="uvm-upgrade-cancel" hidden>取消准备</button>
+    </div>
+    <form method="post" class="uvm-submit-form" id="uvm-upgrade-check-form"><?php uvm_form_hidden('upgrade-check', $uvm_csrf); ?><button id="uvm-upgrade-check-button" type="submit" <?=!$uvm_controls || empty($uvm_settings['upgrade']['enabled']) ? 'disabled' : ''?>><?=uvm_h($uvm_upgrade_button)?></button></form>
   </section>
 
 <script>
@@ -253,6 +265,21 @@
   const downloadCheck = document.getElementById('uvm-download-check');
   let downloadPending = false;
   let downloadNeedsCheck = false;
+  let manualJobId = '';
+  let settledJobId = '';
+  let observedTask = null;
+  let progressTimer = null;
+  let progressInFlight = false;
+  let upgradePending = false;
+  const downloadCancel = document.getElementById('uvm-download-cancel');
+  const downloadStats = document.getElementById('uvm-download-stats');
+  const upgradeProgress = document.getElementById('uvm-upgrade-progress');
+  const upgradePhase = document.getElementById('uvm-upgrade-progress-phase');
+  const upgradeMeter = document.getElementById('uvm-upgrade-meter');
+  const upgradeStats = document.getElementById('uvm-upgrade-stats');
+  const upgradeCancel = document.getElementById('uvm-upgrade-cancel');
+  const prefetchEnabled = <?=!empty($uvm_settings['upgrade']['enabled']) ? 'true' : 'false'?>;
+  const controlsEnabled = <?=$uvm_controls ? 'true' : 'false'?>;
   const checkUrl = new URL(window.location.href);
   checkUrl.searchParams.set('uvm_view', 'driver');
   checkUrl.searchParams.delete('csrf_token');
@@ -260,8 +287,169 @@
   checkUrl.hash = '';
   downloadCheck.href = checkUrl.toString();
   cacheCheck.href = checkUrl.toString();
+
+  async function downloadControl(action, id) {
+    const body = new URLSearchParams({uvm_action: action, uvm_tab: 'driver',
+      csrf_token: <?=uvm_json($uvm_csrf)?>, uvm_csrf_token: <?=uvm_json($uvm_csrf)?>});
+    if (id) body.set('job_id', id);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(function () { controller.abort(); }, 10000);
+    try {
+      const response = await window.fetch(window.location.href.split('#')[0], {method: 'POST', body: body,
+        credentials: 'same-origin', signal: controller.signal});
+      const text = await response.text();
+      if (!response.ok || text.length > 131072) throw new Error('progress unavailable');
+      const html = new DOMParser().parseFromString(text, 'text/html');
+      const markers = html.querySelectorAll('script#uvm-download-control-result[type="application/json"]');
+      if (markers.length !== 1) throw new Error('progress unavailable');
+      const result = JSON.parse(markers[0].textContent);
+      if (!result || result.ok !== true || !result.data || result.data.ok !== true) throw new Error('progress unavailable');
+      return result.data;
+    } finally { window.clearTimeout(timeout); }
+  }
+  function validTask(task) {
+    return task && typeof task === 'object' && (task.status === 'idle' ||
+      (/^[a-f0-9]{32}$/.test(task.id || '') && ['manual', 'upgrade'].includes(task.kind) &&
+       ['active', 'completed', 'cancelled', 'failed', 'interrupted'].includes(task.status) &&
+       ['manual', 'baseline', 'target'].includes(task.scope) &&
+       ['resolving', 'downloading', 'verifying', 'publishing'].includes(task.phase) &&
+       /^\d+\.\d+\.\d+-Unraid$/.test(task.kernel || '') &&
+       Number.isSafeInteger(task.downloaded_bytes) && task.downloaded_bytes >= 0 && task.downloaded_bytes <= 2147483648 &&
+       (task.total_bytes === null || (Number.isSafeInteger(task.total_bytes) && task.total_bytes > 0 && task.total_bytes <= 2147483648)) &&
+       Number.isSafeInteger(task.speed_bytes_per_second) && task.speed_bytes_per_second >= 0 &&
+       typeof task.cancellable === 'boolean' && typeof task.cancel_requested === 'boolean'));
+  }
+  function bytes(value) { return (value / 1048576).toFixed(1) + ' MiB'; }
+  function renderUpgrade(state) {
+    if (!state || typeof state.status !== 'string') return;
+    const labels = {idle: '尚无升级任务', current: '当前内核缓存已就绪', disabled: '升级预下载已关闭',
+      downloading: state.phase === 'baseline' ? '正在准备当前内核恢复缓存' : '正在预下载新内核驱动',
+      staging: '正在核验新内核启动安装包', ready: state.boot_ready === false ? '驱动已缓存，未准备启动安装包' : '驱动已准备好',
+      missing: '所需内核驱动尚未发布', error: '准备失败', cancelled: '准备已手动取消，不会自动重试', interrupted: '停止结果未确认，自动重试已暂停'};
+    if (!Object.hasOwn(labels, state.status)) return;
+    const line = document.getElementById('uvm-upgrade-state');
+    line.textContent = labels[state.status];
+    const kernel = state.phase === 'baseline' ? state.current_kernel : state.target_kernel;
+    if (typeof kernel === 'string' && /^\d+\.\d+\.\d+-Unraid$/.test(kernel)) { line.append(' · ', monoText(kernel)); }
+    document.getElementById('uvm-upgrade-detail').textContent = typeof state.message === 'string' ? state.message : '';
+    document.getElementById('uvm-upgrade-check-button').textContent = state.status === 'cancelled' ? '继续准备' : (state.status === 'interrupted' ? '核对后重试' : '检查升级准备');
+  }
+  function renderProgress(task) {
+    if (!validTask(task)) throw new Error('invalid progress');
+    observedTask = task;
+    document.getElementById('uvm-upgrade-check-button').disabled = !controlsEnabled || !prefetchEnabled || task.status === 'active' || upgradePending;
+    if (task.status === 'idle' || (task.kind === 'manual' && task.id === settledJobId && !downloadPending) ||
+        (task.kind === 'manual' && manualJobId && task.id !== manualJobId)) return;
+    const manual = task.kind === 'manual';
+    const active = task.status === 'active';
+    const meter = manual ? downloadMeter : upgradeMeter;
+    const stats = manual ? downloadStats : upgradeStats;
+    const cancel = manual ? downloadCancel : upgradeCancel;
+    const label = manual ? downloadMessage : upgradePhase;
+    const scope = manual ? '手动驱动下载' : (task.scope === 'baseline' ? '当前内核恢复缓存' : '新内核预下载');
+    const phases = {resolving: '查询版本与校验信息', downloading: '接收驱动包', verifying: '校验缓存，尚未完成', publishing: '提交已校验结果，此阶段不可中断'};
+    label.textContent = active ? scope + ' · ' + task.kernel + ' · ' + (task.cancel_requested ? '取消请求已发送，等待任务确认…' : phases[task.phase])
+      : ({completed: '任务已完成，请核对缓存及启动选择。', cancelled: '下载已取消，未完成文件已清理，已有缓存保留。', failed: '任务失败，请查看具体错误并核对缓存。', interrupted: '任务停止结果未确认；请先刷新核对进度和缓存。'})[task.status];
+    if (manual) { downloadFeedback.hidden = false; }
+    else { upgradeProgress.hidden = false; }
+    meter.hidden = !active;
+    if (task.phase === 'downloading' && task.total_bytes !== null && task.downloaded_bytes <= task.total_bytes) {
+      meter.value = task.downloaded_bytes / task.total_bytes;
+      stats.textContent = bytes(task.downloaded_bytes) + ' / ' + bytes(task.total_bytes) + '（' + Math.floor(100 * meter.value) + '%）';
+    } else {
+      meter.removeAttribute('value');
+      stats.textContent = task.phase === 'downloading' ? '已接收 ' + bytes(task.downloaded_bytes) + '，总大小未知' : '';
+    }
+    if (task.phase === 'downloading' && task.speed_bytes_per_second > 0) stats.textContent += ' · 平均 ' + bytes(task.speed_bytes_per_second) + '/s';
+    cancel.hidden = !active;
+    cancel.disabled = !active || !task.cancellable || task.cancel_requested;
+    cancel.dataset.jobId = task.id;
+    if (manual && !downloadPending) {
+      downloadButton.disabled = active || downloadNeedsCheck;
+      downloadPicker.disabled = active || downloadNeedsCheck;
+      if (!active) { downloadCheck.hidden = false; }
+    }
+  }
+  function scheduleProgress(delay = 1500) {
+    window.clearTimeout(progressTimer);
+    progressTimer = window.setTimeout(pollProgress, delay);
+  }
+  async function pollProgress() {
+    if (progressInFlight) return;
+    progressInFlight = true;
+    let failed = false;
+    try {
+      const result = await downloadControl('download-status');
+      renderUpgrade(result.upgrade);
+      renderProgress(result.task);
+    } catch (_) {
+      failed = true;
+      const message = '进度暂不可用，任务可能仍在进行；请刷新核对，不要重复下载。';
+      if (downloadPending) { downloadStats.textContent = message; downloadCancel.disabled = true; }
+      if (observedTask && observedTask.kind === 'upgrade' && observedTask.status === 'active') { upgradeStats.textContent = message; upgradeCancel.disabled = true; }
+    } finally {
+      progressInFlight = false;
+      if (downloadPending || upgradePending || prefetchEnabled || (observedTask && observedTask.status === 'active')) {
+        scheduleProgress(failed ? 5000 : (observedTask && observedTask.status === 'active' ? 1500 : 5000));
+      }
+    }
+  }
+  for (const button of [downloadCancel, upgradeCancel]) button.addEventListener('click', async function () {
+    if (button.disabled || !/^[a-f0-9]{32}$/.test(button.dataset.jobId || '')) return;
+    const id = button.dataset.jobId;
+    button.disabled = true;
+    try {
+      const result = await downloadControl('download-cancel', id);
+      if (!validTask(result.task) || result.task.id !== id || typeof result.accepted !== 'boolean') throw new Error('unconfirmed cancellation');
+      if (!(id === settledJobId && !downloadPending)) renderProgress(result.task);
+      scheduleProgress(100);
+    } catch (_) {
+      const text = '未能确认取消结果，任务可能仍在进行；请刷新进度后再试。';
+      (button === downloadCancel ? downloadStats : upgradeStats).textContent = text;
+      scheduleProgress(1500);
+    }
+  });
+  const initialTask = <?=uvm_json($uvm_download_task)?>;
+  if (validTask(initialTask) && initialTask.status !== 'idle') renderProgress(initialTask);
+  if (prefetchEnabled || initialTask.status === 'active') scheduleProgress(1000);
+  document.getElementById('uvm-upgrade-check-form').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = document.getElementById('uvm-upgrade-check-button');
+    if (upgradePending || ui.isBusy() || button.disabled) return;
+    const body = new URLSearchParams(new FormData(form));
+    body.set('uvm_upgrade_async', '1');
+    const controller = new AbortController();
+    const timeout = window.setTimeout(function () { controller.abort(); }, 3630000);
+    upgradePending = true;
+    ui.setBusy(true);
+    button.disabled = true;
+    scheduleProgress(1000);
+    try {
+      const response = await window.fetch(window.location.href.split('#')[0], {method: 'POST', body,
+        credentials: 'same-origin', signal: controller.signal});
+      const text = await response.text();
+      if (!response.ok || text.length > 131072) throw new Error('unconfirmed preparation');
+      const html = new DOMParser().parseFromString(text, 'text/html');
+      const markers = html.querySelectorAll('script#uvm-upgrade-result[type="application/json"]');
+      if (markers.length !== 1) throw new Error('unconfirmed preparation');
+      const result = JSON.parse(markers[0].textContent);
+      if (result && result.ok === true && result.data && ['current', 'ready', 'disabled'].includes(result.data.status)) renderUpgrade(result.data);
+      else if (result && result.ok === false && result.outcome === 'failed' && typeof result.error === 'string') {
+        document.getElementById('uvm-upgrade-detail').textContent = result.error;
+      } else throw new Error('unconfirmed preparation');
+    } catch (_) {
+      document.getElementById('uvm-upgrade-detail').textContent = '未能确认准备结果，任务可能仍在进行；请查看进度或刷新核对，不要重复提交。';
+    } finally {
+      window.clearTimeout(timeout);
+      upgradePending = false;
+      ui.setBusy(false);
+      button.disabled = false;
+      scheduleProgress(100);
+    }
+  });
   window.addEventListener('beforeunload', function (event) {
-    if (!downloadPending) return;
+    if (!downloadPending && !upgradePending) return;
     event.preventDefault();
     event.returnValue = '';
   });
@@ -291,6 +479,10 @@
     // Unraid's nginx auth_request -> PHP-FPM chain before our handler runs.
     const data = new URLSearchParams(new FormData(downloadForm));
     data.set('uvm_download_async', '1');
+    const random = new Uint8Array(16);
+    window.crypto.getRandomValues(random);
+    manualJobId = Array.from(random, value => value.toString(16).padStart(2, '0')).join('');
+    data.set('download_job_id', manualJobId);
     const requestedFilename = downloadPicker.value;
     const pickerWasDisabled = downloadPicker.disabled;
     const controller = new AbortController();
@@ -316,6 +508,9 @@
     downloadMeter.removeAttribute('value');
     downloadCheck.hidden = true;
     downloadMessage.textContent = '正在下载并校验驱动包，请稍候…';
+    downloadStats.textContent = '等待服务器进度…';
+    downloadCancel.hidden = true;
+    scheduleProgress(1000);
     elapsed();
     downloadFeedback.focus();
     try {
@@ -328,6 +523,12 @@
       const markers = html.querySelectorAll('script#uvm-download-result[type="application/json"]');
       if (markers.length !== 1) throw new Error('unconfirmed response');
       const result = JSON.parse(markers[0].textContent);
+      if (result && result.ok === true && result.outcome === 'cancelled') {
+        outcome = 'cancelled';
+        downloadMessage.textContent = '下载已取消；未完成文件已清理，已有缓存和运行中的驱动保留。';
+        downloadMeter.hidden = true;
+        return;
+      }
       if (result && result.ok === false && result.outcome === 'failed' && typeof result.error === 'string' && result.error) {
         outcome = 'failed';
         downloadMessage.textContent = '下载未完成：' + result.error;
@@ -367,6 +568,9 @@
     } finally {
       window.clearTimeout(timeout);
       window.clearInterval(ticker);
+      if (outcome !== 'unknown') settledJobId = manualJobId;
+      manualJobId = '';
+      downloadCancel.hidden = true;
       downloadPending = false;
       downloadForm.classList.remove('uvm-form-busy');
       downloadForm.setAttribute('aria-busy', 'false');

@@ -8,6 +8,7 @@ final class Upgrade
 {
     public const RETRY_SECONDS = 900;
     private $runner;
+    private ?DownloadTask $task = null;
 
     public function __construct(private Store $store, private Download $download, ?callable $runner = null)
     {
@@ -61,6 +62,8 @@ final class Upgrade
         $record = ['status' => 'error', 'last_attempt' => time(), 'notifications' => $previous['notifications'] ?? [],
             'credential_stamp' => $this->credentialStamp()];
         $token = is_string($credentials['token'] ?? null) ? $credentials['token'] : '';
+        $taskStarted = false;
+        $taskOutcome = 'completed';
         try {
             $current = self::kernel($this->read('/proc/sys/kernel/osrelease'));
             $targetError = null;
@@ -89,12 +92,23 @@ final class Upgrade
             $same = ($previous['target_kernel'] ?? '') === $target['kernel'] &&
                 ($previous['source_id'] ?? '') === $identity && ($previous['source_fingerprint'] ?? '') === $fingerprint && ($previous['driver_branch'] ?? '') === $branch &&
                 ($previous['reference_driver'] ?? '') === $reference;
+            if (!$force && $same && in_array($previous['status'] ?? '', ['cancelled', 'interrupted'], true) &&
+                ($previous['credential_stamp'] ?? '') === $record['credential_stamp']) {
+                return ['ok' => false, 'deferred' => true] + $previous;
+            }
             $candidate = $this->baselineCandidate($settings, $source, $current, $branch, $previous, $record);
             $currentReady = $targetError === null && $target['kernel'] === $current && $candidate !== null;
             if (!$force && !$currentReady && $targetKernel === null && $same && ($previous['credential_stamp'] ?? '') === $record['credential_stamp'] &&
                 in_array($previous['status'] ?? '', ['missing', 'error', 'downloading', 'staging'], true) &&
                 (int)($previous['last_attempt'] ?? 0) + self::RETRY_SECONDS > time()) {
                 return ['ok' => false, 'deferred' => true] + $previous;
+            }
+
+            if ($candidate === null || $target['kernel'] !== $current) {
+                $this->task = new DownloadTask($this->store);
+                $this->task->begin('upgrade', $current);
+                $taskStarted = true;
+                $this->download->track($this->task);
             }
 
             $baseline = $this->ensureBaseline($settings, $source, $credentials, $current, $branch, $reference, $candidate, $record);
@@ -140,6 +154,7 @@ final class Upgrade
 
             $this->requireSource($source);
             $effective = $this->targetSource($source, $target['kernel'], $reference);
+            $this->task?->stage('resolving', ['scope' => 'target', 'kernel' => $target['kernel'], 'filename' => '']);
             $record['status'] = 'downloading';
             $record['phase'] = 'target';
             $record['message'] = '正在准备 ' . $target['kernel'] . ' 的驱动包。';
@@ -150,7 +165,21 @@ final class Upgrade
             $record = $this->finishPreparation($record, $settings);
             return ['ok' => true] + $record;
         } catch (\Throwable $error) {
+            $taskOutcome = $error instanceof DownloadCancelled ? 'cancelled' : 'failed';
             $message = self::redact($error->getMessage(), $token);
+            if (!($error instanceof DownloadCancelled) && $taskStarted && $this->task->cancellationRequested()) {
+                $taskOutcome = 'interrupted';
+                $record['status'] = 'interrupted';
+                $record['message'] = '取消结果未确认，自动重试已暂停。请先核对下载进度及缓存，再决定是否重新准备。';
+                $this->store->write($this->store->paths->configDir . '/upgrade-state.json', $record);
+                return ['ok' => false] + $record;
+            }
+            if ($error instanceof DownloadCancelled) {
+                $record['status'] = 'cancelled';
+                $record['message'] = '驱动准备已手动取消，不会自动重新下载。可点击“继续准备”重新开始。';
+                $this->store->write($this->store->paths->configDir . '/upgrade-state.json', $record);
+                return ['ok' => false] + $record;
+            }
             $missing = $error->getCode() === 404 || str_contains($message, 'HTTP 404') || str_contains($message, '未找到') ||
                 str_contains($message, 'No canonical') || str_contains($message, 'No driver package matches') ||
                 str_contains($message, 'selected driver is unavailable');
@@ -159,12 +188,18 @@ final class Upgrade
             $record['message'] = $message;
             $record = $this->saveAndNotify($record, 'error', $missing ? '目标内核驱动暂未发布' : '驱动准备失败', $message);
             return ['ok' => false] + $record;
+        } finally {
+            if ($this->task !== null) {
+                try { if ($taskStarted) $this->task->finish($taskOutcome); }
+                finally { $this->download->track(null); $this->task->close(); $this->task = null; }
+            }
         }
     }
 
     /** Caller holds the transaction lock shared by hook, manual and timed checks. */
     private function finishPreparation(array &$record, array $settings): array
     {
+        $this->task?->stage('publishing', ['scope' => 'target', 'kernel' => $record['target_kernel']], false);
         $record['status'] = 'staging';
         $record['phase'] = 'boot';
         $record['boot_ready'] = false;
@@ -252,6 +287,7 @@ final class Upgrade
         }
         $this->requireSource($source);
         $effective = $this->targetSource($source, $current, $reference);
+        $this->task?->stage('resolving', ['scope' => 'baseline', 'kernel' => $current, 'filename' => '']);
         $record['status'] = 'downloading';
         $record['phase'] = 'baseline';
         $record['message'] = '正在缓存当前内核 ' . $current . ' 的驱动包。';

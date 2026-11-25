@@ -3,7 +3,7 @@
 if (!in_array($uvm_tab ?? '', ['driver', 'vgpu', 'status'], true)) return;
 require_once __DIR__ . '/ui/common.php';
 if (!isset($uvm_request_initialized)) require __DIR__ . '/ui/state.php';
-if ($uvm_upload_request || $uvm_device_create_request || $uvm_download_request || $uvm_cache_delete_request) return;
+if ($uvm_upload_request || $uvm_device_create_request || $uvm_download_request || $uvm_download_control_request || $uvm_upgrade_request || $uvm_cache_delete_request) return;
 $uvm_summary_inventory = is_array($uvm_status['device_inventory'] ?? null) ? $uvm_status['device_inventory'] : null;
 $uvm_summary_active_known = $uvm_summary_inventory !== null ? ($uvm_summary_inventory['checks']['active_known'] ?? false) === true : !empty($uvm_snapshot['checks']['mdevs_known']);
 $uvm_summary_active_count = $uvm_summary_inventory !== null

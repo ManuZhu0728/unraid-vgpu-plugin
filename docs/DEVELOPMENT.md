@@ -10,6 +10,7 @@ Python 用于开发测试和打包。插件源代码位于 `source/usr/local/emh
 | `*.page`、`include/ui-page.php`、`include/ui/` | 原生标签页、表单分发和页面状态。Unraid 在同一请求渲染三个子页，`state.php` 只处理一次提交。 |
 | `Application.php`、`Store.php`、`cli.php` | CLI 调用、事务及配置锁。网页通过 CLI 操作，守护进程不继承配置锁。 |
 | `Source.php`、`Download.php`、`Upload.php` | 下载源、包校验与分块导入。 |
+| `DownloadTask.php`、`UpgradeWatch.php` | 插件自有传输状态/取消通道、轮询退避、脱敏去重日志和旧助手协作交接；不使用配置锁处理进度或取消。 |
 | `PackageIdentity.php`、`PackageHistory.php`、`NativeBoot.php` | 解析包名和构建号，按内核保存缓存回执、选择与原生安装副本。旧回执缺失构建号时仅兼容 `-1.txz`。 |
 | `Upgrade.php`、`Installer.php`、`Runtime.php` | 准备升级缓存与启动副本、核验 Unraid 原生安装、启动 vGPU 服务与设备。 |
 | 原生 `post-hooks/unraid-vgpu-manager`、`include/upgrade-check.php` | 系统更新成功后同步复用 CLI 准备驱动；与保留的定时兜底共享事务锁。 |
@@ -28,6 +29,10 @@ bash tests/run-tests.sh
 为运行真实本地鉴权网关用例，设置 `NGINX_BIN`、`PHP_FPM_BIN`。
 可选浏览器用例需要 Playwright、本地 Chromium 和 WebGUI CSS/WOFF。
 [字体与浏览器依赖](UI-TYPOGRAPHY.md) · [验证范围](VALIDATION.md)
+
+下载进度/取消的独立浏览器矩阵用 `node tests/test_ui_download_control.cjs`；真实网关中的浏览器用例由
+`test_download_gateway.py` 在配置 Playwright 后执行。工作树不与驱动仓库相邻时，可用
+`VGPU_TEST_PKGTOOLS=/absolute/path/pkgtools-15.0-noarch-42.txz` 指定保留的原生启动测试输入。
 
 真实 TXZ 的被动导入可用 `tests/integration/verify-driver-cache.php` 检查。
 输入 TXZ 旁需要同名 MD5，另传一个独立工作目录。命令只校验归档、模块和缓存回执。
@@ -92,6 +97,8 @@ python3 scripts/build-plugin.py --version 2026.11.17.3
 - `config-save` 保存设置。驱动恢复、升级预下载和 vGPU 启动分别对应 `driver.enabled`、`upgrade.enabled`、`runtime.enabled`。
 - `source-test`、`source-versions`、`source-download`、`source-import` 和 `source-upload-*` 处理驱动获取。
   上传经 URL 编码表单分块提交，网关消耗 `csrf_token` 后页面仍校验 `uvm_csrf_token`。
+- `download-status` 只返回传输和升级摘要，不扫描 GPU、不取配置锁；`download-cancel` 仅接受精确的 `job_id`，
+  写入取消请求后由原任务确认和清理。不能取消已完成任务、其他 ID 或正在提交的 TXZ/MD5 事务。
 - `device-create` 只接受新 UUID，`device-save` 兼容旧客户端的幂等保存；其余设备操作为
   `device-start`、`device-stop`、`device-remove`。
 - `upgrade-check` 从 `changes.txt` 第一段版本说明识别目标内核，CLI 可传 `target_kernel`，`force: true`

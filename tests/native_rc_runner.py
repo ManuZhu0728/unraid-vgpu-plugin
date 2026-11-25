@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PKGTOOLS = ROOT.parent / 'unraid-vgpu/inputs/packages/pkgtools-15.0-noarch-42.txz'
+DEFAULT_PKGTOOLS = Path(os.environ.get('VGPU_TEST_PKGTOOLS', ROOT.parent / 'unraid-vgpu/inputs/packages/pkgtools-15.0-noarch-42.txz'))
 
 
 def native_install(root, kernel, pkgtools=DEFAULT_PKGTOOLS):

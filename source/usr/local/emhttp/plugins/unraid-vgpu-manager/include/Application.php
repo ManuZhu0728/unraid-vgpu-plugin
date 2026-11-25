@@ -21,6 +21,16 @@ final class Application
             if (!is_string($category)) throw new \InvalidArgumentException('Invalid log category');
             return (new Logs($this->store->paths, (string)($this->store->credentials()['token'] ?? '')))->read($category);
         }
+        if ($action === 'download-status') {
+            if ($input !== []) throw new \InvalidArgumentException('Progress requests do not accept download settings');
+            $upgrade = (new Upgrade($this->store, $this->download, $this->runner))->status();
+            $public = array_intersect_key($upgrade, array_flip(['status', 'phase', 'current_kernel', 'target_kernel', 'message', 'boot_ready']));
+            return ['ok' => true, 'task' => (new DownloadTask($this->store))->status(), 'upgrade' => $public];
+        }
+        if ($action === 'download-cancel') {
+            if (array_keys($input) !== ['job_id'] || !is_string($input['job_id'])) throw new \InvalidArgumentException('Cancellation requires one exact download task ID');
+            return ['ok' => true] + (new DownloadTask($this->store))->cancel($input['job_id']);
+        }
         if (!in_array($action, ['cache-select', 'cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-import', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove', 'ensure', 'boot', 'plan'], true)) {
             throw new \InvalidArgumentException('Unknown operation');
         }
@@ -31,7 +41,33 @@ final class Application
             $native = new NativeBoot($this->store, $this->download);
             $native->migrate();
             if ($action === 'boot') $native->sync($this->store->settings(), (new Upgrade($this->store, $this->download, $this->runner))->status());
-            $result = $this->mutate($action, $input);
+            $task = null;
+            $taskStarted = false;
+            try {
+                if ($action === 'source-download') {
+                    $id = $input['job_id'] ?? '';
+                    if (!is_string($id)) throw new \InvalidArgumentException('Invalid download task ID');
+                    unset($input['job_id']);
+                    $task = new DownloadTask($this->store);
+                    $task->begin('manual', $this->kernel() . '-Unraid', $id);
+                    $taskStarted = true;
+                    $this->download->track($task);
+                }
+                $result = $this->mutate($action, $input);
+                $task?->finish('completed');
+            } catch (DownloadCancelled $error) {
+                $task?->finish('cancelled');
+                return ['ok' => true, 'status' => 'cancelled', 'message' => $error->getMessage()];
+            } catch (\Throwable $error) {
+                if ($taskStarted) {
+                    $unconfirmedCancel = $task->cancellationRequested();
+                    $task->finish($unconfirmedCancel ? 'interrupted' : 'failed');
+                    if ($unconfirmedCancel) throw new \RuntimeException('取消结果未确认，不能宣称下载已停止；请先核对进度和缓存。');
+                }
+                throw $error;
+            } finally {
+                if ($task !== null) { $this->download->track(null); $task->close(); }
+            }
             if (in_array($action, ['config-save', 'cache-select'], true) ||
                 ($action === 'upgrade-check' && !array_key_exists('boot_ready', $result))) {
                 $native->sync($this->store->settings(), (new Upgrade($this->store, $this->download, $this->runner))->status());
@@ -57,6 +93,7 @@ final class Application
             'runtime' => $runtime,
             'device_inventory' => (new Inventory($this->store->paths))->read($devices, $runtime['runtime'] ?? []),
             'upgrade' => (new Upgrade($this->store, $this->download, $this->runner))->status(),
+            'download_task' => (new DownloadTask($this->store))->status(),
             'driver_installation' => (new Installer($this->store, $this->download, $this->runtime, $this->runner))->state(),
             'package_cache' => (new PackageCache($this->store))->listing(),
             'warning' => 'Driver caches contain privileged installation scripts. Only use repositories you trust. Flash-drive backups may contain download credentials.',

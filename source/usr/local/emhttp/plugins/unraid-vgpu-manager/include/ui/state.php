@@ -13,6 +13,8 @@ $uvm_preferred_tab = is_string($_GET['uvm_view'] ?? null) && in_array($_GET['uvm
 $uvm_upload_request = is_string($_POST['uvm_action'] ?? null) && in_array($_POST['uvm_action'], ['source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel'], true);
 $uvm_device_create_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['uvm_action'] ?? null) === 'device-create';
 $uvm_download_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['uvm_action'] ?? null) === 'source-download' && array_key_exists('uvm_download_async', $_POST);
+$uvm_download_control_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && in_array($_POST['uvm_action'] ?? null, ['download-status', 'download-cancel'], true);
+$uvm_upgrade_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['uvm_action'] ?? null) === 'upgrade-check' && array_key_exists('uvm_upgrade_async', $_POST);
 $uvm_download_unknown = false;
 $uvm_cache_delete_request = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['uvm_action'] ?? null) === 'cache-delete' && array_key_exists('uvm_cache_delete_async', $_POST);
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
@@ -24,15 +26,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $uvm_request_tab = $targetTab;
         $uvm_preferred_tab = $targetTab;
         $allowedActions = [
-            'driver' => ['cache-select', 'cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check'],
+            'driver' => ['download-status', 'download-cancel', 'cache-select', 'cache-delete', 'config-save', 'source-test', 'source-versions', 'source-download', 'source-upload-begin', 'source-upload-chunk', 'source-upload-finish', 'source-upload-cancel', 'upgrade-check'],
             'vgpu' => ['config-save', 'device-create', 'device-save', 'device-start', 'device-stop', 'device-remove'],
             'status' => [],
         ];
         if (!in_array($uvm_action, $allowedActions[$uvm_request_tab], true)) throw new InvalidArgumentException('此操作不属于当前页面。');
         if ($uvm_download_request && uvm_post('uvm_download_async') !== '1') throw new InvalidArgumentException('下载请求标识无效，请重新打开页面。');
+        if ($uvm_upgrade_request && uvm_post('uvm_upgrade_async') !== '1') throw new InvalidArgumentException('准备请求标识无效，请重新打开页面。');
         if ($uvm_cache_delete_request && uvm_post('uvm_cache_delete_async') !== '1') throw new InvalidArgumentException('删除请求标识无效，请重新打开页面。');
         $payload = [];
         switch ($uvm_action) {
+            case 'download-status':
+            case 'download-cancel':
+                $uvm_action_data = uvm_cli($uvm_action, $uvm_action === 'download-cancel' ? ['job_id' => uvm_post('job_id')] : []);
+                break;
             case 'cache-select':
                 $uvm_action_data = uvm_cli($uvm_action, ['filename' => uvm_post('cache_filename')]);
                 if (($uvm_action_data['ok'] ?? false) !== true) throw new RuntimeException((string)($uvm_action_data['message'] ?? '未能确认启动构建选择，请核对页面。'));
@@ -123,6 +130,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'source-download':
                 // Only saved source + saved credentials are used. No implicit config-save.
                 if ($uvm_action === 'source-download') {
+                    if (uvm_post('download_job_id') !== '') $payload['job_id'] = uvm_post('download_job_id');
                     if (uvm_post('download_package') !== '') $payload['filename'] = trim(uvm_post('download_package'));
                     elseif (uvm_post('download_driver') !== '') $payload['driver'] = trim(uvm_post('download_driver'));
                 }
@@ -132,6 +140,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $uvm_versions = is_array($uvm_action_data['versions'] ?? null) ? $uvm_action_data['versions'] : [];
                     $uvm_message = count($uvm_versions) ? '已找到 ' . count($uvm_versions) . ' 个匹配版本。' : '未找到匹配当前内核的驱动。';
                 } elseif ($uvm_action === 'source-download') {
+                    if (($uvm_action_data['status'] ?? '') === 'cancelled') {
+                        $uvm_message = '下载已取消；未完成文件已清理，已有缓存和运行中的驱动保留。';
+                        break;
+                    }
                     if ($uvm_download_request && !is_array($uvm_action_data['package'] ?? null)) {
                         throw new UvmUnknownResultException('未收到完整的驱动缓存结果，请重新打开页面核对缓存。');
                     }
@@ -206,6 +218,14 @@ if ($uvm_upload_request) {
     echo '<script type="application/json" id="uvm-upload-result">' . uvm_json($uvm_error === '' ? ['ok' => true, 'data' => $uvm_action_data] : ['ok' => false, 'outcome' => $uvm_download_unknown ? 'unknown' : 'failed', 'error' => $uvm_error]) . '</script>';
     return;
 }
+if ($uvm_download_control_request) {
+    echo '<script type="application/json" id="uvm-download-control-result">' . uvm_json($uvm_error === '' ? ['ok' => true, 'data' => $uvm_action_data] : ['ok' => false, 'error' => $uvm_error]) . '</script>';
+    return;
+}
+if ($uvm_upgrade_request) {
+    echo '<script type="application/json" id="uvm-upgrade-result">' . uvm_json($uvm_error === '' ? ['ok' => true, 'data' => $uvm_action_data] : ['ok' => false, 'outcome' => $uvm_download_unknown ? 'unknown' : 'failed', 'error' => $uvm_error]) . '</script>';
+    return;
+}
 if ($uvm_device_create_request) {
     // Mode-specific AJAX response: no POST navigation, UUID regeneration or
     // repeated dispatch when native Unraid renders the remaining child tabs.
@@ -218,9 +238,11 @@ if ($uvm_device_create_request) {
 if ($uvm_download_request) {
     // One native-wrapped response, without re-rendering the page or reading GPU
     // status. Never return source credentials or execute fetched response HTML.
-    $result = $uvm_error === ''
+    $result = $uvm_error === '' && ($uvm_action_data['status'] ?? '') === 'cancelled'
+        ? ['ok' => true, 'outcome' => 'cancelled', 'message' => $uvm_message]
+        : ($uvm_error === ''
         ? ['ok' => true, 'outcome' => 'cached', 'data' => ['package' => uvm_redact($uvm_action_data['package']), 'package_cache' => $uvm_action_data['package_cache'] ?? null], 'message' => $uvm_message]
-        : ['ok' => false, 'outcome' => $uvm_download_unknown ? 'unknown' : 'failed', 'error' => $uvm_error];
+        : ['ok' => false, 'outcome' => $uvm_download_unknown ? 'unknown' : 'failed', 'error' => $uvm_error]);
     echo '<script type="application/json" id="uvm-download-result">' . uvm_json($result) . '</script>';
     return;
 }
@@ -250,6 +272,7 @@ $uvm_settings = array_replace_recursive($uvm_defaults, is_array($uvm_status['set
 $uvm_source = $uvm_settings['source'];
 $uvm_runtime_settings = $uvm_settings['runtime'];
 $uvm_upgrade = is_array($uvm_status['upgrade'] ?? null) ? $uvm_status['upgrade'] : [];
+$uvm_download_task = is_array($uvm_status['download_task'] ?? null) ? $uvm_status['download_task'] : ['status' => 'idle'];
 $uvm_installation = is_array($uvm_status['driver_installation'] ?? null) ? $uvm_status['driver_installation'] : [];
 $uvm_devices = is_array($uvm_status['devices'] ?? null) ? $uvm_status['devices'] : [];
 $uvm_runtime = is_array($uvm_status['runtime'] ?? null) ? $uvm_status['runtime'] : [];

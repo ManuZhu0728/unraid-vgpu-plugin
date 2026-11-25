@@ -6,7 +6,7 @@ namespace Vgpu;
 /** Bounded argv execution. Never interpolate a command into a shell. */
 final class Process
 {
-    public function __invoke(array $argv, int $timeout = 15, ?string $stdin = null): array
+    public function __invoke(array $argv, int $timeout = 15, ?string $stdin = null, ?callable $monitor = null): array
     {
         if (!$argv || $timeout < 1 || $timeout > 3600) {
             throw new \InvalidArgumentException('Invalid command or timeout');
@@ -29,6 +29,8 @@ final class Process
         $output = ['', ''];
         $deadline = microtime(true) + $timeout;
         $expired = false;
+        $cancelled = false;
+        $monitorError = null;
         $status = ['running' => true, 'exitcode' => -1];
         while (true) {
             if (is_resource($pipes[0])) {
@@ -52,6 +54,21 @@ final class Process
             if (!$status['running']) {
                 break;
             }
+            if ($monitor !== null) {
+                try { $cancelled = $monitor() === false; }
+                catch (\Throwable $error) { $monitorError = $error; $cancelled = true; }
+                if ($cancelled) {
+                    // Only the subprocess represented by this proc_open handle;
+                    // never signal a PID obtained from a file or process scan.
+                    proc_terminate($process, 15);
+                    for ($attempt = 0; $attempt < 25; ++$attempt) {
+                        usleep(20000);
+                        $status = proc_get_status($process);
+                        if (!$status['running']) break;
+                    }
+                    break;
+                }
+            }
             if (microtime(true) >= $deadline) {
                 $expired = true;
                 // Never escalate to SIGKILL: GPU requests may be in an unkillable state.
@@ -70,12 +87,14 @@ final class Process
         if (is_resource($pipes[0])) {
             fclose($pipes[0]);
         }
-        if ($expired) {
+        if ($expired || ($cancelled && $status['running'])) {
             // proc_close can block on a kernel-stuck child. Do not call it here.
             // Callers treat a timeout as failure and must not continue a transaction.
-            return ['code' => 124, 'stdout' => $output[0], 'stderr' => 'Command timed out; completion is unknown'];
+            return ['code' => 124, 'stdout' => $output[0], 'stderr' => 'Command did not finish; completion is unknown'];
         }
         $closed = proc_close($process);
+        if ($monitorError !== null) throw $monitorError;
+        if ($cancelled) return ['code' => 125, 'stdout' => $output[0], 'stderr' => 'Owned download command cancelled'];
         $code = $status['exitcode'] >= 0 ? $status['exitcode'] : $closed;
         return ['code' => $code, 'stdout' => $output[0], 'stderr' => $output[1]];
     }

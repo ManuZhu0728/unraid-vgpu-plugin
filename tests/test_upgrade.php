@@ -615,6 +615,48 @@ try {
     upgrade_check(file_get_contents($sentinel . '/keep') === 'never change' && is_file($result['package']['path']), 'A publication failure must not alter unrelated files or discard its cache');
     upgrade_check($f->count('upgradepkg') === 0 && $f->count('modprobe') === 0, 'Upgrade preparation must never install packages or touch GPU runtime');
 
+    foreach (['baseline', 'target'] as $cancelPhase) {
+        $f = $fixture();
+        if ($cancelPhase === 'baseline') {
+            file_put_contents($f->paths->path('/boot/changes.txt'), "# Version 7.3.4\n## Linux kernel\n* version 6.18.58\n");
+            $f->settings['selected_package'] = null;
+            $f->store->saveSettings($f->settings);
+        }
+        $selectedBefore = $f->store->settings()['selected_package'];
+        $f->observer = function (array $argv) use ($f, $cancelPhase): void {
+            if ($argv[0] !== 'curl') return;
+            $control = new \Vgpu\DownloadTask($f->store);
+            $task = $control->status();
+            upgrade_check($task['scope'] === $cancelPhase && $task['status'] === 'active', 'The task must identify the actual baseline/target download');
+            $control->cancel($task['id']);
+            $f->observer = null;
+        };
+        $result = $f->check();
+        upgrade_check(!$result['ok'] && $result['status'] === 'cancelled' && $result['phase'] === $cancelPhase, 'Cancellation must be a separate state, not a download error');
+        $afterCancel = $f->store->settings()['selected_package'];
+        upgrade_check($selectedBefore === null ? $afterCancel === null :
+            array_intersect_key($afterCancel, array_flip(['filename', 'md5', 'kernel', 'path'])) === array_intersect_key($selectedBefore, array_flip(['filename', 'md5', 'kernel', 'path'])), 'Cancel before a commit preserves the existing selected package identity');
+        upgrade_check((new \Vgpu\DownloadTask($f->store))->status()['status'] === 'cancelled', 'Worker must acknowledge cancellation and release its task lease');
+        $requests = $f->count('curl');
+        $result = $f->check();
+        upgrade_check($result['status'] === 'cancelled' && $f->count('curl') === $requests, 'Automatic checks must not restart a manually cancelled preparation');
+        $result = $f->check(null, true);
+        upgrade_check($result['ok'] && $f->count('curl') > $requests, 'An explicit manual force/resume may restart preparation');
+    }
+    $f = $fixture();
+    $f->observer = function (array $argv) use ($f): void {
+        if ($argv[0] !== 'curl') return;
+        $control = new \Vgpu\DownloadTask($f->store);
+        $control->cancel($control->status()['id']);
+        $f->throwMessage = 'Owned transfer exit could not be confirmed';
+        $f->observer = null;
+    };
+    $result = $f->check();
+    upgrade_check(!$result['ok'] && $result['status'] === 'interrupted' && str_contains($result['message'], '未确认'), 'An unconfirmed exit must not be announced as a completed cancellation');
+    upgrade_check((new \Vgpu\DownloadTask($f->store))->status()['status'] === 'interrupted', 'Unknown cancellation is explicit in progress');
+    $requests = $f->count('curl');
+    $f->check();
+    upgrade_check($f->count('curl') === $requests, 'An unconfirmed cancellation must also pause automatic retries');
     $watch = file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/include/upgrade-watch.php');
     $shell = file_get_contents(__DIR__ . '/../source/usr/local/emhttp/plugins/unraid-vgpu-manager/scripts/upgrade-helper');
     upgrade_check(str_contains($watch, 'LOCK_EX | LOCK_NB') && str_contains($watch, 'upgrade-check'), 'Monitor must be single-instance and use the current CLI');
@@ -624,7 +666,7 @@ try {
     upgrade_check(!preg_match('/\bkill(?:all)?\b/', $watch . $shell), 'Helper lifecycle must not kill other processes');
     upgrade_check(str_contains($watch, '$settingsHash') && str_contains($watch, '$credentialStamp') && str_contains($watch, 'clearstatcache()'), 'Monitor must observe configuration and credential changes without cached filesystem state');
     upgrade_check(!str_contains($watch, '$changesHash !=='), 'Initial baseline checks must also run without upgrade release notes');
-    upgrade_check(str_contains($watch, "is_array(\$response) && array_key_exists('ok', \$response)"), 'Invalid CLI JSON must remain retryable');
+    upgrade_check(str_contains($watch, '$poll->due(') && str_contains($watch, '$poll->observe('), 'Watcher must use the tested CLI classification, backoff and log transition policy');
     upgrade_check(preg_match("~ -r '([^']+)'~", $shell, $snippet) === 1, 'Helper must contain a bounded PHP enablement check');
     $lint = (new \Vgpu\Process())([PHP_BINARY, '-n', '-l'], 5, "<?php\n" . $snippet[1]);
     upgrade_check($lint['code'] === 0, 'Embedded PHP enablement snippet must be valid PHP: ' . $lint['stderr']);

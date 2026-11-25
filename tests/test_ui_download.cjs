@@ -76,6 +76,10 @@ async function assertContained(page, label) {
         page.on('dialog', dialog => dialog.accept());
         await page.route('**/*', async route => {
             const request = route.request();
+            if (request.method() === 'POST' && new URLSearchParams(request.postData() || '').get('uvm_action') === 'download-status') {
+                return route.fulfill({ contentType: 'text/html', body: wrap('<script type="application/json" id="uvm-download-control-result">' +
+                    JSON.stringify({ok: true, data: {ok: true, task: {status: 'idle'}}}) + '</script>') });
+            }
             requests.push({ method: request.method(), url: request.url(), body: request.postData() || '', type: request.resourceType(), contentType: request.headers()['content-type'] || '' });
             assert.equal(new URL(request.url()).origin, new URL(baseUrl).origin, 'Never contact a NAS or other origin');
             if (request.method() === 'GET') return route.fulfill({ contentType: 'text/html', body: render(theme, fontSize, disabled) });

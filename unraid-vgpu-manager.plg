@@ -1,13 +1,11 @@
 <?xml version="1.0" standalone="yes"?>
-<PLUGIN name="unraid-vgpu-manager" author="lbcz" version="2026.11.17.3" launch="Settings/unraid-vgpu-manager" icon="nvidia-driver.png" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
+<PLUGIN name="unraid-vgpu-manager" author="lbcz" version="2026.11.26.1" launch="Settings/unraid-vgpu-manager" icon="nvidia-driver.png" min="7.0.0" pluginURL="https://raw.githubusercontent.com/ManuZhu0728/unraid-vgpu-plugin/main/unraid-vgpu-manager.plg">
 <CHANGES>
-Add a concise Chinese plugin description and reuse the Settings NVIDIA icon.
-Set the plugin author to lbcz.
-Publish as a stable release; driver and vGPU startup behavior is unchanged.
+修复升级助手日志误报与刷屏，区分当前缓存和新内核准备，并为驱动下载增加实时进度与手动取消。
 </CHANGES>
-<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.17.3-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
-<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.17.3/unraid-vgpu-manager-2026.11.17.3-noarch-1.txz</URL>
-<MD5>5f99b3d067c1295087e43c223ba44ab9</MD5>
+<FILE Name="/boot/config/plugins/unraid-vgpu-manager/unraid-vgpu-manager-2026.11.26.1-noarch-1.txz" Run="upgradepkg --install-new --reinstall">
+<URL>https://github.com/ManuZhu0728/unraid-vgpu-plugin/releases/download/v2026.11.26.1/unraid-vgpu-manager-2026.11.26.1-noarch-1.txz</URL>
+<MD5>5bbff1878ef862306f55d8bbe9fcd2a3</MD5>
 </FILE>
 <FILE Run="/bin/bash"><INLINE><![CDATA[
 # Installation must succeed without a repository, token or NVIDIA package.

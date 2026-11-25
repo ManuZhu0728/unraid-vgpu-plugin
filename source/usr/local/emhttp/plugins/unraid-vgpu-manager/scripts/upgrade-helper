@@ -13,8 +13,8 @@ case "${1:-start}" in
     [ ! -L "$RUNTIME" ] && [ ! -L "$LOG" ] || exit 1
     mkdir -p "$RUNTIME"
     chmod 700 "$RUNTIME"
-    "$PHP" "$WATCH" --reset-stop
-    nohup "$PHP" "$WATCH" </dev/null >>"$LOG" 2>&1 &
+    generation="$("$PHP" "$WATCH" --request-start)"
+    nohup "$PHP" "$WATCH" --generation "$generation" </dev/null >>"$LOG" 2>&1 &
     ;;
   stop)
     "$PHP" "$WATCH" --stop

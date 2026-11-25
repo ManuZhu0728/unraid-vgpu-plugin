@@ -89,6 +89,8 @@ class PublishTests(unittest.TestCase):
         (source / "include/PackageCache.php").write_text("passive packaging fixture\n")
         (source / "include/NativeBoot.php").write_text("passive native boot fixture\n")
         (source / "include/upgrade-check.php").write_text("passive native update fixture\n")
+        (source / "include/DownloadTask.php").write_text("passive download control fixture\n")
+        (source / "include/UpgradeWatch.php").write_text("passive watcher policy fixture\n")
         hook = self.root / "source" / builder.POST_HOOK
         hook.parent.mkdir(parents=True)
         hook.write_text("#!/bin/bash\nexit 0\n")
