@@ -96,6 +96,7 @@ final class RuntimeFixture
             elseif ($argv[3] === 'dumpxml') $output = $this->domains[$argv[4]] ?? '';
             else throw new RuntimeException('Unexpected fake virsh command');
         } elseif ($argv[0] === 'mdevctl') {
+            if ($argv[1] === 'stop') runtime_check(count($argv) === 4 && $argv[2] === '-u' && preg_match('/^[a-f0-9-]{36}$/D', $argv[3]) === 1, 'Real mdevctl stop accepts UUID only, never a parent argument');
             $uuid = $argv[array_search('-u', $argv, true) + 1];
             if ($argv[1] === 'list') {
                 if (isset($this->definitions[$uuid])) {
@@ -455,6 +456,19 @@ $tests['stop timeout retains definition and PID files'] = function (RuntimeFixtu
     runtime_check(!$r['ok'] && $r['code'] === 'stop_failed' && isset($f->definitions[$f->device['uuid']]), 'Stop timeout must retain definition');
     runtime_check(is_file($f->paths->path('/var/run/nvidia-vgpu-mgr/manager.pid')), 'Timeout must not remove live PID file');
     runtime_check(!(bool)array_filter($f->commands, fn($a) => $a[0] === 'mdevctl' && $a[1] === 'undefine'), 'No undefine after failed stop');
+};
+$tests['ordinary stop failures are not reported as timeouts'] = function (RuntimeFixture $f): void {
+    runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');
+    foreach ([1, 2, 124, 127] as $code) {
+        $f->failures['mdevctl stop'] = $code;
+        $f->commands = [];
+        $r = $f->runtime->removeDevice($f->device);
+        runtime_check($r['code'] === 'stop_failed' && $r['exit_code'] === $code && $r['completion_unknown'] === ($code === 124), 'Only exit 124 represents timeout/unknown completion');
+        runtime_check($code === 124 ? str_contains($r['message'], 'timed out') : str_contains($r['message'], 'exit code ' . $code) && !str_contains($r['message'], 'timed out'), 'UI must distinguish command failure from timeout without exposing arbitrary callout stderr');
+        runtime_check(isset($f->definitions[$f->device['uuid']]) && !array_filter($f->commands, fn($a) => $a[0] === 'mdevctl' && $a[1] === 'undefine'), 'Every failed stop retains the target definition');
+        $stop = array_values(array_filter($f->commands, fn($a) => $a[0] === 'mdevctl' && $a[1] === 'stop'));
+        runtime_check($stop === [['mdevctl', 'stop', '-u', $f->device['uuid']]], 'The production argv must match the real UUID-only CLI contract');
+    }
 };
 $tests['unused active mdev may be stopped and removed'] = function (RuntimeFixture $f): void {
     runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');

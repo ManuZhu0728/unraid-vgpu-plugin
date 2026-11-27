@@ -22,6 +22,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Prepare real mdevctl CLI contract tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          task_cli_tools=$(mktemp -d "$RUNNER_TEMP/vgpu-mdevctl.XXXXXXXX")
+          (cd "$task_cli_tools" && apt-get download mdevctl)
+          shopt -s nullglob
+          task_cli_packages=("$task_cli_tools"/mdevctl_*_amd64.deb)
+          test "${#task_cli_packages[@]}" -eq 1
+          dpkg-deb --extract "${task_cli_packages[0]}" "$task_cli_tools/root"
+          test -x "$task_cli_tools/root/usr/bin/mdevctl"
+          printf 'MDEVCTL_BIN=%s\nVGPU_TEST_BWRAP_SUDO=1\n' "$task_cli_tools/root/usr/bin/mdevctl" >> "$GITHUB_ENV"
       - name: Hardware-free tests
         run: bash tests/run-tests.sh
 

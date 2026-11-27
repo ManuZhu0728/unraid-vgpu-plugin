@@ -1,5 +1,22 @@
 # 本地验证记录
 
+## 正式版 2026.11.28.2：真实 mdevctl CLI 合同
+
+- 在本机保留的真实 mdevctl 1.3.0 中复现旧 `stop -u UUID -p PCI` 参数错误：退出码 2，
+  尚未写入模拟 remove 文件。此前的模拟 runner 没有校验这项命令合同，遗漏了这一错误。
+- 新增 4 项真实二进制测试，使用隔离命名空间中的私有 `/etc`、普通文件模拟的 sysfs 与无 GPU 的 `/dev`：
+  核对 stop/undefine 的实际帮助、旧参数失败、新 UUID-only stop 写入 remove、
+  带父设备限制的 undefine 仅删除目标定义，同 UUID 的其他父设备定义保留。
+- 发布 CI 必须准备真实 mdevctl 并运行这组合同测试；不安装 mdevctl 服务、不使用真实 GPU。
+- 模拟 runner 也严格限制 stop 的 UUID-only 参数；运行时 46 项场景和应用层 354 项检查通过，
+  覆盖普通退出码、超时、失败后保留定义/配置，且不向页面泄漏任意 callout stderr。
+- 完整 PHP 套件及 87 项 Python 测试通过，无 skip；包括真实本机鉴权网关、浏览器用例与隔离原生 pkgtools。
+  正式版打包预检通过，根 PLG 与确定性 TXZ 一致。
+
+本地日志：`/tmp/vgpu-plugin-stop-cli.ySg6UVHs-all-tests.log` 和 `...-release-dry-run.log`。
+本轮未连接或操作 Unraid，没有停止真实 vGPU、容器或服务；真实 mdevctl 测试不等于驱动并发验收，
+现有设备的停止及 2Q 切换仍由用户更新插件后验收。
+
 ## 正式版 2026.11.28.1：单设备停止与整卡占用分离
 
 - 完整 PHP 套件及 83 项 Python 测试通过，无 skip；启用 localhost nginx/PHP-FPM、浏览器网关和隔离原生 pkgtools 测试。

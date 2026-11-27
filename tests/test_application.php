@@ -145,6 +145,7 @@ final class ApplicationFixture
         }
         if ($argv[0] !== 'mdevctl') throw new RuntimeException('Unexpected runtime command: ' . $argv[0]);
         $operation = $argv[1];
+        if ($operation === 'stop' && $argv !== ['mdevctl', 'stop', '-u', self::UUID]) throw new RuntimeException('Invalid mdevctl stop arguments: parent/force are not allowed');
         if ($operation === 'list') {
             $result['stdout'] = $this->defined ? self::UUID . ' ' . self::PCI . ' ' . self::TYPE . " manual\n" : '';
             return $result;

@@ -43,7 +43,7 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-修复停止或移除单个 vGPU 时被宿主机 GPU 进程误拦截的问题，保留整卡操作的占用保护。
+修复 vGPU 停止命令的参数兼容问题，并明确区分命令失败与超时。
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -146,7 +146,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.28.1")
+    parser.add_argument("--version", default="2026.11.28.2")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

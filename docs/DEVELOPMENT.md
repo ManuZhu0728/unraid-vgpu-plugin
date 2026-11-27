@@ -31,6 +31,11 @@ bash tests/run-tests.sh
 可选浏览器用例需要 Playwright、本地 Chromium 和 WebGUI CSS/WOFF。
 [字体与浏览器依赖](UI-TYPOGRAPHY.md) · [验证范围](VALIDATION.md)
 
+`MDEVCTL_BIN=/absolute/path/to/mdevctl` 启用真实 CLI 合同测试，另需 bubblewrap。
+二进制只在私有 `/etc`、模拟 sysfs 与不含 GPU 的 `/dev` 内运行；停止只写普通夹具文件，
+不调用真实驱动。发布 CI 必须下载并解包发行版 mdevctl（不安装服务）运行这组测试，
+使用 runner 的 sudo 启动隔离命名空间，不放开宿主机系统目录的写权限。
+
 下载进度/取消的独立浏览器矩阵用 `node tests/test_ui_download_control.cjs`；真实网关中的浏览器用例由
 `test_download_gateway.py` 在配置 Playwright 后执行。工作树不与驱动仓库相邻时，可用
 `VGPU_TEST_PKGTOOLS=/absolute/path/pkgtools-15.0-noarch-42.txz` 指定保留的原生启动测试输入。
@@ -118,6 +123,12 @@ python3 scripts/build-plugin.py --version 2026.11.17.3
 只对指定 UUID 执行 `mdevctl stop`/`undefine`；停止失败、超时或设备仍存在时保留定义和插件配置，
 解除定义前再次核对 VM 引用。不会重启 manager、卸载模块、重置 GPU 或停止容器。
 冷初始化、安装前的整卡占用检查保持不变，仍会阻止宿主 GPU 客户端活跃时的整卡操作。
+
+注意真实命令合同：`stop -u UUID` 不接受 `-p`，父 GPU/profile 在调用前核验；
+`undefine -u UUID -p PCI` 必须保留父设备限定，避免删除同 UUID 的其他父设备定义。
+错误提示区分普通非零退出码与 `124` 超时/完成未知，不把参数错误混报为超时，
+也不向页面直接返回可能包含敏感信息的任意 callout stderr。
+[mdevctl 命令说明](https://github.com/mdevctl/mdevctl/blob/master/mdevctl.rst)
 
 依据：[NVIDIA 单设备删除流程](https://docs.nvidia.com/vgpu/19.0/grid-vgpu-user-guide/installing-configuring-grid-vgpu.html#deleting-a-vgpu-on-a-linux-with-kvm-hypervisor-that-uses-the-mdev-vfio-framework)、
 [Linux VFIO cdev](https://docs.kernel.org/driver-api/vfio.html#vfio-device-cdev)、

@@ -275,8 +275,16 @@ final class Runtime
 
     private function stopOne(array $device): array
     {
-        $response = $this->command(['mdevctl', 'stop', '-u', $device['uuid'], '-p', $device['pci']]);
-        if ($response['code'] !== 0) return $this->result(false, 'stop_failed', 'Target stop failed or timed out; no undefine, PID cleanup or forced kill was attempted', ['exit_code' => $response['code']]);
+        // stop accepts UUID only; unlike start/undefine it has no --parent.
+        // The target PCI/profile identity was verified immediately beforehand.
+        $response = $this->command(['mdevctl', 'stop', '-u', $device['uuid']]);
+        if ($response['code'] !== 0) {
+            $unknown = $response['code'] === 124;
+            $message = $unknown
+                ? 'Target stop timed out; completion is unknown. Definition retained; check state before retrying or removing'
+                : 'mdevctl stop failed (exit code ' . $response['code'] . '); definition retained. No undefine or forced cleanup was attempted';
+            return $this->result(false, 'stop_failed', $message, ['exit_code' => $response['code'], 'completion_unknown' => $unknown]);
+        }
         $active = $this->activeDevices();
         if ($active === null || isset($active[$device['uuid']])) return $this->result(false, 'stop_unverified', 'Target stop could not be verified; its persistent definition must be retained');
         return $this->result(true, 'stopped', 'The unused target mdev stopped', [], true);
