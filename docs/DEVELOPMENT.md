@@ -13,6 +13,7 @@ Python 用于开发测试和打包。插件源代码位于 `source/usr/local/emh
 | `DownloadTask.php`、`UpgradeWatch.php` | 插件自有传输状态/取消通道、轮询退避、脱敏去重日志和旧助手协作交接；不使用配置锁处理进度或取消。 |
 | `PackageIdentity.php`、`PackageHistory.php`、`NativeBoot.php` | 解析包名和构建号，按内核保存缓存回执、选择与原生安装副本。旧回执缺失构建号时仅兼容 `-1.txz`。 |
 | `Upgrade.php`、`Installer.php`、`Runtime.php` | 准备升级缓存与启动副本、核验 Unraid 原生安装、启动 vGPU 服务与设备。 |
+| `TargetUsage.php` | 单个 mdev 的 VFIO 占用核对；不把宿主 CUDA、NVML 或 DRM 句柄当作目标 vGPU 占用。 |
 | 原生 `post-hooks/unraid-vgpu-manager`、`include/upgrade-check.php` | 系统更新成功后同步复用 CLI 准备驱动；与保留的定时兜底共享事务锁。 |
 | `Inventory.php`、`StartupInventory.php`、`Logs.php` | 汇总设备、识别已知启动入口、读取分类日志并过滤凭据。 |
 
@@ -104,6 +105,24 @@ python3 scripts/build-plugin.py --version 2026.11.17.3
 - `upgrade-check` 从 `changes.txt` 第一段版本说明识别目标内核，CLI 可传 `target_kernel`，`force: true`
   可跳过重试等待。通知就绪前必须完成启动包核验；`boot_ready=false` 明确表示仅缓存或准备失败。
 - `boot` 核验原生安装后按设置初始化 vGPU。`ensure` 只处理 vGPU 运行时。
+
+### 单设备与整卡占用边界
+
+停止/移除一个 vGPU 时，保留 UUID、父 GPU、profile、运行时归属与活动 libvirt 引用核对，
+再检查目标 IOMMU 组，以及通过内核 `vfio-device-syspath` 或 sysfs cdev 父设备明确映射的 VFIO FD。
+这也涵盖关闭组 FD 后仍持有的 `anon_inode:[vfio-device]`，组节点别名按字符设备号核验，
+不把 cdev 编号当作 IOMMU 组号。
+已映射到其他设备的 FD 不阻断目标；无法映射的 VFIO FD、无法检查的进程或变化中的目标身份明确拒绝操作。
+没有活动 mdev 时，解除持久定义仍核对活动 VM 引用，但不会把别的 GPU/VFIO 用户误判为该定义的用户。
+
+只对指定 UUID 执行 `mdevctl stop`/`undefine`；停止失败、超时或设备仍存在时保留定义和插件配置，
+解除定义前再次核对 VM 引用。不会重启 manager、卸载模块、重置 GPU 或停止容器。
+冷初始化、安装前的整卡占用检查保持不变，仍会阻止宿主 GPU 客户端活跃时的整卡操作。
+
+依据：[NVIDIA 单设备删除流程](https://docs.nvidia.com/vgpu/19.0/grid-vgpu-user-guide/installing-configuring-grid-vgpu.html#deleting-a-vgpu-on-a-linux-with-kvm-hypervisor-that-uses-the-mdev-vfio-framework)、
+[Linux VFIO cdev](https://docs.kernel.org/driver-api/vfio.html#vfio-device-cdev)、
+[Linux 6.18 VFIO fdinfo 实现](https://github.com/torvalds/linux/blob/v6.18/drivers/vfio/vfio_main.c)。
+这些接口语义不等于解锁/host-CUDA 驱动的并发实机保证；用户验收应覆盖 CUDA 活跃时停止、移除及重建最后一个 vGPU。
 
 发布前后的开发记录见 [各版本说明](releases/) 和
 [整理前的开发记录](https://github.com/ManuZhu0728/unraid-vgpu-plugin/blob/60d0d445a40e39d1dd2122d9f47c9fda083eeab9/docs/DEVELOPMENT.md)。

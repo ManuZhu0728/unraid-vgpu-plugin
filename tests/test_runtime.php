@@ -22,6 +22,8 @@ final class RuntimeFixture
     public array $definitions = [];
     public array $failures = [];
     public array $domains = [];
+    public bool $stopLeavesActive = false;
+    public $afterStop = null;
     public array $settings;
     public array $device = ['uuid' => 'ae9572f6-1259-4136-9aa4-497dda98d2db', 'pci' => '0000:01:00.0', 'profile' => 'NVIDIA RTXA5500-1Q', 'type' => 'nvidia-762'];
 
@@ -64,7 +66,7 @@ final class RuntimeFixture
     public function active(array $device): void
     {
         $actual = '/sys/devices/pci0000:00/' . $device['pci'] . '/' . $device['uuid'];
-        mkdir($this->paths->path($actual), 0700, true);
+        if (!is_dir($this->paths->path($actual))) mkdir($this->paths->path($actual), 0700, true);
         symlink($this->paths->path('/sys/bus/pci/devices/' . $device['pci'] . '/mdev_supported_types/' . $device['type']), $this->paths->path($actual . '/mdev_type'));
         symlink('/sys/kernel/iommu_groups/27', $this->paths->path($actual . '/iommu_group'));
         symlink($this->paths->path($actual), $this->paths->path('/sys/bus/mdev/devices/' . $device['uuid']));
@@ -103,7 +105,15 @@ final class RuntimeFixture
             } elseif ($argv[1] === 'define') {
                 $this->definitions[$uuid] = ['uuid' => $uuid, 'pci' => $argv[array_search('-p', $argv, true) + 1], 'type' => $argv[array_search('--type', $argv, true) + 1]];
             } elseif ($argv[1] === 'start') $this->active($this->definitions[$uuid]);
-            elseif ($argv[1] === 'stop') unlink($this->paths->path('/sys/bus/mdev/devices/' . $uuid));
+            elseif ($argv[1] === 'stop') {
+                if (!$this->stopLeavesActive) {
+                    $entry = $this->paths->path('/sys/bus/mdev/devices/' . $uuid);
+                    unlink($entry . '/mdev_type');
+                    unlink($entry . '/iommu_group');
+                    unlink($entry);
+                }
+                if ($this->afterStop !== null) ($this->afterStop)($this);
+            }
             elseif ($argv[1] === 'undefine') unset($this->definitions[$uuid]);
             else throw new RuntimeException('Unexpected fake mdevctl command');
         } else throw new RuntimeException('Real or unexpected command refused: ' . $argv[0]);
@@ -309,22 +319,132 @@ $tests['unknown file descriptors block stop'] = function (RuntimeFixture $f): vo
     rmdir($f->paths->path('/proc/700/fd'));
     runtime_check($f->runtime->stopDevice($f->device)['code'] === 'usage_unknown', 'A process with uninspectable handles cannot be treated as idle');
 };
-$tests['Docker host GPU handle blocks stop'] = function (RuntimeFixture $f): void {
+$tests['Immich CUDA and Beszel NVML handles do not block target stop or removal'] = function (RuntimeFixture $f): void {
     runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');
-    $f->process(700, 'python3');
-    $f->write('/proc/700/cgroup', '0::/docker/0123456789abcdef0123456789abcdef');
-    symlink('/dev/nvidia-uvm', $f->paths->path('/proc/700/fd/4'));
-    $r = $f->runtime->stopDevice($f->device);
-    runtime_check(!$r['ok'] && $r['code'] === 'gpu_busy' && $r['holders'][0]['container'] === '0123456789ab', 'Container GPU handles must block stop');
+    foreach ([26316 => 'python', 30853 => 'agent', 700 => 'nvidia-smi'] as $pid => $name) {
+        $f->process($pid, $name);
+        $f->write('/proc/' . $pid . '/cgroup', '0::/docker/0123456789abcdef0123456789abcdef');
+        foreach (['/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/nvidia-modeset', '/dev/dri/renderD128'] as $index => $path) {
+            symlink($path, $f->paths->path('/proc/' . $pid . '/fd/' . ($index + 4)));
+        }
+    }
+    $f->write('/var/run/nvidia-vgpu-mgr/manager.pid', '600');
+    $before = file_get_contents($f->paths->path('/etc/vgpu_unlock/config.toml'));
+    $f->commands = [];
+    runtime_check($f->runtime->stopDevice($f->device)['ok'], 'Host CUDA/NVML/DRM users do not own the target mdev');
+    runtime_check(isset($f->definitions[$f->device['uuid']]), 'Stop retains the persistent definition');
+    runtime_check($f->runtime->startDevice($f->device, $f->settings)['ok'], 'The last mdev can be recreated in the fixture without restarting the GPU stack');
+    runtime_check($f->runtime->removeDevice($f->device)['ok'] && !$f->definitions, 'Removal must undefine only the now-unused target');
+    runtime_check(!$f->hasCommand('env') && !$f->hasCommand('modprobe') && !$f->hasCommand('nvidia-modprobe'), 'Per-device lifecycle must not reinitialize the physical GPU');
+    runtime_check(file_get_contents($f->paths->path('/etc/vgpu_unlock/config.toml')) === $before && is_file($f->paths->path('/var/run/nvidia-vgpu-mgr/manager.pid')), 'Active configuration and manager PID file remain untouched');
+    foreach ([26316, 30853, 700] as $pid) runtime_check(is_link($f->paths->path('/proc/' . $pid . '/fd/4')), 'Host GPU clients remain untouched');
 };
-$tests['VFIO group and cdev holders block stop'] = function (RuntimeFixture $f): void {
+$tests['target VFIO group and mapped cdev holders block stop and removal'] = function (RuntimeFixture $f): void {
     runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');
     $f->process(700, 'unmanaged-qemu');
-    symlink('/dev/vfio/devices/vfio42', $f->paths->path('/proc/700/fd/4'));
-    runtime_check($f->runtime->stopDevice($f->device)['code'] === 'gpu_busy', 'VFIO cdev is not numbered by IOMMU group');
-    unlink($f->paths->path('/proc/700/fd/4'));
-    symlink('/dev/vfio/27', $f->paths->path('/proc/700/fd/4'));
-    runtime_check($f->runtime->stopDevice($f->device)['code'] === 'gpu_busy', 'VFIO group holder detected');
+    $f->write('/proc/700/cgroup', '0::/docker/0123456789abcdef0123456789abcdef');
+    $target = '/sys/devices/pci0000:00/' . $f->device['pci'] . '/' . $f->device['uuid'];
+    foreach (['/dev/vfio/27', '/dev/vfio/devices/vfio42', 'anon_inode:[vfio-device]'] as $path) {
+        symlink($path, $f->paths->path('/proc/700/fd/4'));
+        $f->write('/proc/700/fdinfo/4', 'vfio-device-syspath: ' . $target . "\n");
+        $f->commands = [];
+        foreach (['stopDevice', 'removeDevice'] as $operation) {
+            $r = $f->runtime->$operation($f->device);
+            runtime_check($r['code'] === 'gpu_busy' && $r['holders'][0]['container'] === '0123456789ab', 'Target device/group remains protected, independent of its process or cdev number');
+        }
+        runtime_check(!$f->hasCommand('mdevctl') && isset($f->definitions[$f->device['uuid']]), 'Busy target must not be stopped or undefined');
+        unlink($f->paths->path('/proc/700/fd/4'));
+    }
+};
+$tests['unknown VFIO ownership is not guessed from cdev numbering'] = function (RuntimeFixture $f): void {
+    runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');
+    $f->process(700, 'unmanaged-qemu');
+    foreach (['/dev/vfio/devices/vfio42', 'anon_inode:[vfio-device]'] as $path) {
+        symlink($path, $f->paths->path('/proc/700/fd/4'));
+        $f->commands = [];
+        $r = $f->runtime->removeDevice($f->device);
+        runtime_check($r['code'] === 'usage_unknown' && $r['holders'][0]['pid'] === 700, 'Unmappable VFIO descriptor must remain an explicit unknown, not proof of idleness');
+        runtime_check(!$f->hasCommand('mdevctl'), 'Unknown target ownership must cause no device mutation');
+        unlink($f->paths->path('/proc/700/fd/4'));
+    }
+};
+$tests['unrelated VFIO groups and mapped device FDs do not block target removal'] = function (RuntimeFixture $f): void {
+    runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create first managed device');
+    $other = array_replace($f->device, ['uuid' => '868bfe06-47c1-40a3-82df-ffd518be72d3']);
+    runtime_check($f->runtime->startDevice($other, $f->settings)['ok'], 'Create unrelated mdev');
+    unlink($f->paths->path('/sys/bus/mdev/devices/' . $other['uuid'] . '/iommu_group'));
+    symlink('/sys/kernel/iommu_groups/42', $f->paths->path('/sys/bus/mdev/devices/' . $other['uuid'] . '/iommu_group'));
+    $f->domains['OtherVM'] = '<domain><devices><hostdev><source><address uuid="' . $other['uuid'] . '"/></source></hostdev></devices></domain>';
+    $f->process(700, 'qemu');
+    symlink('/dev/vfio/42', $f->paths->path('/proc/700/fd/3'));
+    symlink('anon_inode:[vfio-device]', $f->paths->path('/proc/700/fd/4'));
+    symlink('/dev/vfio/devices/vfio27', $f->paths->path('/proc/700/fd/5'));
+    foreach ([4, 5] as $fd) $f->write('/proc/700/fdinfo/' . $fd, 'vfio-device-syspath: /sys/devices/pci0000:00/' . $other['pci'] . '/' . $other['uuid'] . "\n");
+    $f->commands = [];
+    runtime_check($f->runtime->removeDevice($f->device)['ok'], 'A different VM/VFIO device on the same physical GPU is not the target');
+    runtime_check(isset($f->definitions[$other['uuid']]) && is_link($f->paths->path('/sys/bus/mdev/devices/' . $other['uuid'])), 'Other mdev and persistent definition remain intact');
+    foreach ($f->commands as $argv) {
+        if ($argv[0] === 'mdevctl') runtime_check($argv[array_search('-u', $argv, true) + 1] === $f->device['uuid'], 'Only the requested UUID may be passed to mdevctl');
+    }
+};
+$tests['whole GPU cold initialization and install checks retain host handle barriers'] = function (RuntimeFixture $f): void {
+    $f->process(700, 'python');
+    foreach (['/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/nvidia-modeset', '/dev/nvidia-caps/nvidia-cap1'] as $path) {
+        symlink($path, $f->paths->path('/proc/700/fd/4'));
+        $f->commands = [];
+        runtime_check($f->runtime->ensure($f->settings, [])['code'] === 'gpu_busy', 'Cold initialization still requires the whole GPU to be unused');
+        runtime_check(!$f->hasCommand('env') && !$f->hasCommand('modprobe') && !$f->hasCommand('nvidia-modprobe'), 'Busy whole GPU must not initialize');
+        $r = $f->runtime->installationPreflight();
+        runtime_check($r['code'] === 'gpu_busy' && $r['holders'][0]['pid'] === 700, 'Cold package installation still checks host GPU ownership');
+        unlink($f->paths->path('/proc/700/fd/4'));
+    }
+};
+$tests['whole GPU install retains arbitrary VFIO ownership barrier'] = function (RuntimeFixture $f): void {
+    $f->process(700, 'qemu');
+    foreach (['/dev/vfio/42', '/dev/vfio/devices/vfio42'] as $path) {
+        symlink($path, $f->paths->path('/proc/700/fd/4'));
+        runtime_check($f->runtime->installationPreflight()['code'] === 'gpu_busy', 'Whole-stack cold installation must not adopt the target-only filter');
+        unlink($f->paths->path('/proc/700/fd/4'));
+    }
+};
+$tests['successful command without verified target disappearance retains definition'] = function (RuntimeFixture $f): void {
+    runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');
+    $f->stopLeavesActive = true;
+    $f->commands = [];
+    runtime_check($f->runtime->removeDevice($f->device)['code'] === 'stop_unverified', 'Exit zero alone cannot prove stop');
+    runtime_check(isset($f->definitions[$f->device['uuid']]) && !array_filter($f->commands, fn($a) => $a[0] === 'mdevctl' && $a[1] === 'undefine'), 'Unverified stop must never remove the persistent identity');
+};
+$tests['target VM is rechecked before removing a stopped definition'] = function (RuntimeFixture $f): void {
+    runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');
+    $f->afterStop = function (RuntimeFixture $f): void {
+        $f->domains['RacingVM'] = '<domain><devices><hostdev><source><address uuid="' . $f->device['uuid'] . '"/></source></hostdev></devices></domain>';
+    };
+    $f->commands = [];
+    runtime_check($f->runtime->removeDevice($f->device)['code'] === 'vm_busy', 'A new VM reference must block undefine after stop');
+    runtime_check(isset($f->definitions[$f->device['uuid']]) && !array_filter($f->commands, fn($a) => $a[0] === 'mdevctl' && $a[1] === 'undefine'), 'Racing ownership must retain the saved definition');
+};
+$tests['running and paused target VM references both protect stop and remove'] = function (RuntimeFixture $f): void {
+    runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');
+    foreach (['RunningVM', 'PausedVM'] as $name) {
+        $f->domains = [$name => '<domain><devices><hostdev><source><address uuid="' . $f->device['uuid'] . '"/></source></hostdev></devices></domain>'];
+        $f->commands = [];
+        runtime_check($f->runtime->stopDevice($f->device)['code'] === 'vm_busy' && $f->runtime->removeDevice($f->device)['code'] === 'vm_busy', 'Every active libvirt target reference blocks mutation, including paused domains');
+        runtime_check(!$f->hasCommand('mdevctl'), 'No mdev command is allowed while a target VM is active');
+    }
+};
+$tests['host GPU users do not prevent switching the stopped UUID from 1Q to 2Q'] = function (RuntimeFixture $f): void {
+    runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create old 1Q');
+    $f->write('/sys/bus/pci/devices/0000:01:00.0/mdev_supported_types/nvidia-763/name', 'NVIDIA RTXA5500-2Q');
+    $f->write('/sys/bus/pci/devices/0000:01:00.0/mdev_supported_types/nvidia-763/available_instances', '0');
+    $f->process(700, 'python');
+    symlink('/dev/nvidia-uvm', $f->paths->path('/proc/700/fd/4'));
+    $f->afterStop = fn(RuntimeFixture $f) => $f->write('/sys/bus/pci/devices/0000:01:00.0/mdev_supported_types/nvidia-763/available_instances', '12');
+    $f->commands = [];
+    runtime_check($f->runtime->removeDevice($f->device)['ok'], 'Unused 1Q must be stopped and undefined without touching host CUDA');
+    $two = array_replace($f->device, ['profile' => 'NVIDIA RTXA5500-2Q', 'type' => 'nvidia-763']);
+    runtime_check($f->runtime->startDevice($two, $f->settings)['ok'], 'The original UUID may be reused for the now-available 2Q');
+    runtime_check($f->definitions[$two['uuid']]['type'] === 'nvidia-763' && basename((string)readlink($f->paths->path('/sys/bus/mdev/devices/' . $two['uuid'] . '/mdev_type'))) === 'nvidia-763', 'Both saved definition and active target must reflect 2Q');
+    runtime_check(!$f->hasCommand('env') && !$f->hasCommand('modprobe') && is_link($f->paths->path('/proc/700/fd/4')), 'Profile switch must not restart GPU services or touch the host client');
 };
 $tests['stop timeout retains definition and PID files'] = function (RuntimeFixture $f): void {
     runtime_check($f->runtime->ensure($f->settings, [$f->device])['ok'], 'Create managed idle device');

@@ -290,13 +290,11 @@ final class Runtime
         if (isset($state['active_mdevs'][$device['uuid']]) && !$this->sameParent($state['active_mdevs'][$device['uuid']], $device)) {
             return $this->result(false, 'identity_conflict', 'Active UUID belongs to another PCI device');
         }
-        $owned = [];
         if ($state['manager_pids'] || $state['vgpud_pids'] || $state['active_mdevs']) {
             $owner = $this->owner();
             if ($owner === null || !is_array($owner['library'] ?? null)) return $this->result(false, 'migration_required', 'Existing runtime is not owned by this plugin');
             $ownership = $this->ownedRuntime($state, $owner['library']);
             if (!$ownership['ok']) return $ownership;
-            $owned = $state['manager_pids'];
         }
         $domains = $this->command(['virsh', '-c', 'qemu:///system', 'list', '--name']);
         if ($domains['code'] !== 0) return $this->result(false, 'usage_unknown', 'Cannot inspect active libvirt domains; target was not stopped');
@@ -320,9 +318,18 @@ final class Runtime
             if ($expectedType === null) return $this->result(false, 'usage_unknown', 'Cannot resolve the active target profile identity');
             if ($state['active_mdevs'][$device['uuid']]['type'] !== $expectedType) return $this->result(false, 'identity_conflict', 'The active target profile differs from the configured identity');
         }
-        $holders = $this->openHandles($owned, $group, $device['pci']);
-        if (!$holders['known']) return $this->result(false, 'usage_unknown', 'Cannot inspect VFIO/host GPU file descriptors; target was not stopped');
-        if ($holders['holders']) return $this->result(false, 'gpu_busy', 'A VFIO or host GPU process still has relevant handles open', ['holders' => $holders['holders']]);
+        // Stopping one mdev is not a physical GPU reset or cold initialization.
+        // Host CUDA/NVML/DRM handles must not block it. The whole-GPU checks in
+        // ensure()/installationPreflight() deliberately keep using openHandles.
+        if (isset($state['active_mdevs'][$device['uuid']])) {
+            $holders = (new TargetUsage($this->paths))->inspect($device['uuid'], $group);
+            if (!$holders['known']) return $this->result(false, 'usage_unknown', 'Cannot verify target vGPU VFIO ownership; target was not stopped', ['holders' => $holders['unresolved']]);
+            if ($holders['holders']) return $this->result(false, 'gpu_busy', 'A process still has the target vGPU VFIO device or group open', ['holders' => $holders['holders']]);
+            $latest = $this->activeDevices();
+            if ($latest === null || ($latest[$device['uuid']] ?? null) !== $state['active_mdevs'][$device['uuid']]) {
+                return $this->result(false, 'usage_unknown', 'Target identity changed during inspection; target was not stopped');
+            }
+        }
         return $this->result(true, 'unused', 'No active VM or conflicting process was found');
     }
 

@@ -42,7 +42,7 @@ class PackagingTests(unittest.TestCase):
                 prefix = 'usr/local/emhttp/plugins/unraid-vgpu-manager/'
                 self.assertIn(prefix + 'include/PackageIdentity.php', names)
                 self.assertIn(prefix + 'include/InstallConfiguration.php', names)
-                for component in ['StartupInventory.php', 'PackageHistory.php', 'PackageCache.php', 'PkgtoolsMigration.php', 'InstallContract.php', 'InstallTimeout.php']:
+                for component in ['StartupInventory.php', 'TargetUsage.php', 'PackageHistory.php', 'PackageCache.php', 'PkgtoolsMigration.php', 'InstallContract.php', 'InstallTimeout.php']:
                     self.assertIn(prefix + 'include/' + component, names)
                 parent = archive.extractfile(prefix + 'unraid-vgpu-manager.page').read().decode()
                 self.assertIn('Type="xmenu"', parent)

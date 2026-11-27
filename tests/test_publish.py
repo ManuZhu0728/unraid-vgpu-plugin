@@ -86,6 +86,7 @@ class PublishTests(unittest.TestCase):
         configuration.parent.mkdir(parents=True)
         configuration.write_text("passive packaging fixture\n")
         (source / "include/StartupInventory.php").write_text("passive packaging fixture\n")
+        (source / "include/TargetUsage.php").write_text("passive target ownership fixture\n")
         (source / "include/PackageCache.php").write_text("passive packaging fixture\n")
         (source / "include/NativeBoot.php").write_text("passive native boot fixture\n")
         (source / "include/upgrade-check.php").write_text("passive native update fixture\n")

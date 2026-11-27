@@ -1,5 +1,23 @@
 # 本地验证记录
 
+## 正式版 2026.11.28.1：单设备停止与整卡占用分离
+
+- 完整 PHP 套件及 83 项 Python 测试通过，无 skip；启用 localhost nginx/PHP-FPM、浏览器网关和隔离原生 pkgtools 测试。
+- 单设备 FD 归属 32 项场景通过，覆盖目标/其他 VFIO 组、cdev 与组号不同、内核 fdinfo、匿名设备 FD、
+  sysfs cdev 父设备、设备别名、失效或冲突身份及未知归属拒绝。
+- 运行时 45 项场景通过，包含宿主 CUDA/NVML/DRM 不阻断单设备生命周期、目标 VM（含暂停）与 VFIO 占用仍阻断、
+  其他 VM/mdev 不被修改、最后一个 mdev 的停止/重建、原 UUID 从 1Q 切换到 2Q、停止失败/超时/未消失时保留定义、
+  解除定义前再次核对 VM，以及冷初始化和安装前的整卡占用保护不变。
+- Application/Process 集成 354 项检查通过，核对停止保留配置、成功移除才删除配置、失败不丢失身份，
+  不发出 manager 重启、模块卸载、整卡重置或容器停止命令。
+- 页面布局 60 项及 12 项展开场景通过；正式版发布预检通过，根 PLG 与确定性 TXZ 一致。
+
+本地日志：`/tmp/vgpu-plugin-target-usage.qBA2TiYq-final-all-tests.log`、
+`/tmp/vgpu-plugin-target-usage.qBA2TiYq-ui-layout.log` 和 `...-final-release-dry-run.log`。
+本次修复没有连接或操作 Unraid，没有使用真实 GPU，也没有改动驱动、host-CUDA hook 或 MMIO 实现。
+上述测试验证插件操作边界，不替代实机并发保证；用户验收需覆盖 Immich 实际 CUDA 任务及 Beszel 监控活跃时，
+停止、移除并重建最后一个 vGPU，核对任务连续性与新增 GPU 告警。
+
 ## 正式版 2026.11.26.1：下载进度、取消与助手日志
 
 - 完整 PHP 套件及 83 项 Python 测试通过，无 skip；包含私有命名空间内的原生启动合同与真实 pkgtools 回归。

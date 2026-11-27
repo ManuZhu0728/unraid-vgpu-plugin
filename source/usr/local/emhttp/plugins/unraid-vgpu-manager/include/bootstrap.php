@@ -9,6 +9,7 @@ require_once __DIR__ . '/InstallContract.php';
 require_once __DIR__ . '/InstallTimeout.php';
 require_once __DIR__ . '/Source.php';
 require_once __DIR__ . '/Store.php';
+require_once __DIR__ . '/TargetUsage.php';
 foreach (['DownloadTask.php', 'Download.php', 'StartupInventory.php', 'Runtime.php', 'Upload.php', 'Upgrade.php', 'UpgradeWatch.php', 'PackageHistory.php', 'PackageCache.php', 'NativeBoot.php', 'InstallConfiguration.php', 'Installer.php', 'Logs.php', 'Inventory.php'] as $component) {
     if (is_file(__DIR__ . '/' . $component)) require_once __DIR__ . '/' . $component;
 }

@@ -43,7 +43,7 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-修复升级助手日志误报与刷屏，区分当前缓存和新内核准备，并为驱动下载增加实时进度与手动取消。
+修复停止或移除单个 vGPU 时被宿主机 GPU 进程误拦截的问题，保留整卡操作的占用保护。
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
@@ -90,7 +90,7 @@ def build(version, output, public_base=None, update_url=None):
         "include/ui-page.php", "include/ui/common.php", "include/ui/state.php", "include/ui/driver.php",
         "include/ui/vgpu.php", "include/ui/status.php", "include/Logs.php", "include/Inventory.php",
         "scripts/rc.vgpu", "scripts/upgrade-helper", "include/cli.php",
-        "include/Store.php", "include/StartupInventory.php", "include/Runtime.php", "include/Download.php", "include/DownloadTask.php", "include/UpgradeWatch.php",
+        "include/Store.php", "include/StartupInventory.php", "include/TargetUsage.php", "include/Runtime.php", "include/Download.php", "include/DownloadTask.php", "include/UpgradeWatch.php",
         "include/PackageIdentity.php", "include/PackageHistory.php", "include/PackageCache.php", "include/NativeBoot.php", "include/PkgtoolsMigration.php", "include/InstallContract.php",
         "include/InstallTimeout.php", "include/InstallConfiguration.php", "include/Source.php", "include/Upload.php", "include/Upgrade.php",
         "include/Installer.php", "include/upgrade-watch.php", "include/upgrade-check.php",
@@ -146,7 +146,7 @@ def build(version, output, public_base=None, update_url=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="2026.11.26.1")
+    parser.add_argument("--version", default="2026.11.28.1")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--public-base", type=https_url)
     parser.add_argument("--update-url", type=https_url)

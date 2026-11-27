@@ -418,6 +418,10 @@ try {
     $app = $runtimeFixture->application;
     $app->dispatch('device-save', $runtimeFixture->device());
     $runtimeFixture->managed();
+    // Host CUDA users must not mask the real stop/undefine failure paths below.
+    $runtimeFixture->put('/proc/700/comm', 'python');
+    $runtimeFixture->directory('/proc/700/fd');
+    symlink('/dev/nvidia-uvm', $runtimeFixture->paths->path('/proc/700/fd/4'));
     $runtimeBytes = file_get_contents($runtimeFixture->paths->devicesFile);
     $runtimeFixture->failure = 'stop';
     $stopped = $app->dispatch('device-stop', ['uuid' => ApplicationFixture::UUID]);
@@ -433,6 +437,46 @@ try {
     $runtimeFixture->failure = '';
     $removed = $app->dispatch('device-remove', ['uuid' => ApplicationFixture::UUID]);
     application_check($removed['ok'] && !$runtimeFixture->defined && $runtimeFixture->store->devices() === [], 'Only verified removal may delete saved configuration');
+
+    foreach (['device-stop', 'device-remove'] as $action) {
+        $hostFixture = $fixtures[] = new ApplicationFixture();
+        $hostApp = $hostFixture->application;
+        $hostApp->dispatch('device-save', $hostFixture->device());
+        $hostFixture->managed();
+        foreach ([26316 => 'python', 30853 => 'agent'] as $pid => $comm) {
+            $hostFixture->put('/proc/' . $pid . '/comm', $comm);
+            $hostFixture->directory('/proc/' . $pid . '/fd');
+            foreach (['/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-uvm'] as $fd => $path) {
+                symlink($path, $hostFixture->paths->path('/proc/' . $pid . '/fd/' . ($fd + 4)));
+            }
+        }
+        $settingsBefore = file_get_contents($hostFixture->paths->settingsFile);
+        $devicesBefore = file_get_contents($hostFixture->paths->devicesFile);
+        $hostFixture->calls = [];
+        $result = $hostApp->dispatch($action, ['uuid' => ApplicationFixture::UUID]);
+        application_check($result['ok'] && !is_link($hostFixture->paths->path('/sys/bus/mdev/devices/' . ApplicationFixture::UUID)), 'Host CUDA/NVML handles must not block ' . $action);
+        application_check(file_get_contents($hostFixture->paths->settingsFile) === $settingsBefore, 'Device lifecycle must not alter driver/runtime settings');
+        application_check($action === 'device-remove' ? !$hostFixture->defined && $hostFixture->store->devices() === [] : $hostFixture->defined && file_get_contents($hostFixture->paths->devicesFile) === $devicesBefore, 'Only successful removal may delete the saved target');
+        application_check(is_link($hostFixture->paths->path('/proc/26316/fd/4')) && is_link($hostFixture->paths->path('/proc/30853/fd/4')), 'Host GPU process handles must remain untouched');
+        application_check(!array_filter($hostFixture->calls, fn($argv) => !in_array($argv[0], ['virsh', 'mdevctl'], true)), 'Per-target operations must not issue whole-GPU/service commands');
+    }
+
+    foreach (['/dev/vfio/27' => 'gpu_busy', '/dev/vfio/devices/vfio42' => 'usage_unknown'] as $handle => $expected) {
+        $targetFixture = $fixtures[] = new ApplicationFixture();
+        $targetApp = $targetFixture->application;
+        $targetApp->dispatch('device-save', $targetFixture->device());
+        $targetFixture->managed();
+        $targetFixture->put('/proc/700/comm', 'qemu');
+        $targetFixture->directory('/proc/700/fd');
+        symlink($handle, $targetFixture->paths->path('/proc/700/fd/4'));
+        $before = file_get_contents($targetFixture->paths->devicesFile);
+        foreach (['device-stop', 'device-remove'] as $action) {
+            $targetFixture->calls = [];
+            application_check($targetApp->dispatch($action, ['uuid' => ApplicationFixture::UUID])['code'] === $expected, 'Target busy/unknown must still block ' . $action);
+            application_check($targetFixture->defined && file_get_contents($targetFixture->paths->devicesFile) === $before, 'Busy/unknown refusal must retain persisted target identity');
+            application_check(!array_filter($targetFixture->calls, fn($argv) => $argv[0] === 'mdevctl' && in_array($argv[1], ['stop', 'undefine'], true)), 'Refused target must receive no stop or undefine command');
+        }
+    }
 
     $busyFixture = $fixtures[] = new ApplicationFixture();
     $app = $busyFixture->application;
