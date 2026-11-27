@@ -49,7 +49,7 @@ class RealMdevctlTests(unittest.TestCase):
         self.definition = self.root/'etc/mdevctl.d'/self.PCI/self.UUID
         self.definition.parent.mkdir()
         self.definition.write_text(json.dumps({'mdev_type': self.TYPE, 'start': 'manual', 'attrs': []}))
-        self.prefix = (['sudo', '-n'] if os.environ.get('VGPU_TEST_BWRAP_SUDO') == '1' else []) + [
+        self.prefix = [
             'bwrap', '--unshare-all', '--die-with-parent', '--uid', '0', '--gid', '0',
             '--bind', str(self.root), '/', '--ro-bind', '/lib', '/lib', '--ro-bind', '/lib64', '/lib64',
             '--ro-bind', '/usr/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu',

@@ -34,7 +34,8 @@ bash tests/run-tests.sh
 `MDEVCTL_BIN=/absolute/path/to/mdevctl` 启用真实 CLI 合同测试，另需 bubblewrap。
 二进制只在私有 `/etc`、模拟 sysfs 与不含 GPU 的 `/dev` 内运行；停止只写普通夹具文件，
 不调用真实驱动。发布 CI 必须下载并解包发行版 mdevctl（不安装服务）运行这组测试，
-使用 runner 的 sudo 启动隔离命名空间，不放开宿主机系统目录的写权限。
+使用 runner 的 sudo 单独运行这组测试，让私有夹具与隔离命名空间保持同一 UID；
+不放开夹具权限，也不放开宿主机系统目录的写权限。
 
 下载进度/取消的独立浏览器矩阵用 `node tests/test_ui_download_control.cjs`；真实网关中的浏览器用例由
 `test_download_gateway.py` 在配置 Playwright 后执行。工作树不与驱动仓库相邻时，可用

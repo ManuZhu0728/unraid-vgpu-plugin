@@ -33,9 +33,13 @@ jobs:
           test "${#task_cli_packages[@]}" -eq 1
           dpkg-deb --extract "${task_cli_packages[0]}" "$task_cli_tools/root"
           test -x "$task_cli_tools/root/usr/bin/mdevctl"
-          printf 'MDEVCTL_BIN=%s\nVGPU_TEST_BWRAP_SUDO=1\n' "$task_cli_tools/root/usr/bin/mdevctl" >> "$GITHUB_ENV"
+          printf 'MDEVCTL_BIN=%s\n' "$task_cli_tools/root/usr/bin/mdevctl" >> "$GITHUB_ENV"
       - name: Hardware-free tests
-        run: bash tests/run-tests.sh
+        run: env -u MDEVCTL_BIN bash tests/run-tests.sh
+      - name: Real mdevctl CLI contracts in private namespace
+        # Create fixtures and enter the namespace as the same UID. Running only
+        # bwrap via sudo leaves runner-owned 0700 fixtures outside its UID map.
+        run: sudo -n env MDEVCTL_BIN="$MDEVCTL_BIN" python3 -m unittest discover -s tests -p test_mdevctl_cli.py -v
 
   release:
     needs: test
