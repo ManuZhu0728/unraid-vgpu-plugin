@@ -59,7 +59,7 @@ try {
     cache_check($list['packages'][0]['kernel'] === '6.18.60-Unraid', 'Newer kernels are shown first');
     foreach ([$selected['filename'] => '当前选中', $installed['filename'] => '上次成功安装', $prepared['filename'] => '升级预下载', $attempt['filename'] => '安装任务引用', $historical['filename'] => '内核回退记录'] as $name => $reason) {
         $item = $row($list, $name);
-        cache_check(!$item['deletable'] && in_array($reason, $item['references'], true), 'Every durable reference is labelled and protected: ' . $reason);
+        cache_check($item['deletable'] === ($reason === '内核回退记录') && in_array($reason, $item['references'], true), 'Only history-only references offer confirmed cleanup: ' . $reason);
         cache_rejects(fn() => $app->dispatch('cache-delete', ['filename' => $name]));
         cache_check(is_file($paths->cacheDir . '/' . substr($item['kernel'], 0, -7) . '/' . $name), 'Protected bytes remain intact');
     }

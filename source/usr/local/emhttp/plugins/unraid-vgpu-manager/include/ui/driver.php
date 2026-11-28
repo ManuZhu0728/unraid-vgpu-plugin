@@ -112,7 +112,7 @@
 </section>
 <section class="uvm-panel" id="uvm-downloaded-panel" data-controls="<?=$uvm_controls ? '1' : '0'?>">
   <h2>已下载驱动</h2>
-  <p class="uvm-muted">列出所有内核的缓存包。“Unraid 启动安装”标记表示该内核实际准备的唯一启动包。当前选中、启动安装、升级准备、上次成功安装和回退记录引用的包不可删除。删除仅清理缓存，不卸载正在运行的驱动；需要恢复时请重新下载或上传。</p>
+  <p class="uvm-muted">列出所有内核的缓存包。“Unraid 启动安装”标记表示该内核实际准备的唯一启动包。当前选中、启动安装、升级准备和上次成功安装等引用的包不可删除。仅有“内核回退记录”的包，可确认后同时删除缓存、同名 MD5 和对应记录；以后回退需重新下载或上传。删除不会卸载正在运行的驱动。</p>
   <div id="uvm-cache-list">
   <?php $uvm_cache = $uvm_status['package_cache'] ?? null; ?>
   <?php if (!is_array($uvm_cache) || ($uvm_cache['available'] ?? null) !== true): ?>
@@ -125,7 +125,7 @@
         <td><code><?=uvm_h($cached['filename'])?></code><p class="uvm-muted">NVIDIA <code><?=uvm_h($cached['driver'])?></code> · 构建 <code><?=uvm_h($cached['build'])?></code></p></td>
         <td><code><?=uvm_h($cached['kernel'])?></code></td><td><?=uvm_h(number_format($cached['size'] / 1048576, 1))?> MiB</td>
         <td><?=uvm_h(implode('、', $cached['references']) ?: '未被引用')?></td>
-        <td><form method="post" class="uvm-submit-form"><?php uvm_form_hidden('cache-select', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls ? 'disabled' : ''?>>设为下次启动构建</button></form><form method="post" class="uvm-cache-delete-form"><?php uvm_form_hidden('cache-delete', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls || $cached['deletable'] !== true ? 'disabled' : ''?>>删除</button></form></td>
+        <td><form method="post" class="uvm-submit-form"><?php uvm_form_hidden('cache-select', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls ? 'disabled' : ''?>>设为下次启动构建</button></form><form method="post" class="uvm-cache-delete-form" data-history-confirmation="<?=!empty($cached['requires_history_confirmation']) ? '1' : '0'?>"><?php uvm_form_hidden('cache-delete', $uvm_csrf, ['cache_filename' => $cached['filename']]); ?><button type="submit" <?=!$uvm_controls || $cached['deletable'] !== true ? 'disabled' : ''?>>删除</button></form></td>
       </tr>
     <?php endforeach; ?>
     </tbody></table></div>
@@ -237,11 +237,15 @@
       row.insertCell().textContent = (Number(item.size) / 1048576).toFixed(1) + ' MiB';
       row.insertCell().textContent = Array.isArray(item.references) ? (item.references.join('、') || '未被引用') : '引用状态未知';
       const form = document.createElement('form'); form.method = 'post'; form.className = 'uvm-cache-delete-form';
+      const references = item.references;
+      const historyOnly = Array.isArray(references) && references.length === 1 && references[0] === '内核回退记录';
+      const confirmHistory = historyOnly && item.requires_history_confirmation === true;
+      form.dataset.historyConfirmation = confirmHistory ? '1' : '0';
       Object.entries({uvm_action: 'cache-delete', uvm_tab: 'driver', csrf_token: csrf, uvm_csrf_token: csrf, cache_filename: item.filename}).forEach(function (entry) {
         const field = document.createElement('input'); field.type = 'hidden'; field.name = entry[0]; field.value = entry[1]; form.append(field);
       });
       const button = document.createElement('button'); button.type = 'submit'; button.textContent = '删除';
-      button.disabled = item.deletable !== true || !Array.isArray(item.references) || item.references.length > 0 || document.getElementById('uvm-downloaded-panel').dataset.controls !== '1';
+      button.disabled = item.deletable !== true || !Array.isArray(references) || (references.length > 0 && !confirmHistory) || document.getElementById('uvm-downloaded-panel').dataset.controls !== '1';
       form.append(button);
       const actions = row.insertCell();
       const select = document.createElement('form'); select.method = 'post'; select.className = 'uvm-submit-form';
@@ -590,7 +594,10 @@
     if (ui.isBusy() || button.disabled || document.getElementById('uvm-downloaded-panel').dataset.controls !== '1') return;
     const data = new URLSearchParams(new FormData(form));
     const filename = data.get('cache_filename');
-    if (!window.confirm('删除缓存包 ' + filename + ' 及其同名 MD5？\n此操作不可本地撤销；需要恢复时请重新下载或上传。不会卸载当前驱动。')) return;
+    const forgetHistory = form.dataset.historyConfirmation === '1';
+    const warning = forgetHistory ? '\n同时删除对应内核的回退记录，该内核将失去离线驱动缓存；以后回退需重新下载或上传。' : '';
+    if (!window.confirm('删除缓存包 ' + filename + ' 及其同名 MD5？' + warning + '\n此操作不可本地撤销；需要恢复时请重新下载或上传。不会卸载当前驱动。')) return;
+    if (forgetHistory) data.set('cache_forget_history', '1');
     data.set('uvm_cache_delete_async', '1');
     const controller = new AbortController();
     const timeout = window.setTimeout(function () { controller.abort(); }, 45000);

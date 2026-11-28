@@ -47,6 +47,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 break;
             case 'cache-delete':
                 $payload = ['filename' => uvm_post('cache_filename')];
+                if (array_key_exists('cache_forget_history', $_POST)) {
+                    if (uvm_post('cache_forget_history') !== '1') throw new InvalidArgumentException('回退记录清理必须明确确认，请重新打开页面核对。');
+                    $payload['forget_history'] = true;
+                }
                 $uvm_action_data = uvm_cli($uvm_action, $payload);
                 if (($uvm_action_data['ok'] ?? true) === false) throw new RuntimeException((string)($uvm_action_data['message'] ?? '删除未完成，请核对缓存。'));
                 if (($uvm_action_data['changed'] ?? null) !== true || ($uvm_action_data['filename'] ?? null) !== $payload['filename'] || !is_array($uvm_action_data['removed'] ?? null) || !in_array($payload['filename'], $uvm_action_data['removed'], true)) {

@@ -31,7 +31,9 @@ final class PackageCache
                         $size = $stat['size'];
                         if ($this->exists($directory . '/' . $name . '.md5')) $this->regular($directory . '/' . $name . '.md5');
                     } catch (\Throwable) { $reasons[] = '文件类型或路径异常'; }
-                    $packages[] = $identity + ['size' => $size, 'references' => $reasons, 'deletable' => !$reasons];
+                    $historyOnly = $reasons === ['内核回退记录'];
+                    $packages[] = $identity + ['size' => $size, 'references' => $reasons,
+                        'requires_history_confirmation' => $historyOnly, 'deletable' => !$reasons || $historyOnly];
                     if (count($packages) > 512) throw new \RuntimeException('缓存包数量过多，请先人工核对。');
                 }
             }
@@ -44,7 +46,7 @@ final class PackageCache
     }
 
     /** Caller must hold Store::locked(), shared with download, upgrade and boot. */
-    public function delete(string $filename): array
+    public function delete(string $filename, bool $forgetHistory = false): array
     {
         $identity = PackageIdentity::parse($filename);
         $inventory = $this->listing();
@@ -52,6 +54,14 @@ final class PackageCache
         $matches = array_values(array_filter($inventory['packages'], static fn(array $row): bool => $row['filename'] === $filename));
         if (count($matches) !== 1) throw new \RuntimeException('未找到指定缓存包，请刷新列表核对。');
         if (!$matches[0]['deletable']) throw new \RuntimeException('不能删除此缓存包：' . implode('、', $matches[0]['references']) . '。');
+        $history = null;
+        $historyPath = $this->store->paths->configDir . '/package-history/' . $identity['kernel'] . '.json';
+        if ($matches[0]['requires_history_confirmation']) {
+            if (!$forgetHistory) throw new \RuntimeException('请先确认同时删除对应内核的回退记录；以后回退需重新下载或上传驱动。');
+            $history = (new PackageHistory($this->store))->read($identity['kernel']);
+            if (($history['package']['filename'] ?? null) !== $filename) throw new \RuntimeException('回退记录已变化，请刷新列表核对。');
+            $this->regular($historyPath);
+        }
         // The request supplies a canonical filename, never a filesystem path.
         $directory = $this->store->paths->cacheDir . '/' . substr($identity['kernel'], 0, -7);
         $this->safeParents($directory);
@@ -69,10 +79,23 @@ final class PackageCache
             }
         } catch (\Throwable) {
             return ['ok' => false, 'changed' => true, 'filename' => $filename, 'removed' => $removed,
-                'message' => 'TXZ 已删除，但同名 MD5 清理失败。请核对缓存；需要恢复时请重新下载或上传驱动包。'];
+                'message' => 'TXZ 已删除，但同名 MD5 清理失败。' . ($history !== null ? '回退记录已保留。' : '') . '请核对缓存；需要恢复时请重新下载或上传驱动包。'];
+        }
+        if ($history !== null) {
+            try {
+                // Never remove a replacement receipt, even if an external writer
+                // ignored the shared operation lock during cache removal.
+                if ((new PackageHistory($this->store))->read($identity['kernel']) !== $history) throw new \RuntimeException('History changed');
+                $this->regular($historyPath);
+                if (!(($this->remove)($historyPath))) throw new \RuntimeException('History cleanup failed');
+                $removed[] = 'package-history/' . $identity['kernel'] . '.json';
+            } catch (\Throwable) {
+                return ['ok' => false, 'changed' => true, 'filename' => $filename, 'removed' => $removed,
+                    'message' => '驱动缓存已删除，但对应回退记录已变化或清理失败。请重新打开页面核对；需要恢复时请重新下载或上传。'];
+            }
         }
         return ['ok' => true, 'changed' => true, 'filename' => $filename, 'removed' => $removed,
-            'message' => '已删除 ' . $filename . ' 及其同名 MD5（如存在）。此操作不可本地撤销，需要时请重新下载或上传。'];
+            'message' => '已删除 ' . $filename . ' 及其同名 MD5（如存在）' . ($history !== null ? '和对应内核回退记录' : '') . '。此操作不可本地撤销，需要时请重新下载或上传。'];
     }
 
     private function references(): array

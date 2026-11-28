@@ -633,7 +633,7 @@ foreach ([false, true] as $strip) {
     ui_check($result['ok'] && $result['data']['changed'] && $result['data']['package_cache']['packages'] === [], 'Confirmed deletion returns exact identity and refreshed inventory');
     ui_check(ui_actions($rendered) === ['cache-delete'] && $rendered['calls'][0]['payload'] === ['filename' => $downloadPackage['filename']], 'Deletion only dispatches one exact filename, never arbitrary paths or unsaved credentials');
 }
-foreach ([['csrf_token' => 'bad'], ['uvm_csrf_token' => 'bad'], ['uvm_tab' => 'vgpu'], ['cache_filename' => ['bad']], ['uvm_cache_delete_async' => '0']] as $changes) {
+foreach ([['csrf_token' => 'bad'], ['uvm_csrf_token' => 'bad'], ['uvm_tab' => 'vgpu'], ['cache_filename' => ['bad']], ['uvm_cache_delete_async' => '0'], ['cache_forget_history' => '0'], ['cache_forget_history' => ['1']]] as $changes) {
     $rendered = ui_render($base + ['server' => ['REQUEST_METHOD' => 'POST'], 'post' => array_replace($deletePost, $changes)]);
     ui_check(!$deleteResponse($rendered)['ok'] && ui_actions($rendered) === [], 'Invalid deletion form fields/tab/CSRF fail before dispatch');
 }
@@ -649,6 +649,12 @@ $cachedList['status']['package_cache'] = ['available' => true, 'packages' => [$d
 $rendered = ui_render($cachedList);
 ui_check(str_contains($rendered['html'], 'id="uvm-downloaded-panel"') && str_contains($rendered['html'], 'name="cache_filename"'), 'Driver management renders a separate downloaded-file inventory and exact identity forms');
 ui_check(str_contains($rendered['html'], '当前选中 &lt;script&gt;unsafe()&lt;/script&gt;') && preg_match('~class="uvm-cache-delete-form".*?<button type="submit" disabled~s', $rendered['html']) === 1, 'Protected package rows escape long reasons and disable deletion');
+$cachedList['status']['package_cache']['packages'][0] = $downloadPackage + ['size'=>500,'references'=>['内核回退记录'],'deletable'=>true,'requires_history_confirmation'=>true];
+$rendered = ui_render($cachedList);
+ui_check(preg_match('~class="uvm-cache-delete-form" data-history-confirmation="1".*?<button type="submit" >~s', $rendered['html']) === 1, 'History-only row offers a confirmed cleanup button');
+ui_check(!str_contains($rendered['html'], 'name="cache_forget_history"'), 'No-JavaScript form cannot pre-authorize history removal without confirmation');
+$rendered = ui_render($base + ['server'=>['REQUEST_METHOD'=>'POST'],'post'=>$deletePost+['cache_forget_history'=>'1'],'responses'=>['cache-delete'=>$deleteResult]]);
+ui_check($deleteResponse($rendered)['ok'] && $rendered['calls'][0]['payload'] === ['filename'=>$downloadPackage['filename'],'forget_history'=>true], 'Confirmed history flag is forwarded as one strict boolean');
 
 // The basic form needs a link and, for private repositories, one token input.
 $simple = array_replace($config, [

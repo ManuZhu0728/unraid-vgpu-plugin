@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PREFIX = ROOT / 'source/usr/local/emhttp/plugins/unraid-vgpu-manager'
 FREE = 'nvidia-595.58.03-6.18.58-Unraid-2.txz'
 SELECTED = 'nvidia-595.58.03-6.18.58-Unraid-3.txz'
+HISTORY = 'nvidia-595.58.03-6.18.57-Unraid-3.txz'
 
 
 class CacheDeleteHttpTests(unittest.TestCase):
@@ -41,7 +42,14 @@ if (PHP_SAPI === 'cli') {
         file_put_contents($path,'HTTP fixture '.$name); file_put_contents($path.'.md5',md5_file($path).'  '.$name."\n");
         $packages[$build]=['filename'=>$name,'driver'=>'595.58.03','kernel'=>'6.18.58-Unraid','build'=>$build,'path'=>$path];
     }
-    $settings=\Vgpu\Store::defaults(); $settings['selected_package']=$packages[($argv[1]??'')==='select-free'?2:3];
+    $name='nvidia-595.58.03-6.18.57-Unraid-3.txz';
+    $path=$store->paths->cacheDir.'/6.18.57/'.$name;
+    if (!is_dir(dirname($path))) mkdir(dirname($path),0700,true);
+    file_put_contents($path,'HTTP history fixture '.$name);file_put_contents($path.'.md5',md5_file($path).'  '.$name."\n");
+    $history=['filename'=>$name,'path'=>$path,'driver'=>'595.58.03','kernel'=>'6.18.57-Unraid','build'=>3,
+        'md5'=>md5_file($path),'source'=>'local','saved_boot_id'=>'11111111-1111-4111-8111-111111111111'];
+    (new \Vgpu\PackageHistory($store))->remember(\Vgpu\PackageHistory::fromPackage($history));
+    $settings=\Vgpu\Store::defaults(); $settings['selected_package']=($argv[1]??'')==='select-history'?$history:$packages[($argv[1]??'')==='select-free'?2:3];
     $store->saveSettings($settings); return;
 }
 function uvm_cli(string $action, array $payload=[]): array {
@@ -143,6 +151,32 @@ echo '</main>';
         subprocess.run([self.php, '-n', str(self.fixture), 'select-free'], check=True, capture_output=True)
         self.assertFalse(self.post()['ok'])
         self.assertTrue((self.cache / FREE).is_file())
+
+    def test_history_cleanup_requires_explicit_confirmation_and_removes_all_three(self):
+        package = self.cache.parent / '6.18.57' / HISTORY
+        receipt = self.cache.parent.parent / 'package-history/6.18.57-Unraid.json'
+        original_receipt = receipt.read_bytes()
+        self.assertFalse(self.post({'cache_filename': HISTORY})['ok'])
+        self.assertTrue(package.is_file())
+        self.assertEqual(receipt.read_bytes(), original_receipt)
+        result = self.post({'cache_filename': HISTORY, 'cache_forget_history': '1'})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['data']['removed'], [HISTORY, HISTORY + '.md5', 'package-history/6.18.57-Unraid.json'])
+        self.assertFalse(package.exists())
+        self.assertFalse(package.with_name(HISTORY + '.md5').exists())
+        self.assertFalse(receipt.exists())
+        self.assertTrue((self.cache / SELECTED).is_file())
+        calls = [json.loads(line) for line in (self.directory / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls[-1], {'action': 'cache-delete', 'payload': {'filename': HISTORY, 'forget_history': True}})
+
+    def test_history_confirmation_cannot_bypass_new_selection_or_invalid_form(self):
+        for value in ('0', 'true', ''):
+            self.assertFalse(self.post({'cache_filename': HISTORY, 'cache_forget_history': value})['ok'])
+        self.assertEqual((self.directory / 'calls.jsonl').read_text(), '')
+        subprocess.run([self.php, '-n', str(self.fixture), 'select-history'], check=True, capture_output=True)
+        self.assertFalse(self.post({'cache_filename': HISTORY, 'cache_forget_history': '1'})['ok'])
+        self.assertTrue((self.cache.parent / '6.18.57' / HISTORY).is_file())
+        self.assertTrue((self.cache.parent.parent / 'package-history/6.18.57-Unraid.json').is_file())
 
 
 if __name__ == '__main__':

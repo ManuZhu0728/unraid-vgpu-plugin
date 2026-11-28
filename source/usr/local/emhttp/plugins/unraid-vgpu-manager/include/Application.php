@@ -117,9 +117,10 @@ final class Application
                 : '已保存构建选择；开机恢复关闭，尚未加入 Unraid 启动安装目录。当前驱动和服务未改变。'];
         }
         if ($action === 'cache-delete') {
-            if (array_keys($input) !== ['filename'] || !is_string($input['filename'])) throw new \InvalidArgumentException('删除请求只接受完整的驱动包文件名。');
+            if (!is_string($input['filename'] ?? null) || array_diff(array_keys($input), ['filename', 'forget_history']) ||
+                (array_key_exists('forget_history', $input) && !is_bool($input['forget_history']))) throw new \InvalidArgumentException('删除请求只接受完整的驱动包文件名和明确的回退记录清理确认。');
             $cache = new PackageCache($this->store);
-            return $cache->delete($input['filename']) + ['package_cache' => $cache->listing()];
+            return $cache->delete($input['filename'], $input['forget_history'] ?? false) + ['package_cache' => $cache->listing()];
         }
         $devices = $this->store->devices();
         if ($action === 'config-save') return $this->saveConfig($settings, $input);

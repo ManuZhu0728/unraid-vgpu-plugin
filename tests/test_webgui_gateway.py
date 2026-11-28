@@ -156,6 +156,8 @@ http {{
             self.assertFalse((self.cache / cache_http.FREE).exists())
             self.assertFalse((self.cache / (cache_http.FREE + '.md5')).exists())
             self.assertTrue((self.cache / cache_http.SELECTED).is_file())
+            self.assertFalse((self.cache.parent / '6.18.57' / cache_http.HISTORY).exists())
+            self.assertFalse((self.cache.parent.parent / 'package-history/6.18.57-Unraid.json').exists())
             self.assertEqual(settings.read_bytes(), original_settings)
         finally:
             (self.directory / 'browser-enabled').unlink()

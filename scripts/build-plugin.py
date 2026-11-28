@@ -43,7 +43,7 @@ def definition(version, filename, md5, *, inline=None, public_base=None, update_
     return f'''<?xml version="1.0" standalone="yes"?>
 <PLUGIN {attributes}>
 <CHANGES>
-修复 vGPU 停止命令的参数兼容问题，并明确区分命令失败与超时。
+允许确认清理仅被历史回退记录引用的旧驱动缓存，其他保护保持不变。
 </CHANGES>
 <FILE Name="/boot/config/plugins/{PLUGIN}/{filename}" Run="upgradepkg --install-new --reinstall"{encoding}>
 {payload}
